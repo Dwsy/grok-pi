@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 # One-line install:
-#   curl --fail --location --silent --show-error \
-#     https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh
-#
+#   curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh
+# Pin a version:
+#   curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/download/v0.0.1/install.sh | GROK_PI_VERSION=v0.0.1 sh
 # Optional env:
 #   GROK_PI_VERSION=v0.0.1
 #   GROK_PI_INSTALL_DIR=$HOME/.local/bin

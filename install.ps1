@@ -1,6 +1,7 @@
 # One-line install (Windows x64 PowerShell):
 #   irm https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.ps1 | iex
-#
+# Pin a version:
+#   $env:GROK_PI_VERSION='v0.0.1'; irm https://github.com/Dwsy/pi-grok-build/releases/download/v0.0.1/install.ps1 | iex
 # Optional env:
 #   $env:GROK_PI_VERSION = 'v0.0.1'
 #   $env:GROK_PI_INSTALL_DIR = "$env:LOCALAPPDATA\grok-pi\bin"

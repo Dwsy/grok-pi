@@ -81,17 +81,27 @@ flowchart LR
 每个匹配 `v*` 的 Git tag 都会发布平台二进制及安装脚本。Unix 安装脚本会自动识别 macOS ARM64 或 Linux x64，下载对应的最新 release，并默认安装 `grok-pi` 到 `~/.local/bin`：
 
 ```bash
-curl --fail --location --silent --show-error \
-  https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh
 ```
 
-Windows x64 请执行 PowerShell 安装脚本：
+Windows x64：
 
 ```powershell
 irm https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.ps1 | iex
 ```
 
-在任一命令前设置 `GROK_PI_VERSION=vX.Y.Z` 可安装指定版本；设置 `GROK_PI_INSTALL_DIR` 可更改安装目录。脚本会提示所需的 `PATH` 更新。
+同一行固定版本或安装目录：
+
+```bash
+curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/download/v0.0.1/install.sh | GROK_PI_VERSION=v0.0.1 sh
+GROK_PI_INSTALL_DIR=/opt/grok-pi curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh
+```
+
+```powershell
+$env:GROK_PI_VERSION='v0.0.1'; irm https://github.com/Dwsy/pi-grok-build/releases/download/v0.0.1/install.ps1 | iex
+```
+
+脚本会提示所需的 `PATH` 更新。
 
 安装 Pi 后运行 `grok-pi`：
 
