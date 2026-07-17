@@ -7,7 +7,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use pi_grok_adapter::{PiAgent, PiBootstrap, PiRpc, SpawnConfig};
-use std::{path::PathBuf, rc::Rc};
+use std::{
+    ffi::{OsStr, OsString},
+    path::PathBuf,
+    rc::Rc,
+};
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 use xai_acp_lib::acp_channels;
@@ -53,7 +57,8 @@ use xai_grok_pager::{
 #[command(
     name = "grok-pi",
     version,
-    about = "Run the Pi agent core in Grok Build's production TUI"
+    about = "Run the Pi agent core in Grok Build's production TUI",
+    after_help = "Pi-compatible aliases:\n  -ns  Alias for --no-skills\n  -nc  Alias for --no-context-files\n  -ne  Alias for --no-extensions\n  -nt  Alias for --no-tools"
 )]
 struct Args {
     /// Pi executable. Use `node` with --pi-prefix-arg for a local Pi build.
@@ -67,6 +72,46 @@ struct Args {
     /// Working directory for both Pi and the native Grok pager.
     #[arg(long)]
     pi_cwd: Option<PathBuf>,
+
+    /// Continue previous session.
+    #[arg(short = 'c', long = "continue")]
+    continue_last_session: bool,
+
+    /// System prompt (default: coding assistant prompt).
+    #[arg(long, value_name = "TEXT")]
+    system_prompt: Option<String>,
+
+    /// Append text or file contents to the system prompt (can be used multiple times).
+    #[arg(long, value_name = "TEXT")]
+    append_system_prompts: Vec<String>,
+
+    /// Disable skills discovery and loading.
+    #[arg(long)]
+    no_skills: bool,
+
+    /// Disable AGENTS.md and CLAUDE.md discovery and loading.
+    #[arg(long)]
+    no_context_files: bool,
+
+    /// Load an extension file (can be used multiple times).
+    #[arg(short = 'e', long, value_name = "PATH")]
+    extensions: Vec<String>,
+
+    /// Disable extension discovery (explicit -e paths still work).
+    #[arg(long)]
+    no_extensions: bool,
+
+    /// Disable all tools by default (built-in and extension).
+    #[arg(long)]
+    no_tools: bool,
+
+    /// Don't save session (ephemeral).
+    #[arg(long)]
+    no_session: bool,
+
+    /// Set session display name.
+    #[arg(short = 'n', long, value_name = "NAME")]
+    name: Option<String>,
 
     /// Use Grok's native inline terminal mode instead of the alternate screen.
     #[arg(long)]
@@ -100,7 +145,7 @@ fn main() -> Result<()> {
     xai_crash_handler::install_terminal_restore_only();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let args = Args::parse();
+    let args = Args::parse_from(normalize_compound_short_flags(std::env::args_os()));
     if args.print_capabilities {
         println!(
             "{}",
@@ -115,18 +160,23 @@ fn main() -> Result<()> {
     runtime.block_on(LocalSet::new().run_until(run(args)))
 }
 
-async fn run(args: Args) -> Result<()> {
-    let cwd = match args.pi_cwd {
+async fn run(mut args: Args) -> Result<()> {
+    let cwd = match args.pi_cwd.as_ref() {
         Some(path) => std::path::absolute(path).context("failed to resolve --pi-cwd")?,
         None => std::env::current_dir().context("failed to read current directory")?,
     };
 
+    // Discover Pi theme JSON (embedded dark/light + ~/.pi/agent/themes + .pi/themes)
+    // so `/theme` can list and apply them as `pi:<name>`.
+    let _theme_report = xai_grok_pager::theme::pi::init_discovery(&cwd);
+
     let pi_session_dir = pi_session_dir(&args.pi_args, &cwd);
+    let pi_args = pi_args_with_startup_flags(std::mem::take(&mut args.pi_args), &args);
     let process = PiRpc::spawn(SpawnConfig {
         program: args.pi_bin,
         prefix_args: args.pi_prefix_args,
         cwd: cwd.clone(),
-        pi_args: args.pi_args,
+        pi_args,
     })
     .await?;
     let bootstrap = PiBootstrap::load(&process.rpc)
@@ -196,6 +246,65 @@ async fn run(args: Args) -> Result<()> {
     .await
 }
 
+fn normalize_compound_short_flags(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut parse_options = true;
+    args.into_iter()
+        .map(|arg| {
+            if parse_options && arg.as_os_str() == OsStr::new("--") {
+                parse_options = false;
+                return arg;
+            }
+            if !parse_options {
+                return arg;
+            }
+            match arg.to_str() {
+                Some("-ns") => OsString::from("--no-skills"),
+                Some("-nc") => OsString::from("--no-context-files"),
+                Some("-ne") => OsString::from("--no-extensions"),
+                Some("-nt") => OsString::from("--no-tools"),
+                _ => arg,
+            }
+        })
+        .collect()
+}
+
+fn pi_args_with_startup_flags(mut pi_args: Vec<String>, args: &Args) -> Vec<String> {
+    if args.continue_last_session {
+        pi_args.push("--continue".to_string());
+    }
+    if let Some(system_prompt) = &args.system_prompt {
+        pi_args.extend(["--system-prompt".to_string(), system_prompt.clone()]);
+    }
+    for append_system_prompt in &args.append_system_prompts {
+        pi_args.extend([
+            "--append-system-prompt".to_string(),
+            append_system_prompt.clone(),
+        ]);
+    }
+    if args.no_skills {
+        pi_args.push("--no-skills".to_string());
+    }
+    if args.no_context_files {
+        pi_args.push("--no-context-files".to_string());
+    }
+    for extension in &args.extensions {
+        pi_args.extend(["--extension".to_string(), extension.clone()]);
+    }
+    if args.no_extensions {
+        pi_args.push("--no-extensions".to_string());
+    }
+    if args.no_tools {
+        pi_args.push("--no-tools".to_string());
+    }
+    if args.no_session {
+        pi_args.push("--no-session".to_string());
+    }
+    if let Some(name) = &args.name {
+        pi_args.extend(["--name".to_string(), name.clone()]);
+    }
+    pi_args
+}
+
 fn pi_session_dir(pi_args: &[String], cwd: &std::path::Path) -> PathBuf {
     let configured = pi_args
         .windows(2)
@@ -244,6 +353,96 @@ mod tests {
             "--session-dir".to_string(),
             "sessions".to_string(),
         ];
-        assert_eq!(pi_session_dir(&args, &cwd), PathBuf::from("/project/sessions"));
+        assert_eq!(
+            pi_session_dir(&args, &cwd),
+            PathBuf::from("/project/sessions")
+        );
+    }
+
+    #[test]
+    fn continue_flag_is_forwarded_to_pi() {
+        let args = Args::try_parse_from(["grok-pi", "--continue"]).unwrap();
+        assert!(args.continue_last_session);
+        assert_eq!(
+            pi_args_with_startup_flags(args.pi_args.clone(), &args),
+            vec!["--continue"]
+        );
+    }
+
+    #[test]
+    fn short_continue_flag_is_forwarded_to_pi() {
+        let args = Args::try_parse_from(["grok-pi", "-c"]).unwrap();
+        assert!(args.continue_last_session);
+        assert_eq!(
+            pi_args_with_startup_flags(args.pi_args.clone(), &args),
+            vec!["--continue"]
+        );
+    }
+
+    #[test]
+    fn pi_startup_flags_are_forwarded_to_pi() {
+        let args = Args::try_parse_from(normalize_compound_short_flags(
+            [
+                "grok-pi",
+                "--system-prompt",
+                "base prompt",
+                "--append-system-prompt",
+                "first addition",
+                "--append-system-prompt",
+                "second addition",
+                "-ns",
+                "-nc",
+                "-e",
+                "first.ts",
+                "--extension",
+                "second.ts",
+                "-ne",
+                "-nt",
+                "--no-session",
+                "-n",
+                "named-session",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            pi_args_with_startup_flags(args.pi_args.clone(), &args),
+            vec![
+                "--system-prompt",
+                "base prompt",
+                "--append-system-prompt",
+                "first addition",
+                "--append-system-prompt",
+                "second addition",
+                "--no-skills",
+                "--no-context-files",
+                "--extension",
+                "first.ts",
+                "--extension",
+                "second.ts",
+                "--no-extensions",
+                "--no-tools",
+                "--no-session",
+                "--name",
+                "named-session",
+            ]
+        );
+    }
+
+    #[test]
+    fn compound_short_flags_after_double_dash_are_not_rewritten() {
+        assert_eq!(
+            normalize_compound_short_flags(
+                ["grok-pi", "--", "-ns", "-nc", "-ne", "-nt"]
+                    .into_iter()
+                    .map(OsString::from),
+            ),
+            ["grok-pi", "--", "-ns", "-nc", "-ne", "-nt"]
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>(),
+        );
     }
 }
