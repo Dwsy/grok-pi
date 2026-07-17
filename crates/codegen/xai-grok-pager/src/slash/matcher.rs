@@ -87,6 +87,47 @@ impl FuzzyMatcher {
             .collect()
     }
 
+    /// Rank model selector items with Pi TUI's fuzzy-search algorithm.
+    ///
+    /// Pi treats whitespace and `/` as independent tokens and rewards exact,
+    /// contiguous, early, and word-boundary matches. This intentionally stays
+    /// separate from the native nucleo matcher used by other slash surfaces.
+    pub fn rank_pi_model_selector<T, F>(
+        &self,
+        items: &[T],
+        query: &str,
+        mut key_fn: F,
+    ) -> Vec<usize>
+    where
+        F: FnMut(&T) -> &str,
+    {
+        let tokens: Vec<String> = query
+            .trim()
+            .split(|ch: char| ch.is_whitespace() || ch == '/')
+            .filter(|token| !token.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        if tokens.is_empty() {
+            return (0..items.len()).collect();
+        }
+
+        let mut matches: Vec<(usize, f64)> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let text = key_fn(item).to_lowercase();
+                tokens
+                    .iter()
+                    .try_fold(0.0, |score, token| {
+                        pi_fuzzy_match(token, &text).map(|match_score| score + match_score)
+                    })
+                    .map(|score| (index, score))
+            })
+            .collect();
+        matches.sort_by(|left, right| left.1.total_cmp(&right.1));
+        matches.into_iter().map(|(index, _)| index).collect()
+    }
+
     /// Extract fuzzy match highlight indices for the most recent pattern.
     ///
     /// Returns character positions in `text` that matched the pattern.
@@ -100,6 +141,87 @@ impl FuzzyMatcher {
         pattern.indices(s.slice(..), &mut self.matcher, &mut indices);
         indices
     }
+}
+
+fn pi_fuzzy_match(query: &str, text: &str) -> Option<f64> {
+    pi_fuzzy_match_strict(query, text).or_else(|| {
+        swap_alpha_numeric_query(query)
+            .and_then(|swapped| pi_fuzzy_match_strict(&swapped, text).map(|score| score + 5.0))
+    })
+}
+
+fn pi_fuzzy_match_strict(query: &str, text: &str) -> Option<f64> {
+    if query.is_empty() {
+        return Some(0.0);
+    }
+    if query.chars().count() > text.chars().count() {
+        return None;
+    }
+
+    let mut query_chars = query.chars();
+    let mut wanted = query_chars.next()?;
+    let mut score = 0.0;
+    let mut last_match = None;
+    let mut consecutive_matches = 0_u32;
+
+    for (index, ch) in text.chars().enumerate() {
+        if ch != wanted {
+            continue;
+        }
+        let is_word_boundary = index == 0
+            || text
+                .chars()
+                .nth(index.saturating_sub(1))
+                .is_some_and(|previous| {
+                    previous.is_whitespace() || matches!(previous, '-' | '_' | '.' | '/' | ':')
+                });
+        if last_match == Some(index.saturating_sub(1)) {
+            consecutive_matches += 1;
+            score -= f64::from(consecutive_matches) * 5.0;
+        } else {
+            consecutive_matches = 0;
+            if let Some(last) = last_match {
+                score += (index - last - 1) as f64 * 2.0;
+            }
+        }
+        if is_word_boundary {
+            score -= 10.0;
+        }
+        score += index as f64 * 0.1;
+        last_match = Some(index);
+
+        match query_chars.next() {
+            Some(next) => wanted = next,
+            None => {
+                if query == text {
+                    score -= 100.0;
+                }
+                return Some(score);
+            }
+        }
+    }
+
+    None
+}
+
+fn swap_alpha_numeric_query(query: &str) -> Option<String> {
+    let split_at = query.find(|ch: char| ch.is_ascii_digit())?;
+    let (first, second) = query.split_at(split_at);
+    if !first.is_empty()
+        && first.chars().all(|ch| ch.is_ascii_alphabetic())
+        && !second.is_empty()
+        && second.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Some(format!("{second}{first}"));
+    }
+
+    let split_at = query.find(|ch: char| ch.is_ascii_alphabetic())?;
+    let (first, second) = query.split_at(split_at);
+    (!first.is_empty()
+        && first.chars().all(|ch| ch.is_ascii_digit())
+        && !second.is_empty()
+        && second.chars().all(|ch| ch.is_ascii_alphabetic()))
+    .then(|| format!("{second}{first}"))
 }
 
 #[cfg(test)]
@@ -157,5 +279,26 @@ mod tests {
         // Matcher limit=1 secondary sort is ascending key text → pager-headless wins.
         let top1 = matcher.rank(&items, "p", 1, |item| item);
         assert_eq!(items[top1[0].0], "pager-headless");
+    }
+
+    #[test]
+    fn pi_model_selector_prefers_exact_provider_prefixed_search() {
+        let matcher = FuzzyMatcher::new();
+        let items = [
+            "proxy proxy/openai-codex/gpt-5.5 proxy openai-codex/gpt-5.5",
+            "openai-codex openai-codex/gpt-5.5 openai-codex gpt-5.5",
+        ];
+        let ranked = matcher.rank_pi_model_selector(&items, "openai-codex/gpt-5.5", |item| item);
+        assert_eq!(ranked, vec![1, 0]);
+    }
+
+    #[test]
+    fn pi_model_selector_matches_swapped_alpha_numeric_tokens() {
+        let matcher = FuzzyMatcher::new();
+        let items = ["openai openai/gpt-5.2-codex openai gpt-5.2-codex"];
+        assert_eq!(
+            matcher.rank_pi_model_selector(&items, "codex52", |item| item),
+            vec![0]
+        );
     }
 }

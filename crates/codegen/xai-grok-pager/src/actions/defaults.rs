@@ -471,9 +471,9 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             ),
         },
         ActionDef {
-            id: ActionId::CycleMode,
-            label: "mode",
-            description: "Cycle mode (Normal / Plan / Always-approve)",
+            id: ActionId::CycleThinkingLevel,
+            label: "thinking",
+            description: "Cycle thinking level",
             // All Shift+Tab encodings — see `input::key::shift_tab_keys()`.
             default_key: crate::input::key::shift_tab_keys()[0],
             alt_keys: crate::input::key::shift_tab_keys()[1..].to_vec(),
@@ -483,7 +483,7 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             hint_key_display: Some("Shift+Tab"),
             requires_confirmation: false,
             long_help: Some(
-                "Steps the session mode: Normal -> Plan -> Always-Approve -> Normal.\nPlan keeps the agent planning first and writes no files; Always-Approve runs every tool call without asking.\nCtrl+O toggles auto-approve directly.",
+                "Cycles the current model's supported thinking levels. It does not switch the model or change the session mode.",
             ),
         },
         // ── Panes (agent-level — toggle side panes) ─────────────────
@@ -564,12 +564,9 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             id: ActionId::OpenExtensions,
             label: "extensions",
             description: "Open extensions",
-            // VS Code family: Ctrl+L is interject; plugins via /plugins (no chord here).
-            default_key: if in_vscode_family {
-                key!(Null)
-            } else {
-                key!('l', CONTROL)
-            },
+            // Ctrl+L is reserved for ModelPicker (Pi TUI alignment). Open plugins
+            // via /plugins, /hooks, /mcp, or the command palette.
+            default_key: key!(Null),
             alt_keys: vec![],
             category: Category::Panels,
             context: When::AgentScreen,
@@ -577,7 +574,7 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Opens the extensions manager for MCP servers and plugins: see what's connected and the tools they add.\nUse it to confirm an integration loaded or browse available tools.\nDistinct from settings, which holds general app options.",
+                "Opens the extensions manager for MCP servers and plugins: see what's connected and the tools they add.\nUse it to confirm an integration loaded or browse available tools.\nNo default chord (Ctrl+L opens the model picker); open via /plugins, /hooks, /mcp, or the command palette.\nDistinct from settings, which holds general app options.",
             ),
         },
         ActionDef {
@@ -603,20 +600,17 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             // the message as the next one ("send now").
             label: "send now",
             description: "Send now while running (cancels the current turn)",
+            // Ctrl+L is reserved for ModelPicker (Pi TUI alignment). VS Code
+            // family previously used Ctrl+L for interject; it now shares the
+            // same Ctrl+Enter / Ctrl+I chords as other terminals.
             default_key: if in_apple_terminal {
                 key!('o', CONTROL)
-            } else if in_vscode_family {
-                // Ctrl+L is a stable C0 form feed on xterm.js; see user-guide § interject.
-                key!('l', CONTROL)
             } else {
                 key!(Enter, CONTROL)
             },
-            // Windows: Ctrl+Enter may drop Ctrl → Ctrl+I alt. VS Code family: no alts
-            // (Ctrl+L sole chord; OpenExtensions unbound so it does not steal).
+            // Windows: Ctrl+Enter may drop Ctrl → Ctrl+I alt.
             alt_keys: if in_apple_terminal {
                 vec![key!(Enter, CONTROL), key!('i', CONTROL)]
-            } else if in_vscode_family {
-                vec![]
             } else {
                 vec![key!('i', CONTROL)]
             },
@@ -682,7 +676,7 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Toggles a persistent multi-line prompt so the editor stays expanded for composing longer messages.\nInsert newlines with Shift+Enter or Alt+Enter (or a trailing backslash); bare Enter still sends.\nCtrl+M toggles multiline in the prompt; off the prompt it opens the model picker.",
+                "Toggles a persistent multi-line prompt so the editor stays expanded for composing longer messages.\nInsert newlines with Shift+Enter or Alt+Enter (or a trailing backslash); bare Enter still sends.\nCtrl+M toggles multiline while the prompt is focused; use Ctrl+L for the model picker.",
             ),
         },
         ActionDef {
@@ -796,7 +790,8 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             id: ActionId::ModelPicker,
             label: "model",
             description: "Pick model",
-            default_key: key!('m', CONTROL),
+            // Align with Pi TUI `app.model.select` (ctrl+l).
+            default_key: key!('l', CONTROL),
             alt_keys: vec![],
             category: Category::Session,
             context: When::AgentScreen,
@@ -804,7 +799,7 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Opens the model picker to switch the model for this session; the choice applies to later turns.\nBound to Ctrl+M, but while the prompt is focused that chord toggles multiline instead.\nReach it from the scrollback or the command palette.",
+                "Opens the searchable model picker to switch the model for this session; the choice applies to later turns.\nBound to Ctrl+L (same as Pi TUI), including while the prompt is focused — editor text is retained.\nAlso available via /model or the command palette.",
             ),
         },
         ActionDef {
@@ -1082,8 +1077,8 @@ pub fn default_actions(mouse_reporting_toggle_enabled: bool) -> Vec<ActionDef> {
         },
         // Open the location picker — a floating modal to change the
         // working directory new dashboard sessions spawn in. Ctrl+L
-        // ("location") is free under `DashboardFocused` (it only binds
-        // OpenExtensions under `AgentScreen`, a different context).
+        // ("location") is free under `DashboardFocused` (ModelPicker
+        // binds Ctrl+L under `AgentScreen`, a different context).
         ActionDef {
             id: ActionId::DashboardOpenLocationPicker,
             label: "location",

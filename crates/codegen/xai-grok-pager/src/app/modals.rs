@@ -114,32 +114,45 @@ impl AgentView {
                 | ActiveModal::DocPicker { .. }
         ) {
             // Extract window state for handle_modal_key.
-            let (window, query_empty, esc_clears) = match modal {
+            let (window, query_empty, esc_clears, external_session_picker) = match modal {
                 ActiveModal::CommandPalette { window, state, .. } => {
-                    (window, state.query.is_empty(), true)
+                    (window, state.query.is_empty(), true, false)
                 }
                 ActiveModal::ArgPicker { window, state, .. } => {
-                    (window, state.query.is_empty(), false)
+                    (window, state.query.is_empty(), false, false)
                 }
-                ActiveModal::SessionPicker { window, state, .. } => {
-                    (window, state.query.is_empty(), false)
-                }
+                ActiveModal::SessionPicker {
+                    window,
+                    state,
+                    source_filter,
+                    ..
+                } => (
+                    window,
+                    state.query.is_empty(),
+                    false,
+                    *source_filter == crate::views::session_picker::SourceFilter::External,
+                ),
                 ActiveModal::DocPicker { window, state, .. } => {
-                    (window, state.query.is_empty(), true)
+                    (window, state.query.is_empty(), true, false)
                 }
                 _ => unreachable!(),
             };
             // These modals don't use fold; fold_info is None so
             // Left/Right/h/l return Unhandled and reach the picker.
+            let external_tabs = ["Current folder", "All"];
             let chrome_cfg = mw::ModalWindowConfig {
                 title: "",
-                tabs: None,
+                tabs: external_session_picker.then_some(&external_tabs),
                 shortcuts: &[],
                 sizing: mw::ModalSizing::default(),
                 fold_info: None,
             };
             let outcome = mw::handle_modal_key(window, key, &chrome_cfg);
             match outcome {
+                ModalWindowOutcome::TabChanged(index) if external_session_picker => {
+                    window.active_tab = index;
+                    return InputOutcome::Action(Action::RefreshExternalSessionCatalog);
+                }
                 ModalWindowOutcome::CloseRequested => {
                     // If query non-empty and esc_clears_query: clear query first.
                     if esc_clears && !query_empty {
@@ -871,6 +884,7 @@ impl AgentView {
                 entries_query,
                 source_filter,
                 pending_delete,
+                window,
                 ..
             } => {
                 use crate::views::session_picker::{
@@ -911,6 +925,9 @@ impl AgentView {
                 // Chat-mode picker lists conversations only: the Local/Remote
                 // source filter and local-disk delete are dead weight there.
                 let chat_mode = self.app_chat_mode;
+                let external_picker = *source_filter
+                    == crate::views::session_picker::SourceFilter::External;
+                let external_tabs = ["Current folder", "All"];
                 let config = PickerConfig {
                     title: Some("Resume session"),
                     show_search_hint: true,
@@ -921,12 +938,12 @@ impl AgentView {
                     non_selectable: &non_sel,
                     non_selectable_clickable: &[],
                     shortcuts_area: None,
-                    tabs: None,
-                    active_tab: 0,
-                    filter_label: (!chat_mode).then(|| source_filter.label()),
-                    filter_key_hint: (!chat_mode).then_some("f"),
-                    filter_active: !chat_mode && source_filter.is_active(),
-                    action_keys: if chat_mode || focused_is_foreign {
+                    tabs: external_picker.then_some(&external_tabs),
+                    active_tab: if external_picker { window.active_tab } else { 0 },
+                    filter_label: (!chat_mode && !external_picker).then(|| source_filter.label()),
+                    filter_key_hint: (!chat_mode && !external_picker).then_some("f"),
+                    filter_active: !chat_mode && !external_picker && source_filter.is_active(),
+                    action_keys: if chat_mode || external_picker || focused_is_foreign {
                         &[]
                     } else {
                         &[('d', "delete")]
@@ -1139,6 +1156,10 @@ impl AgentView {
                     PickerOutcome::FilterCycled => {
                         InputOutcome::Action(Action::CycleSessionSourceFilter)
                     }
+                    PickerOutcome::TabChanged(index) if external_picker => {
+                        window.active_tab = index;
+                        InputOutcome::Action(Action::RefreshExternalSessionCatalog)
+                    }
                     PickerOutcome::Action('d') => {
                         // Arm a delete confirmation on the highlighted row,
                         // capturing source, id, and cwd now (the row is present at
@@ -1338,6 +1359,17 @@ impl AgentView {
             };
             let outcome = mw::handle_modal_mouse(window, mouse.kind, mouse.column, mouse.row);
             match outcome {
+                ModalWindowOutcome::TabChanged(_)
+                    if matches!(
+                        self.active_modal,
+                        Some(ActiveModal::SessionPicker {
+                            source_filter: crate::views::session_picker::SourceFilter::External,
+                            ..
+                        })
+                    ) =>
+                {
+                    return InputOutcome::Action(Action::RefreshExternalSessionCatalog);
+                }
                 ModalWindowOutcome::CloseRequested => {
                     // Match keyboard Esc: step back from model effort phase
                     // before fully dismissing the ArgPicker.
@@ -1822,19 +1854,17 @@ impl AgentView {
                             },
                         ]);
                     }
-                    if !chat_mode {
+                    if !chat_mode && !external {
                         shortcuts.push(Shortcut {
                             label: "f filter",
                             clickable: false,
                             id: 0,
                         });
-                        if !external {
-                            shortcuts.push(Shortcut {
-                                label: "d delete",
-                                clickable: false,
-                                id: 0,
-                            });
-                        }
+                        shortcuts.push(Shortcut {
+                            label: "d delete",
+                            clickable: false,
+                            id: 0,
+                        });
                     }
                     shortcuts
                 };
@@ -1843,9 +1873,12 @@ impl AgentView {
                     mw::push_vim_nav_search_hint(&mut session_shortcuts, state.search_active);
                 }
                 let compact = self.scrollback.appearance().prompt.compact;
+                let external =
+                    *source_filter == crate::views::session_picker::SourceFilter::External;
+                let external_tabs = ["Current folder", "All"];
                 let modal_config = ModalWindowConfig {
                     title: "Resume session",
-                    tabs: None,
+                    tabs: external.then_some(&external_tabs),
                     shortcuts: &session_shortcuts,
                     sizing: ModalSizing {
                         width_pct: 0.65,

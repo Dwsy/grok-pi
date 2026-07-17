@@ -4271,6 +4271,7 @@ fn dashboard_action_for_id(
         | ActionId::OpenSessions
         | ActionId::OpenExtensions
         | ActionId::SendToBackground
+        | ActionId::CycleThinkingLevel
         | ActionId::CycleMode
         | ActionId::BashMode
         | ActionId::Rewind

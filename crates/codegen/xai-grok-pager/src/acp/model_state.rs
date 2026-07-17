@@ -187,6 +187,16 @@ impl ModelState {
         }
     }
 
+    /// Cycle through the current model's advertised thinking levels.
+    pub fn next_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        let options = self.reasoning_effort_options();
+        let next_index = self
+            .reasoning_effort
+            .and_then(|current| options.iter().position(|option| option.value == current))
+            .map_or(0, |index| (index + 1) % options.len());
+        options.get(next_index).map(|option| option.value)
+    }
+
     /// Menu for a specific catalog model id (used by `/model`'s effort phase).
     /// `parse_reasoning_efforts_meta` returns `None` for absent, non-array, or
     /// present-but-unusable lists, so all of those fall back to the built-in menu
@@ -477,6 +487,24 @@ mod tests {
         assert_eq!(opts[0].value, ReasoningEffort::Medium);
         assert_eq!(opts[1].id, "deep");
         assert_eq!(opts[1].description.as_deref(), Some("Max"));
+    }
+
+    #[test]
+    fn next_reasoning_effort_cycles_current_model_options() {
+        let mut state = state_with_meta(Some(serde_json::json!({
+            "supportsReasoningEffort": true,
+            "reasoningEfforts": [
+                { "id": "off", "value": "none", "label": "Off" },
+                { "id": "low", "value": "low", "label": "Low" },
+                { "id": "high", "value": "high", "label": "High" },
+            ],
+        })));
+
+        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::None));
+        state.reasoning_effort = Some(ReasoningEffort::Low);
+        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::High));
+        state.reasoning_effort = Some(ReasoningEffort::High);
+        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::None));
     }
 
     #[test]

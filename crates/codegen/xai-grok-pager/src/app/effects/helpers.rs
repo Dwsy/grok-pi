@@ -832,10 +832,15 @@ pub(crate) async fn persist_setting(
                 .map_err(|e| e.to_string())
         }
         "theme" => {
-            let SettingValue::Enum(s) = value else {
-                return Err(kind_mismatch("theme", "Enum", &value));
+            // Built-ins use Enum; Pi themes (`pi:…`) use String.
+            let s = match value {
+                SettingValue::Enum(s) => (*s).to_owned(),
+                SettingValue::String(s) => s,
+                other => {
+                    return Err(kind_mismatch("theme", "Enum|String", &other));
+                }
             };
-            xai_grok_shell::util::config::set_theme(s.to_string())
+            xai_grok_shell::util::config::set_theme(s)
                 .await
                 .map_err(|e| e.to_string())
         }

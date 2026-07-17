@@ -241,7 +241,9 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
                     .and_then(|entries| entries.get(index))
             })
             .map(|entry| entry.source.as_str());
-        if !source.is_some_and(crate::app::foreign_sessions::is_foreign_picker_source) {
+        if !source.is_some_and(|source| {
+            source == "pi" || crate::app::foreign_sessions::is_foreign_picker_source(source)
+        }) {
             return vec![];
         }
     }
@@ -1194,11 +1196,10 @@ pub(in crate::app::dispatch) fn handle_deep_search_results(
 pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) -> Vec<Effect> {
     use crate::views::modal::ActiveModal;
     let external_agent = app.external_agent;
-    let external_entries = external_agent.then(|| app.external_ui.session_catalog.clone());
     with_active_agent(app, |agent| {
         agent.active_modal = Some(ActiveModal::SessionPicker {
             state: crate::views::picker::PickerState::default(),
-            entries: external_entries,
+            entries: None,
             loading: external_agent,
             lanes: Default::default(),
             previous_palette: None,
@@ -1207,15 +1208,50 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
             content_loading: false,
             deep_search_seq: 0,
             entries_query: None,
-            source_filter: crate::views::session_picker::SourceFilter::default(),
+            source_filter: if external_agent {
+                crate::views::session_picker::SourceFilter::External
+            } else {
+                crate::views::session_picker::SourceFilter::default()
+            },
             pending_delete: None,
         });
     });
     if external_agent {
-        vec![Effect::FetchExternalSessionCatalog]
+        dispatch_refresh_external_session_catalog(app)
     } else {
         dispatch_fetch_session_list(app)
     }
+}
+
+pub(in crate::app::dispatch) fn dispatch_refresh_external_session_catalog(
+    app: &mut AppView,
+) -> Vec<Effect> {
+    use crate::views::modal::ActiveModal;
+    if !app.external_agent {
+        return vec![];
+    }
+    let Some(agent) = get_active_agent_mut(app) else {
+        return vec![];
+    };
+    let Some(ActiveModal::SessionPicker {
+        entries,
+        loading,
+        source_filter,
+        window,
+        ..
+    }) = agent.active_modal.as_mut()
+    else {
+        return vec![];
+    };
+    if *source_filter != crate::views::session_picker::SourceFilter::External {
+        return vec![];
+    }
+    *entries = None;
+    *loading = true;
+    vec![Effect::FetchExternalSessionCatalog {
+        cwd: agent.session.cwd.clone(),
+        all: window.active_tab == 1,
+    }]
 }
 /// The picker (modal `/resume` or welcome screen) was dismissed without a
 /// pick. Its own fields die with it, but a still-current in-flight

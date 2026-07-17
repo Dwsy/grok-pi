@@ -164,7 +164,7 @@ impl SourceFilter {
             Self::All => true,
             Self::Local => source == "local" || source == "both",
             Self::Remote => source == "remote" || source == "both" || source == "conversation",
-            Self::External => crate::app::is_foreign_picker_source(source),
+            Self::External => source == "pi" || crate::app::is_foreign_picker_source(source),
         }
     }
 }

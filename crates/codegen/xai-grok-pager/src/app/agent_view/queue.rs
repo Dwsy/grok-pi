@@ -1749,9 +1749,10 @@ mod queue_edit_routing_tests {
         );
     }
 
-    /// VS Code family: Ctrl+L interjects when running + nonempty (pinned registry).
+    /// VS Code family: Ctrl+Enter interjects when running + nonempty (pinned registry).
+    /// Ctrl+L is reserved for the model picker (Pi TUI alignment).
     #[test]
-    fn vscode_ctrl_l_interjects_when_running_nonempty() {
+    fn vscode_ctrl_enter_interjects_when_running_nonempty() {
         let mut agent = make_running_agent();
         agent.prompt.set_text("steer please");
         let registry = vscode_family_registry();
@@ -1765,9 +1766,9 @@ mod queue_edit_routing_tests {
         }
     }
 
-    /// VS Code family: idle Ctrl+L is a no-op (not send, not extensions).
+    /// VS Code family: idle Ctrl+Enter is a no-op (not send).
     #[test]
-    fn vscode_ctrl_l_idle_is_noop() {
+    fn vscode_ctrl_enter_idle_is_noop() {
         let mut agent = make_running_agent();
         agent.session.state = AgentState::Idle;
         agent.prompt.set_text("draft");
@@ -1776,14 +1777,14 @@ mod queue_edit_routing_tests {
             agent.handle_prompt_key_with_registry_for_test(&vscode_interject_key(), &registry);
         assert!(
             matches!(outcome, InputOutcome::Changed),
-            "idle VS Ctrl+L must be a no-op, got {outcome:?}"
+            "idle VS Ctrl+Enter must be a no-op, got {outcome:?}"
         );
         assert_eq!(agent.prompt.text(), "draft");
     }
 
-    /// VS Code family queue force-interject uses Ctrl+L (not Ctrl+Enter).
+    /// VS Code family queue force-interject uses Ctrl+Enter (same as other hosts).
     #[test]
-    fn vscode_ctrl_l_force_interjects_queue_row() {
+    fn vscode_ctrl_enter_force_interjects_queue_row() {
         let mut agent = make_running_agent();
         agent.active_pane = AgentPane::Queue;
         let registry = vscode_family_registry();
@@ -1796,11 +1797,40 @@ mod queue_edit_routing_tests {
             }
             other => panic!("expected Interject, got {other:?}"),
         }
-        // Ctrl+Enter must not force-interject on VS family (no alt).
-        let outcome = agent.handle_queue_key(&force_interject_key(), &registry);
+    }
+
+    /// Ctrl+L opens the model picker (Pi alignment), not extensions/interject.
+    #[test]
+    fn ctrl_l_opens_model_picker() {
+        use agent_client_protocol as acp;
+        use std::sync::Arc;
+
+        let mut agent = make_running_agent();
+        agent.session.state = AgentState::Idle;
+        agent.prompt.set_text("keep this draft");
+        // Seed catalog so ModelPicker can open an ArgPicker (empty catalog is a no-op).
+        let model_id = acp::ModelId::new(Arc::from("model-a"));
+        agent.session.models.available.insert(
+            model_id.clone(),
+            acp::ModelInfo::new(model_id.clone(), "Model A".to_string()),
+        );
+        agent.session.models.current = Some(model_id);
+        let registry = non_vscode_registry();
+        let ctrl_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        let outcome = agent.handle_prompt_key_with_registry_for_test(&ctrl_l, &registry);
         assert!(
-            !matches!(outcome, InputOutcome::Action(Action::Interject { .. })),
-            "Ctrl+Enter must not be VS force-interject, got {outcome:?}"
+            matches!(outcome, InputOutcome::Changed),
+            "Ctrl+L must open model picker, got {outcome:?}"
+        );
+        assert_eq!(agent.prompt.text(), "keep this draft");
+        assert!(
+            matches!(
+                agent.active_modal,
+                Some(crate::views::modal::ActiveModal::ArgPicker { ref command, .. })
+                    if command == "model"
+            ),
+            "expected model ArgPicker modal, got {:?}",
+            agent.active_modal
         );
     }
 }

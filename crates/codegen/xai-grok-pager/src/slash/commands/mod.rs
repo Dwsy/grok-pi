@@ -77,7 +77,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(docs::DocsCommand),
         Arc::new(home::HomeCommand),
         Arc::new(new::NewCommand),
-        
         Arc::new(fork::ForkCommand),
         Arc::new(compact::CompactCommand),
         Arc::new(copy::CopyCommand),
@@ -115,7 +114,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(mcps::McpsCommand),
         Arc::new(btw::BtwCommand),
         Arc::new(recap::RecapCommand),
-        
         Arc::new(terminal_setup::TerminalSetupCommand),
         Arc::new(voice::VoiceCommand),
         Arc::new(loop_cmd::LoopCommand),
@@ -721,5 +719,4 @@ mod tests {
         assert!(reg.get("plugins").is_none());
         assert!(reg.get("usage").is_none());
     }
-
 }

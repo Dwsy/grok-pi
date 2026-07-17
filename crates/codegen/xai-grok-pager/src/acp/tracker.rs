@@ -2061,12 +2061,17 @@ fn is_bg_tool(tc: &acp::ToolCall) -> bool {
 ///
 /// Detection: a Write-family `rawInput.variant` tag.
 fn is_write_tool(tc: &acp::ToolCall) -> bool {
-    is_write_variant(
+    if is_write_variant(
         tc.raw_input
             .as_ref()
             .and_then(|v| v.get("variant"))
             .and_then(|v| v.as_str()),
-    )
+    ) {
+        return true;
+    }
+    // Pi builtin `write` (and similarly named tools) without a variant tag.
+    let title = tc.title.trim();
+    title.eq_ignore_ascii_case("write") || title.to_ascii_lowercase().ends_with("_write")
 }
 /// Extract the serde variant tag from a tool call's `raw_input.variant`.
 ///
@@ -2091,11 +2096,12 @@ fn is_todo_variant(variant: Option<&str>) -> bool {
 ///
 /// Suppressed from scrollback because the dedicated todo pane provides
 /// better visibility. Covers the `todo_write` / `TodoWrite` ids, the
-/// `Updating plan` title, and TodoWrite-family variant tags.
+/// `Updating plan` title, TodoWrite-family variant tags, and Pi
+/// `@juicesharp/rpiv-todo`'s tool name `todo` (projected via ACP Plan).
 fn is_todo_tool(tc: &acp::ToolCall) -> bool {
     matches!(
         tc.title.as_str(),
-        "todo_write" | "TodoWrite" | "Updating plan"
+        "todo_write" | "TodoWrite" | "Updating plan" | "todo"
     ) || is_todo_variant(extract_variant(tc))
 }
 /// Check if a tool call is a goal-update tool (update_goal).
@@ -2168,9 +2174,10 @@ fn extract_search_meta(tc: &acp::ToolCall) -> SearchInputMeta {
         .filter(|p| p != ".");
     SearchInputMeta {
         path,
-        glob: str_field("glob"),
+        glob: str_field("glob").or_else(|| str_field("glob_pattern")),
         output_mode: SearchOutputMode::from_str_opt(output_mode_str),
-        case_insensitive: bool_field("-i"),
+        // Grok uses `-i`; Pi uses `ignoreCase`.
+        case_insensitive: bool_field("-i") || bool_field("ignoreCase"),
         file_type: str_field("type"),
         multiline: bool_field("multiline"),
     }
@@ -5939,6 +5946,7 @@ mod tests {
         assert!(is_todo_tool(&initial_tool_call("tc1", "TodoWrite")));
         assert!(is_todo_tool(&initial_tool_call("tc2", "Updating plan")));
         assert!(is_todo_tool(&initial_tool_call("tc3", "todo_write")));
+        assert!(is_todo_tool(&initial_tool_call("tc4", "todo")));
     }
     #[test]
     fn todo_write_suppressed_by_variant() {

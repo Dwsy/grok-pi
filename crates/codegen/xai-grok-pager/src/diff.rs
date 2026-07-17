@@ -204,40 +204,49 @@ pub fn extract_edit_hunks(tc: &agent_client_protocol::ToolCall) -> (Vec<DiffHunk
         }
     }
 
-    // Strategy 2 & 3: ACP Diff content
+    // Strategy 2 & 3: ACP Diff content. A Pi edit may carry several targeted
+    // replacements, so preserve every Diff rather than returning after the first.
+    let mut all_hunks = Vec::new();
+    let mut edit_count = 0;
     for content in &tc.content {
-        if let agent_client_protocol::ToolCallContent::Diff(diff) = content {
-            // Strategy 2: structured edit details from Diff.meta
-            // acp_conversion embeds SearchReplaceEditContextInformation here.
-            if let Some(meta) = &diff.meta
-                && let Ok(edits) = serde_json::from_value::<SearchReplaceEditContextInformation>(
-                    serde_json::Value::Object(meta.clone()),
-                )
-                && !edits.details.is_empty()
-            {
-                let hunks = build_diff_hunks(&edits.details);
-                let count = hunks.len().max(1);
-                return (hunks, count);
-            }
-
-            // Strategy 3: full-text diff from old_text / new_text.
-            // Use line numbers from meta (pre-execution preview) when available,
-            // otherwise default to 1.
-            let start_line = diff
-                .meta
-                .as_ref()
-                .and_then(|m| m.get("new_line"))
-                .and_then(|v| v.as_u64())
-                .map(|l| l as usize)
-                .unwrap_or(1);
-            let old = diff.old_text.as_deref().unwrap_or_default();
-            let hunks = diff_hunks_from_strings(old, &diff.new_text, start_line);
-            let count = hunks.len().max(1);
-            return (hunks, count);
+        let agent_client_protocol::ToolCallContent::Diff(diff) = content else {
+            continue;
+        };
+        if let Some(meta) = &diff.meta
+            && let Ok(edits) = serde_json::from_value::<SearchReplaceEditContextInformation>(
+                serde_json::Value::Object(meta.clone()),
+            )
+            && !edits.details.is_empty()
+        {
+            let hunks = build_diff_hunks(&edits.details);
+            edit_count += hunks.len().max(1);
+            all_hunks.extend(hunks);
+            continue;
         }
+
+        // Use line numbers from meta (pre-execution previews) when available,
+        // otherwise default to 1.
+        let start_line = diff
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("new_line"))
+            .and_then(|v| v.as_u64())
+            .map(|l| l as usize)
+            .unwrap_or(1);
+        let hunks = diff_hunks_from_strings(
+            diff.old_text.as_deref().unwrap_or_default(),
+            &diff.new_text,
+            start_line,
+        );
+        edit_count += hunks.len().max(1);
+        all_hunks.extend(hunks);
     }
 
-    (vec![], 1)
+    if all_hunks.is_empty() {
+        (vec![], 1)
+    } else {
+        (all_hunks, edit_count)
+    }
 }
 
 /// Generate a unified diff patch string from diff hunks.
@@ -768,6 +777,34 @@ mod tests {
         let (hunks, count) = extract_edit_hunks(&tc);
         assert_eq!(hunks.len(), 1, "should have 1 hunk from content diff");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn extract_edit_hunks_aggregates_multiple_content_diffs() {
+        use agent_client_protocol as acp;
+        use std::sync::Arc;
+
+        let tc = acp::ToolCall::new(
+            acp::ToolCallId::new(Arc::from("tc-multiple")),
+            "Edit test.rs".to_string(),
+        )
+        .kind(acp::ToolKind::Edit)
+        .status(acp::ToolCallStatus::Completed)
+        .content(vec![
+            acp::ToolCallContent::Diff(
+                acp::Diff::new("test.rs", "after first\n".to_string())
+                    .old_text(Some("before first\n".to_string())),
+            ),
+            acp::ToolCallContent::Diff(
+                acp::Diff::new("test.rs", "after second\n".to_string())
+                    .old_text(Some("before second\n".to_string())),
+            ),
+        ])
+        .locations(vec![]);
+
+        let (hunks, count) = extract_edit_hunks(&tc);
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(count, 2);
     }
 
     #[test]

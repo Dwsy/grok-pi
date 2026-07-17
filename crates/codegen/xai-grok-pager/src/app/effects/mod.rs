@@ -686,14 +686,17 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::FetchExternalSessionCatalog => {
+        Effect::FetchExternalSessionCatalog { cwd, all } => {
             let tx = acp_tx.clone();
             tasks.spawn(async move {
                 let request = acp::ExtRequest::new(
                     "pi/session/list",
-                    serde_json::value::to_raw_value(&serde_json::json!({}))
-                        .expect("serialize Pi session catalog request")
-                        .into(),
+                    serde_json::value::to_raw_value(&serde_json::json!({
+                        "cwd": cwd.to_string_lossy(),
+                        "scope": if all { "all" } else { "current" },
+                    }))
+                    .expect("serialize Pi session catalog request")
+                    .into(),
                 );
                 let result: Result<acp::ExtResponse, _> = acp_send(request, &tx).await;
                 if let Err(error) = result {

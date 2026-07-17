@@ -734,6 +734,9 @@ fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView)
     let Some(sessions) = params.get("sessions").and_then(serde_json::Value::as_array) else {
         return false;
     };
+    let Some(scope) = params.get("scope").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
     let timestamp = |value: Option<&serde_json::Value>| {
         value
             .and_then(|value| value.as_i64().and_then(chrono::DateTime::from_timestamp_millis))
@@ -780,7 +783,7 @@ fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView)
             })
         })
         .collect();
-    app.set_external_session_catalog(entries)
+    app.set_external_session_catalog(entries, scope)
 }
 
 fn handle_pi_ui_editor_text(notif: &acp::ExtNotification, app: &mut AppView) -> bool {

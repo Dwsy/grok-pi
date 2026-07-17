@@ -1103,6 +1103,27 @@ fn auto_theme_setting_is_live(key: &str) -> bool {
 /// at `warn` (defensive — a malformed `rollback_value` is a softer
 /// failure mode than an unknown commit-time value) and no-op.
 pub(super) fn set_theme_inner(app: &mut AppView, value: &str) {
+    // Pi themes: `pi:<name>`.
+    if crate::theme::pi::is_pi_theme_id(value) {
+        match crate::theme::pi::apply_pi_theme(value) {
+            Ok(canonical) => {
+                app.current_ui.theme = Some(canonical);
+                crate::theme::cache::set_auto_mode(false);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "settings",
+                    key = "theme",
+                    value = value,
+                    error = %e,
+                    "failed to apply Pi theme — set_theme_inner no-op",
+                );
+                return;
+            }
+        }
+    }
+
     let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
         tracing::warn!(
             target: "settings",
@@ -1118,27 +1139,34 @@ pub(super) fn set_theme_inner(app: &mut AppView, value: &str) {
     apply_theme_kind_for_display(kind);
 }
 
+/// Resolve a theme setting to its canonical persist id.
+fn resolve_theme_canonical(value: &str) -> Option<String> {
+    if crate::theme::pi::is_pi_theme_id(value) {
+        // Validate it exists (or is a known builtin).
+        return crate::theme::pi::load_palette(value)
+            .ok()
+            .map(|(id, _)| id);
+    }
+    crate::theme::canonical_name(value).map(str::to_owned)
+}
+
 /// State + cache + persist for `theme` commits.
 pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec<Effect> {
-    let prev_canonical: &'static str = app
+    let prev_owned = app
         .current_ui
         .theme
-        .as_deref()
-        .and_then(crate::theme::canonical_name)
-        .unwrap_or_else(|| crate::theme::cache::current_kind().display_name());
-    let new_canonical = match crate::theme::canonical_name(&new) {
-        Some(c) => c,
-        None => {
-            tracing::error!(
-                target: "settings",
-                key = "theme",
-                value = %new,
-                "Action::SetTheme dispatched with unknown name — no-op",
-            );
-            return vec![];
-        }
+        .clone()
+        .unwrap_or_else(crate::theme::Theme::current_display_id);
+    let Some(new_canonical) = resolve_theme_canonical(&new) else {
+        tracing::error!(
+            target: "settings",
+            key = "theme",
+            value = %new,
+            "Action::SetTheme dispatched with unknown name — no-op",
+        );
+        return vec![];
     };
-    set_theme_inner(app, &new);
+    set_theme_inner(app, &new_canonical);
     refresh_open_settings_modals(app);
     tracing::info!(
         target: "settings",
@@ -1146,14 +1174,33 @@ pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec
         value = %new_canonical,
         "setting changed",
     );
-    app.show_toast(&save_theme_toast(
-        "Theme",
-        crate::theme::display_name_for_canonical(new_canonical),
-    ));
+    let toast_label = if crate::theme::pi::is_pi_theme_id(&new_canonical) {
+        new_canonical.as_str()
+    } else {
+        crate::theme::display_name_for_canonical(&new_canonical)
+    };
+    app.show_toast(&save_theme_toast("Theme", toast_label));
+
+    // Built-in themes keep SettingValue::Enum for settings-modal parity;
+    // Pi themes use String (dynamic ids are not &'static).
+    let (value, rollback_value) = match (
+        crate::theme::canonical_name(&new_canonical),
+        crate::theme::canonical_name(&prev_owned),
+    ) {
+        (Some(new_static), Some(prev_static)) => (
+            crate::settings::SettingValue::Enum(new_static),
+            crate::settings::SettingValue::Enum(prev_static),
+        ),
+        _ => (
+            crate::settings::SettingValue::String(new_canonical),
+            crate::settings::SettingValue::String(prev_owned),
+        ),
+    };
+
     vec![Effect::PersistSetting {
         key: "theme",
-        value: crate::settings::SettingValue::Enum(new_canonical),
-        rollback_value: crate::settings::SettingValue::Enum(prev_canonical),
+        value,
+        rollback_value,
     }]
 }
 
@@ -1164,6 +1211,18 @@ pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec
 /// For `"auto"`, resolves and applies the theme but does NOT toggle
 /// `AUTO_MODE` (commit-only side effect).
 fn preview_theme_inner(value: &str) {
+    if crate::theme::pi::is_pi_theme_id(value) {
+        if let Err(e) = crate::theme::pi::apply_pi_theme(value) {
+            tracing::warn!(
+                target: "settings",
+                key = "theme",
+                value = value,
+                error = %e,
+                "unknown Pi theme — preview_theme_inner no-op",
+            );
+        }
+        return;
+    }
     let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
         tracing::warn!(
             target: "settings",
@@ -1177,7 +1236,7 @@ fn preview_theme_inner(value: &str) {
 }
 
 pub(in crate::app::dispatch) fn preview_theme(_app: &mut AppView, new: String) -> Vec<Effect> {
-    if crate::theme::canonical_name(&new).is_none() {
+    if crate::theme::canonical_name(&new).is_none() && !crate::theme::pi::is_pi_theme_id(&new) {
         tracing::error!(
             target: "settings",
             key = "theme",

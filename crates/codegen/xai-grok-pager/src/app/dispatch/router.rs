@@ -66,8 +66,9 @@ use super::session::lifecycle::{
 use super::session::load::{
     dispatch_cycle_session_source_filter, dispatch_load_session, dispatch_pick_content_session,
     dispatch_pick_content_session_in_worktree, dispatch_pick_session,
-    dispatch_pick_session_in_worktree, dispatch_session_picker_closed,
-    dispatch_show_session_picker, dispatch_trigger_deep_search, session_picker_entry_matches,
+    dispatch_pick_session_in_worktree, dispatch_refresh_external_session_catalog,
+    dispatch_session_picker_closed, dispatch_show_session_picker, dispatch_trigger_deep_search,
+    session_picker_entry_matches,
     session_picker_external_filter_active,
 };
 use super::session::modal::dispatch_rename_session;
@@ -198,6 +199,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         } => dispatch_startup_fork_session(app, parent_session_id, parent_cwd, new_session_id),
         Action::FetchSessionList => dispatch_fetch_session_list(app),
         Action::CycleSessionSourceFilter => dispatch_cycle_session_source_filter(app),
+        Action::RefreshExternalSessionCatalog => dispatch_refresh_external_session_catalog(app),
         Action::ShowSessionPicker => dispatch_show_session_picker(app),
         Action::SessionPickerClosed => dispatch_session_picker_closed(app),
         Action::PickSession(index) => dispatch_pick_session(app, index),
@@ -795,6 +797,31 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }]
         }
         Action::NextModel => vec![],
+        Action::CycleThinkingLevel => {
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&id) else {
+                return vec![];
+            };
+            let Some(model_id) = agent.session.models.current.clone() else {
+                return vec![];
+            };
+            let Some(effort) = agent.session.models.next_reasoning_effort() else {
+                return vec![];
+            };
+            let Some(session_id) = agent.session.session_id.clone() else {
+                return vec![];
+            };
+            agent.session.model_switch_pending = true;
+            vec![Effect::SwitchModel {
+                agent_id: id,
+                session_id,
+                model_id,
+                effort: Some(effort),
+                prev_model_id: None,
+            }]
+        }
         Action::SwitchModel { model_id, effort } => {
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];

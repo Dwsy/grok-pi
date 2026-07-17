@@ -2,15 +2,13 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// 19b. **VS Code family: Ctrl+L (form feed) is the send-now chord** with the
-/// same cancel-and-send semantics as the default Ctrl+Enter binding: the
-/// running turn is cancelled silently and the composer text runs as its own
-/// next turn (standard `<user_query>` prompt, no interjection preamble).
-/// Harness strips `TERM_PROGRAM` then applies env — pass `vscode` so
-/// defaults bind the chord to Ctrl+L.
+/// 19b. **VS Code family: Ctrl+Enter is the send-now chord** with the same
+/// cancel-and-send semantics as other hosts. `Ctrl+L` is reserved for the
+/// model picker (Pi TUI alignment). Harness strips `TERM_PROGRAM` then applies
+/// env — pass `vscode` so host-family defaults still apply for quit/etc.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
-async fn interjection_reaches_model_ctrl_l_in_vscode_family() {
+async fn interjection_reaches_model_ctrl_enter_in_vscode_family() {
     let content = ContentController::start().await.expect("start content");
     // Gate turn 1's terminal event so the typed text + chord provably land
     // mid-turn regardless of suite load.
@@ -40,7 +38,9 @@ async fn interjection_reaches_model_ctrl_l_in_vscode_family() {
     harness
         .inject_keys(b"please also check the logs")
         .expect("type message");
-    harness.inject_keys(CTRL_L).expect("send-now via Ctrl+L");
+    harness
+        .inject_keys(CTRL_ENTER)
+        .expect("send-now via Ctrl+Enter");
     content.release_agent_completions();
     harness
         .wait_for_text(

@@ -125,6 +125,12 @@ fn split_trailing_token(args: &str) -> Option<(&str, &str)> {
     Some((prefix, last))
 }
 
+/// Whether `/model` is showing its model picker rather than the chained
+/// reasoning-effort picker.
+pub(crate) fn uses_pi_model_picker_search(models: &ModelState, args_query: &str) -> bool {
+    detect_effort_phase(models, args_query).is_none()
+}
+
 /// Returns the matched model id when `args_query` is `"<reasoning-model> ..."`.
 /// Longest-name-first to disambiguate names that share a prefix.
 fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::ModelId> {
@@ -174,12 +180,26 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
 
         items.push(ArgItem {
             display,
-            match_text: info.name.clone(),
+            match_text: model_selector_search_text(id, info),
             insert_text,
             description: info.description.clone().unwrap_or_default(),
         });
     }
     items
+}
+
+/// Search text mirrors Pi TUI's model selector: provider-prefixed text comes
+/// first so `provider/model` queries rank direct provider models ahead of proxy
+/// IDs that only contain the same provider later in their identifier.
+fn model_selector_search_text(id: &acp::ModelId, info: &acp::ModelInfo) -> String {
+    let model_id = id.0.as_ref();
+    let Some((provider, model_id)) = model_id.split_once("::") else {
+        return format!("{model_id} {}", info.name);
+    };
+    format!(
+        "{provider} {provider}/{model_id} {provider} {model_id} {}",
+        info.name
+    )
 }
 
 /// One row per effort level for the `/model` chained effort phase.
@@ -359,6 +379,18 @@ mod tests {
         let items = cmd.suggest_args(&ctx, "Reason").unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].insert_text, "Reasoning X ");
+        assert!(uses_pi_model_picker_search(&state, "Reason"));
+        assert!(!uses_pi_model_picker_search(&state, "Reasoning X h"));
+    }
+
+    #[test]
+    fn model_picker_search_text_matches_pi_provider_order() {
+        let id = acp::ModelId::new(Arc::from("openai-codex::gpt-5.5"));
+        let info = acp::ModelInfo::new(id.clone(), "GPT 5.5".to_string());
+        assert_eq!(
+            model_selector_search_text(&id, &info),
+            "openai-codex openai-codex/gpt-5.5 openai-codex gpt-5.5 GPT 5.5"
+        );
     }
 
     #[test]

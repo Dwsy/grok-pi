@@ -1759,31 +1759,44 @@ impl AppView {
     }
 
     /// Update one external status key and redraw the native sticky banner.
-    pub fn set_external_session_catalog(&mut self, entries: Vec<SessionPickerEntry>) -> bool {
+    pub fn set_external_session_catalog(
+        &mut self,
+        entries: Vec<SessionPickerEntry>,
+        scope: &str,
+    ) -> bool {
         if !self.external_agent {
             return false;
         }
-        let catalog_changed = self.external_ui.session_catalog != entries;
-        if catalog_changed {
-            self.external_ui.session_catalog = entries;
-        }
         let ActiveView::Agent(agent_id) = self.active_view else {
-            return catalog_changed;
+            return false;
         };
         let Some(agent) = self.agents.get_mut(&agent_id) else {
-            return catalog_changed;
+            return false;
         };
         let Some(crate::views::modal::ActiveModal::SessionPicker {
-            entries, loading, ..
+            entries: picker_entries,
+            loading,
+            source_filter,
+            window,
+            ..
         }) = agent.active_modal.as_mut()
         else {
-            return catalog_changed;
+            return false;
         };
-        let picker_changed =
-            entries.as_ref() != Some(&self.external_ui.session_catalog) || *loading;
-        *entries = Some(self.external_ui.session_catalog.clone());
+        let expected_tab = match scope {
+            "current" => 0,
+            "all" => 1,
+            _ => return false,
+        };
+        if *source_filter != crate::views::session_picker::SourceFilter::External
+            || window.active_tab != expected_tab
+        {
+            return false;
+        }
+        let changed = picker_entries.as_ref() != Some(&entries) || *loading;
+        *picker_entries = Some(entries);
         *loading = false;
-        catalog_changed || picker_changed
+        changed
     }
 
     pub fn set_external_status(&mut self, key: String, text: Option<String>) -> bool {

@@ -376,9 +376,8 @@ pub(crate) fn block_lines_containing(harness: &PtyHarness, text: &str) -> usize 
         .count()
 }
 
-/// 19b. **VS Code family: Ctrl+L (form feed)** is the send-now chord, same
-/// semantics as the default Ctrl+Enter binding. Harness strips `TERM_PROGRAM`
-/// then applies env — pass `vscode` so defaults bind the chord to Ctrl+L.
+/// Ctrl+L (form feed). Opens the searchable model picker (Pi TUI alignment).
+/// Historically used as VS Code family send-now; that chord is now Ctrl+Enter.
 pub(crate) const CTRL_L: &[u8] = b"\x0c";
 
 /// Ctrl+O (C0 0x0F). On Apple Terminal this is the InterjectPrompt / send-now

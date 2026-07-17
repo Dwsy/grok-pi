@@ -281,8 +281,9 @@ fn engage_startup_theme(screen_mode: ScreenMode) {
     if screen_mode.is_minimal() {
         crate::theme::cache::set_terminal_native_lock(true);
     } else {
-        let initial_theme = crate::theme::cache::resolve_initial_theme();
-        crate::theme::cache::set(initial_theme);
+        // Resolves Grok built-ins and Pi themes (`pi:…`); applies custom
+        // palettes when configured.
+        let _ = crate::theme::cache::resolve_and_apply_initial_theme(true);
     }
 }
 /// Step 2 of the startup theme handshake: if a `--minimal` start was
@@ -290,8 +291,7 @@ fn engage_startup_theme(screen_mode: ScreenMode) {
 /// theme that [`engage_startup_theme`] skipped. No-op otherwise.
 fn finish_theme_after_probe(requested_minimal: bool, effective_mode: ScreenMode) {
     if requested_minimal && !effective_mode.is_minimal() {
-        let late_theme = crate::theme::cache::resolve_initial_theme_no_osc11();
-        crate::theme::cache::set(late_theme);
+        let late_theme = crate::theme::cache::resolve_and_apply_initial_theme(false);
         crate::theme::apply_cursor_color();
         tracing::info!(?late_theme, "minimal downgrade: resolved regular theme");
     }

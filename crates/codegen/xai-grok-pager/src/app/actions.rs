@@ -73,6 +73,8 @@ pub enum Action {
     FetchSessionList,
     /// Cycle the active session picker's source filter.
     CycleSessionSourceFilter,
+    /// Refresh the external agent's session catalog for the selected picker tab.
+    RefreshExternalSessionCatalog,
     /// Load a selected session from the session picker.
     PickSession(usize),
     /// Load a selected session from the session picker into a new worktree.
@@ -411,7 +413,9 @@ pub enum Action {
     /// time, mirroring how `AnnouncementsHide` resolves its target). The
     /// payload records which surface activated it, for telemetry.
     AnnouncementsOpenCta(xai_grok_telemetry::events::AnnouncementCtaSurface),
-    /// Cycle session mode (Shift+Tab): Normal → Plan → Always-Approve → Normal.
+    /// Cycle the current model's supported thinking level without switching models.
+    CycleThinkingLevel,
+    /// Cycle session mode (Normal → Plan → Always-Approve → Normal).
     /// Plan mode sends a signal to the shell; always-approve is local.
     CycleMode,
     /// Toggle YOLO mode (auto-approve all permissions). Ctrl+O.
@@ -1081,7 +1085,11 @@ impl PlanModeKind {
     }
     /// Construct from a bool (the inverse of [`Self::to_bool`]).
     pub fn from_bool(b: bool) -> Self {
-        if b { Self::On } else { Self::Off }
+        if b {
+            Self::On
+        } else {
+            Self::Off
+        }
     }
 }
 /// Async side effect produced by [`super::dispatch::dispatch`].
@@ -1384,9 +1392,9 @@ pub enum Effect {
         grok_home: std::path::PathBuf,
         launch_token: u64,
     },
-    /// Ask an external ACP agent to lazily publish its session catalog when
-    /// the native session picker opens.
-    FetchExternalSessionCatalog,
+    /// Ask an external ACP agent to lazily publish one scoped session catalog
+    /// when the native session picker opens or its tab changes.
+    FetchExternalSessionCatalog { cwd: std::path::PathBuf, all: bool },
     /// Fetch session list for the welcome screen session picker.
     FetchSessionList {
         /// Text search pushed down to `x.ai/session/list` as `query` (chat

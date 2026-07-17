@@ -891,6 +891,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("respect_manual_folds", SettingValue::Bool(b)) => set_respect_manual_folds_inner(app, *b),
         ("theme", SettingValue::Enum(s)) => set_theme_inner(app, s),
+        ("theme", SettingValue::String(s)) => set_theme_inner(app, s),
         ("default_selected_permission", SettingValue::Enum(s)) => {
             set_default_selected_permission_inner(
                 app,

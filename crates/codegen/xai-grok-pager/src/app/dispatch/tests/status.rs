@@ -801,6 +801,12 @@ fn dispatch_rename_session_updates_display_name_locally() {
         Some("renamed via slash"),
         "/rename must also update local display_name cache"
     );
+    assert!(
+        app.pending_notification_escapes
+            .as_deref()
+            .is_some_and(|escapes| escapes.contains("renamed via slash")),
+        "/rename must refresh the terminal title immediately"
+    );
 }
 
 /// `ConfirmResetSetting { choice: Reset }` on a SHARED Bool

@@ -1004,15 +1004,27 @@ impl SlashController {
         if trimmed.is_empty() {
             return items.iter().map(SuggestionRow::from_arg).collect();
         }
-        let hits = self
-            .matcher
-            .rank(items.as_slice(), trimmed, items.len(), |item| {
-                item.match_text.as_str()
-            });
-        hits.into_iter()
-            .map(|(idx, _)| {
+        let uses_pi_model_picker_search = command.name() == "model"
+            && commands::model::uses_pi_model_picker_search(models, query);
+        let indexes = if uses_pi_model_picker_search {
+            self.matcher
+                .rank_pi_model_selector(items.as_slice(), trimmed, |item| item.match_text.as_str())
+        } else {
+            self.matcher
+                .rank(items.as_slice(), trimmed, items.len(), |item| {
+                    item.match_text.as_str()
+                })
+                .into_iter()
+                .map(|(index, _)| index)
+                .collect()
+        };
+        indexes
+            .into_iter()
+            .map(|idx| {
                 let mut row = SuggestionRow::from_arg(&items[idx]);
-                row.indices = self.matcher.indices(row.display.as_str());
+                if !uses_pi_model_picker_search {
+                    row.indices = self.matcher.indices(row.display.as_str());
+                }
                 row
             })
             .collect()

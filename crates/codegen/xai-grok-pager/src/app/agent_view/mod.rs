@@ -789,7 +789,7 @@ pub struct AgentView {
     /// Current special prompt input mode (Normal/Bash/Feedback/Remember).
     pub prompt_input_mode: PromptInputMode,
     /// Multiline input mode: swap Enter (insert newline) and Shift+Enter (send).
-    /// Toggled by `Ctrl+M` or `/multiline`. Not persisted across sessions.
+    /// Toggled by `Ctrl+M` or `/multiline`. Model picker is `Ctrl+L`. Not persisted across sessions.
     pub multiline_mode: bool,
     /// Vim-mode scrollback keybindings. When `false` (default), bare-letter
     /// and Shift+letter scrollback bindings (j/k, h/l, g/G, y/Y, o/O, r,
@@ -2003,6 +2003,7 @@ fn resolve_action(action_id: Option<ActionId>) -> Option<InputOutcome> {
         ActionId::FocusPrompt => Action::FocusPrompt,
         ActionId::FocusScrollback => Action::FocusScrollback,
         ActionId::NextModel => Action::NextModel,
+        ActionId::CycleThinkingLevel => Action::CycleThinkingLevel,
         ActionId::CycleMode => Action::CycleMode,
         ActionId::CancelTurn
         | ActionId::Quit
@@ -2441,15 +2442,15 @@ pub(super) mod test_fixtures {
     pub fn force_interject_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
     }
-    /// Interject chord for VS Code family tests (`Ctrl+L`).
+    /// Interject chord for VS Code family tests (Ctrl+Enter; Ctrl+L is model picker).
     pub fn vscode_interject_key() -> KeyEvent {
-        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
     }
     /// Host-independent registry for queue/prompt interject tests (Ctrl+Enter).
     pub fn non_vscode_registry() -> ActionRegistry {
         ActionRegistry::non_vscode_for_test()
     }
-    /// Host-independent VS family registry (Ctrl+L interject, OpenExtensions Null).
+    /// Host-independent VS family registry (Ctrl+Enter interject; Ctrl+L model picker).
     pub fn vscode_family_registry() -> ActionRegistry {
         ActionRegistry::vscode_family_for_test()
     }
