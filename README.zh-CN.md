@@ -126,7 +126,7 @@ PI_BIN=pi ./run-local.sh /path/to/project --no-session
 PI_BIN=pi ./run-installed.sh /path/to/project --no-session
 ```
 
-`--no-session` 之后的参数会原样传给 Pi。Grok 的原生渲染模式在启动时选择：
+`--no-session` 之后的参数会原样传给 Pi。使用 `grok-pi --continue` 或 `grok-pi -c` 可继续 Pi 的上一会话。`grok-pi` 还暴露 Pi 的 `--system-prompt`、可重复使用的 `--append-system-prompt`、`--no-skills`（`-ns`）、`--no-context-files`（`-nc`）、`--extension`（`-e`）、`--no-extensions`（`-ne`）、`--no-tools`（`-nt`）、`--no-session` 和 `--name`（`-n`）启动参数。Grok 的原生渲染模式在启动时选择：
 
 ```bash
 GROK_PI_MINIMAL=1 PI_BIN=pi ./run-local.sh /path/to/project

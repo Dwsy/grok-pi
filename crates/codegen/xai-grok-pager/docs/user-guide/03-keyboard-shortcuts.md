@@ -121,7 +121,7 @@ Actions that affect the agent session, available from the agent screen.
 |-----|---------|--------|
 | `Ctrl+P` | Agent screen | Open the command palette |
 | `?` (Shift+/) | Agent screen | Open the command palette (alt binding) |
-| `Ctrl+M` | Agent screen | Open the model picker / switch model |
+| `Ctrl+L` | Agent screen / prompt | Open the searchable model picker / switch model (Pi TUI alignment; retains prompt text) |
 | `Ctrl+M` | Prompt focused | Toggle multiline input mode |
 | `Ctrl+C` | Agent screen | Cancel the current turn (or clear non-empty draft first; see Escape table) |
 | `Ctrl+O` | Agent screen | Toggle always-approve (YOLO) mode |
@@ -131,13 +131,13 @@ Actions that affect the agent session, available from the agent screen.
 | `Ctrl+G` | Agent screen | Send the current task to the background |
 | `Ctrl+T` | Agent screen | Toggle the todos pane |
 | `Ctrl+B` | Agent screen | Toggle the tasks pane |
-| `Ctrl+L` | Agent screen | Open the extensions modal (**non–VS Code family only**; on VS Code / Cursor / Windsurf / Zed, `Ctrl+L` is mid-turn **interject** and extensions open via `/plugins` / `/hooks`) |
+| `/plugins` / `/hooks` / `/mcp` | Agent screen | Open the extensions modal (no default chord; formerly Ctrl+L) |
 | `↑` | Prompt focused (empty prompt, normal input mode) | Open the history panel with your last prompt filled in; `↑`/`↓` step through entries (each lands in the input), `↓` at the newest closes the panel, and typing edits the recalled prompt in place. Recalled `!` shell commands re-enter shell mode. `↓` never opens history. |
 | `!` | Prompt focused | Enter shell mode (type `!` on an empty prompt) |
 | `Ctrl+.` (alt: `Ctrl+X`) | Agent screen | Open the keyboard shortcuts help |
 | `F2` (alt: `Ctrl+,` / `Cmd+,`) | Agent screen | Open the settings modal |
 
-**Note:** `Ctrl+M` is context-dependent. When the prompt is focused, it toggles multiline input mode. Otherwise, it opens the model picker.
+**Note:** `Ctrl+L` opens the model picker from the agent screen and while the prompt is focused (aligned with Pi TUI). `Ctrl+M` only toggles multiline while the prompt is focused.
 
 **Note:** `Ctrl+'` is a Windows alt for `Ctrl+;` — some Windows consoles drop the `Ctrl` modifier on punctuation keys.
 
@@ -185,17 +185,17 @@ While the agent is generating:
 |----------|---------|------------|--------|
 | Default | `Ctrl+Enter` | `Ctrl+I` | Send now (cancels the current turn, runs your message next) |
 | Apple Terminal | `Ctrl+O` | `Ctrl+Enter`, `Ctrl+I` | Send now |
-| VS Code family (VS Code, Cursor, Windsurf, Zed) | **`Ctrl+L`** | *(none)* | Send now (`Ctrl+I` not used — Tab / host chat; plugins via `/plugins`) |
+| VS Code family (VS Code, Cursor, Windsurf, Zed) | `Ctrl+Enter` | `Ctrl+I` | Send now (same chords as other hosts; `Ctrl+L` is the model picker) |
 
-In `/multiline` mode, `Shift+Enter` (or `Alt+Enter`) sends while plain `Enter` inserts a newline — except on an **empty** composer mid-turn with a queued follow-up, where plain `Enter` still **send now**s the top row (same as normal mode). (`Ctrl+Enter` is send-now mid-turn when bound on non–VS Code family; it does not submit a new idle turn.)
+In `/multiline` mode, `Shift+Enter` (or `Alt+Enter`) sends while plain `Enter` inserts a newline — except on an **empty** composer mid-turn with a queued follow-up, where plain `Enter` still **send now**s the top row (same as normal mode). (`Ctrl+Enter` is send-now mid-turn; it does not submit a new idle turn.)
 
 Send-now is intentionally interruptive — it reads as "stop what you're doing and take this". To hand the agent a note **without** stopping it, queue with plain `Enter`; the agent picks it up at the next turn boundary.
 
 > **WezTerm**: These modified Enter keys need `enable_kitty_keyboard = true` in your WezTerm config. Full steps and a one-line workaround are in the [terminal support guide](21-terminal-support.md#problem-ctrlenter-doesnt-interject-in-wezterm).
 
-> **Windows (non–VS Code family)**: Some consoles drop the `Ctrl` modifier on `Ctrl+Enter` (it can collapse to bare `Enter` or `Ctrl+J`). Use `Ctrl+I` as the alt — letter-key Ctrl chords are stable everywhere. On VS Code family, use **`Ctrl+L`**.
+> **Windows**: Some consoles drop the `Ctrl` modifier on `Ctrl+Enter` (it can collapse to bare `Enter` or `Ctrl+J`). Use `Ctrl+I` as the alt — letter-key Ctrl chords are stable everywhere.
 
-> **VS Code family `Ctrl+L`**: Grok uses it for interject and leaves the extensions shortcut unbound (open plugins with `/plugins` or the command palette). If your terminal profile still maps **Clear** (or another command) to `Ctrl+L`, that host binding can steal the chord — rebind or remove it so the PTY receives form feed (`\x0c`).
+> **`Ctrl+L`**: Opens the searchable model picker (Pi TUI alignment). If your terminal profile maps **Clear** (or another command) to `Ctrl+L`, that host binding can steal the chord — rebind or remove it so the PTY receives form feed (`\x0c`).
 
 ---
 
@@ -208,7 +208,7 @@ Actions available from any screen.
 | `Ctrl+N` | | Create a new session (optionally in a git worktree) | Yes (double-press within 1000ms) |
 | `Ctrl+Q` | `Ctrl+D` | Quit the application | Yes (double-press within 1000ms) |
 
-**VS Code family terminal** (VS Code, Cursor, Windsurf, Zed integrated terminals): `Ctrl+Q` is captured by the host, so Grok makes **`Ctrl+D` the sole quit key** (`Ctrl+Q` is not bound). Half-page-down is rebound to bare **`Shift+D`**. Mid-turn interject uses **`Ctrl+L`** (no alternates) because `Ctrl+Enter` / `Ctrl+I` do not reliably reach the PTY; extensions are opened via `/plugins` instead of `Ctrl+L`.
+**VS Code family terminal** (VS Code, Cursor, Windsurf, Zed integrated terminals): `Ctrl+Q` is captured by the host, so Grok makes **`Ctrl+D` the sole quit key** (`Ctrl+Q` is not bound). Half-page-down is rebound to bare **`Shift+D`**. Mid-turn interject uses **`Ctrl+Enter`** / **`Ctrl+I`** (same as other hosts). **`Ctrl+L`** opens the model picker; extensions open via `/plugins` / `/hooks`.
 
 > **Returning to the welcome screen has no key binding** — use the `/home` slash command (alias `/welcome`) from inside a session. See [Slash Commands](04-slash-commands.md).
 
@@ -328,7 +328,7 @@ Rewind (idle):    Esc Esc within 800ms (empty prompt + messages)
 
 ```
 Command palette:  Ctrl+P or ?
-Model picker:     Ctrl+M (from scrollback)
+Model picker:     Ctrl+L
 Cancel:           Ctrl+C (see Escape table)
 Always-approve:   Ctrl+O (toggle YOLO)
 New session:      Ctrl+N (press again, then choose normal/worktree)

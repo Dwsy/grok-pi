@@ -51,7 +51,7 @@ A hook is a shell command or HTTP endpoint that Grok calls when a specific lifec
 
 3. Start (or restart) a Grok session. The hook runs automatically on `SessionStart`.
 
-4. Press `Ctrl+L` on non–VS Code family terminals (or run `/hooks` anywhere — preferred on VS Code family) and check the Hooks tab to confirm it loaded.
+4. Run `/hooks` and check the Hooks tab to confirm it loaded.
 
 ---
 
@@ -272,7 +272,7 @@ The full event envelope is POSTed as JSON.
 
 ### The Hooks Tab
 
-Press `Ctrl+L` on non–VS Code family terminals to open the Extensions modal (Plugins tab), or run `/hooks` (any terminal; required on VS Code family where `Ctrl+L` is interject) to open it on the Hooks tab. In the **Hooks** tab:
+Run `/hooks` to open the Extensions modal on the Hooks tab (or `/plugins` for the Plugins tab). In the **Hooks** tab:
 
 | Key | Action |
 |-----|--------|
@@ -368,14 +368,14 @@ echo '{"decision": "allow"}'
 1. **Keep hooks fast** -- long-running hooks block the UI. Use background processes (`&`) or async where possible.
 2. **Use explicit `deny` to block** -- hooks fail-open on any error, so a hook that crashes will not block the tool. To enforce policy, your hook must run to completion and emit `{"decision":"deny","reason":"..."}` on stdout. Always handle errors inside your script so it can return an explicit decision.
 3. **Use absolute paths or relative to hook file** -- scripts in `bin/` next to the JSON file are portable.
-4. **Test with the modal** -- press `Ctrl+L` (non–VS Code family) or run `/hooks` to verify hooks are loaded and matching before relying on them.
+4. **Test with the modal** -- run `/hooks` to verify hooks are loaded and matching before relying on them.
 5. **Version control project hooks** -- commit `.grok/hooks/` (but never secrets).
 
 ---
 
 ## Troubleshooting
 
-- **Hook not running?** Press `Ctrl+L` on non–VS Code family (or run `/hooks` anywhere) to see if it is loaded and matched.
+- **Hook not running?** Run `/hooks` to see if it is loaded and matched.
 - **Project hooks ignored?** The folder may be untrusted. Run `/hooks-trust` (or relaunch with `--trust`).
 - **Script not found?** Check the path is relative to the `.json` file and executable (`chmod +x`).
 - **See errors?** Capture logs by launching with `RUST_LOG=debug GROK_LOG_FILE=/tmp/grok.log grok`, then check `/tmp/grok.log`.

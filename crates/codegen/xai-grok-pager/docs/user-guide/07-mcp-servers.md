@@ -176,7 +176,7 @@ You can enable or disable MCP servers during a session without restarting Grok.
 Open the MCP servers modal in the TUI:
 
 - Run `/mcps` as a slash command
-- Or press `Ctrl+L` (non–VS Code family) and navigate to the MCP Servers tab; on VS Code family use `/plugins` or `/mcp` and open the MCP Servers tab
+- Or run `/mcp` (or `/plugins`) and open the MCP Servers tab
 
 From the modal you can:
 

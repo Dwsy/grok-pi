@@ -126,7 +126,7 @@ PI_BIN=pi ./run-local.sh /path/to/project --no-session
 PI_BIN=pi ./run-installed.sh /path/to/project --no-session
 ```
 
-Arguments following `--no-session` are passed to Pi unchanged. Choose Grok's native rendering mode at startup:
+Arguments following `--no-session` are passed to Pi unchanged. Continue Pi's previous session with `grok-pi --continue` or `grok-pi -c`. `grok-pi` also exposes Pi's `--system-prompt`, repeatable `--append-system-prompt`, `--no-skills` (`-ns`), `--no-context-files` (`-nc`), `--extension` (`-e`), `--no-extensions` (`-ne`), `--no-tools` (`-nt`), `--no-session`, and `--name` (`-n`) startup options. Choose Grok's native rendering mode at startup:
 
 ```bash
 GROK_PI_MINIMAL=1 PI_BIN=pi ./run-local.sh /path/to/project

@@ -56,8 +56,8 @@ The Agent SDKs load per-session plugins through `GrokOptions.plugins`, which arr
 
 | Action | Opens |
 |--------|-------|
-| `Ctrl+L` (from any pane; **non–VS Code family**) | Plugins tab |
-| `/plugins` (any terminal; **required on VS Code family**) | Plugins tab |
+| `/plugins` | Plugins tab |
+| command palette | Plugins / Hooks / MCP (`Ctrl+L` is the model picker) |
 
 The modal has five tabs: **Hooks**, **Plugins**, **Marketplace**, **Skills**, and **MCP Servers**. Switch tabs with `Tab` (forward) or `Shift+Tab` (backward). The `/hooks`, `/marketplace`, `/skills`, and `/mcps` commands each open the modal on the matching tab.
 

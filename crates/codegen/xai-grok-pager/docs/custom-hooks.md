@@ -39,7 +39,7 @@ Common use cases:
 
 3. Start (or restart) a Grok session. The hook runs automatically on `SessionStart`.
 
-   Try it: press `Ctrl+L` on non–VS Code family (or run `/hooks` anywhere — preferred on VS Code / Cursor / Windsurf / Zed) and check the Hooks tab to confirm it's loaded.
+   Try it: run `/hooks` and check the Hooks tab to confirm it's loaded.
 
 ## Hook Locations
 
@@ -53,7 +53,7 @@ Hooks are discovered from several places (all are merged):
 | Project   | `<project>/.claude/settings.json` | Requires trust | Claude compatibility |
 | Plugin    | Bundled inside installed plugins  | Per-plugin   | Shared team hooks |
 
-**Trusting a project**: Open the hooks modal (`Ctrl+L` on non–VS Code family, or `/hooks` on any terminal including VS Code family) or run `/hooks-trust` (the same folder-trust gate as `--trust`, recorded in `~/.grok/trusted_folders.toml`) the first time you open a project with hooks. This prevents untrusted repos from running arbitrary code.
+**Trusting a project**: Open the hooks modal with `/hooks` or run `/hooks-trust` (the same folder-trust gate as `--trust`, recorded in `~/.grok/trusted_folders.toml`) the first time you open a project with hooks. This prevents untrusted repos from running arbitrary code.
 
 ## The Hook JSON Format
 
@@ -214,7 +214,7 @@ are still resolved at load time so direct-exec paths like
 
 ## Managing Hooks in the TUI
 
-Press `Ctrl+L` on non–VS Code family (or run `/hooks` anywhere) to open the Hooks & Plugins modal.
+Run `/hooks` (or `/plugins`) to open the Hooks & Plugins modal.
 
 In the **Hooks** tab you can:
 - `l` — Reload all hooks
@@ -240,7 +240,7 @@ The full event envelope is POSTed as JSON. Useful for webhooks, analytics, or se
 1. **Keep hooks fast** — long-running hooks block the UI (use background `&` or async where possible).
 2. **Use explicit `deny` to block** — hooks fail-open on any error (timeout, crash, missing env var, etc.), so a hook that crashes will not block the tool call. To enforce policy, your hook must run to completion and emit `{"decision":"deny","reason":"..."}` on stdout.
 3. **Use absolute paths or relative to hook file** — scripts in `bin/` next to the JSON are portable.
-4. **Test with `Ctrl+L` (non–VS Code family) / `/hooks`** — verify loading and matching before relying on them.
+4. **Test with `/hooks`** — verify loading and matching before relying on them.
 5. **Version control project hooks** — commit `.grok/hooks/` (but never secrets).
 
 ## Security Notes
@@ -251,7 +251,7 @@ The full event envelope is POSTed as JSON. Useful for webhooks, analytics, or se
 
 ## Troubleshooting
 
-- **Hook not running?** → Press `Ctrl+L` on non–VS Code family (or run `/hooks` anywhere) to see if it's loaded and matched.
+- **Hook not running?** → Run `/hooks` to see if it's loaded and matched.
 - **Project hooks ignored?** → Trust the project first.
 - **Script not found?** → Check the path is relative to the `.json` file and executable (`chmod +x`).
 - **See errors?** → Check the pager logs (usually in the tracing pane or `~/.grok/logs`).

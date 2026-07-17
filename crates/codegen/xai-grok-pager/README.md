@@ -40,12 +40,13 @@ src/
 | Key | Context | Action |
 |-----|---------|--------|
 | `Ctrl+P` or `?` | Agent screen | Open command palette |
-| `Ctrl+L` | Any (non–VS Code family) | Open plugins/hooks modal; on VS Code / Cursor / Windsurf / Zed use `/plugins` or `/hooks` (`Ctrl+L` is mid-turn interject) |
+| `Ctrl+L` | Agent screen / prompt | Open the searchable model picker (Pi TUI alignment; retains prompt text) |
 | `Tab` | Prompt | Switch to scrollback |
 | `Esc` | Turn running | No-op (does not cancel; use `Ctrl+C`) |
 | `Esc` `Esc` | Idle, non-empty prompt | Clear prompt (within 800ms; first press shows hint) |
 | `Esc` `Esc` | Idle, empty prompt + messages | Open rewind picker (silent first press) |
 | `Ctrl+M` | Prompt | Toggle multiline mode |
+| `/plugins` / `/hooks` | Any | Open plugins/hooks modal (no default chord; formerly Ctrl+L) |
 | `Shift+Enter` | Prompt | Insert newline |
 | `/` | Prompt | Start slash command |
 | `@` | Prompt | Start file search |

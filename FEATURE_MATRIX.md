@@ -11,9 +11,10 @@
 | Minimal / scrollback-native | 原生 | `xai-grok-pager-minimal`；启动时选择 |
 | Prompt editing | 原生 | PromptWidget |
 | Multiline / Vim mode | 原生 | Grok slash/settings |
-| Theme / timestamps / mouse | 原生 | Grok appearance/input |
+| Theme / timestamps / mouse | 原生+适配 | Grok appearance/input；Pi 主题 JSON 经 `theme::pi` 映射为 Grok `Theme`，`/theme` 可选 `pi:<name>` |
 | Markdown / code blocks | 原生+适配 | Pi text/reasoning → ACP chunks → `xai-grok-markdown` |
-| Tool cards | 原生+适配 | Pi tool events → ACP ToolCall updates |
+| Tool cards | 原生+适配 | Pi tool events → ACP ToolCall；`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` 投影到原生卡 |
+| Todo / plan list | 原生+适配 | Pi `@juicesharp/rpiv-todo` 的 `todo` tool `details.tasks` → ACP `Plan` → 原生 TodoPane/badge；scrollback 抑制 `todo` 卡 |
 | Diff rendering | 原生+适配 | edit-like tool metadata进入 Grok tool/diff pipeline |
 | Images | 原生+适配 | Pi image blocks → ACP ImageContent；具体终端显示取决于 Grok/terminal 能力 |
 | Scroll / find / copy / transcript / export | 原生 | Grok Pager |
@@ -43,6 +44,8 @@
 | New session | 适配 | Grok `/new` → Pi `new_session` |
 | Rename | 适配 | Grok `/rename` → Pi `set_session_name` |
 | Session history replay | 适配 | `get_messages` → ACP replay，使用 Grok scrollback |
+| 启动时继续上一会话 | 适配 | `grok-pi --continue` / `-c` → Pi `--continue` |
+| 启动资源、提示词与会话选项 | 适配 | `--system-prompt`、`--append-system-prompt`、`--no-skills`、`--no-context-files`、`--extension`、`--no-extensions`、`--no-tools`、`--no-session` 与 `--name` 由 `grok-pi` 转发给 Pi |
 | Pi extension/prompt/skill commands | 原生+适配 | `get_commands` → Grok slash registry |
 | Grok cloud/session history picker | 边界 | 依赖 Grok session store，Pi profile 不暴露 `/history` |
 | Pi tree/fork/switch UI | 边界 | 当前不新增自定义命令/UI；可由 Pi 动态扩展命令自行提供 |
@@ -64,6 +67,8 @@
 | timeout/cancel | 适配 | Pi timeout 撤销对应 QuestionView，返回 `cancelled:true` |
 | raw terminal hook | 边界 | Pi RPC 明确不支持 |
 | custom header/footer/component | 边界 | Pi RPC 明确不支持 component factory |
+| `rpiv-ask-user-question` (`custom` 问卷) | 边界 | 依赖不可序列化的 `ctx.ui.custom(factory)`；RPC stub 恒 decline；不改插件无法桥接 |
+| `rpiv-btw` | 边界 | 进程内 side model + TUI overlay；应走原生 `/btw` + adapter `x.ai/btw`（尚未实现），不映射 juicesharp 包 |
 
 ## 斜杠命令
 

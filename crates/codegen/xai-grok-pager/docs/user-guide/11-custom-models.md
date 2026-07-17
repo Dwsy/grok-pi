@@ -38,9 +38,9 @@ Or use the alias:
 /m grok-build
 ```
 
-### Model Picker (Ctrl+M)
+### Model Picker (Ctrl+L)
 
-Press `Ctrl+M` from the scrollback pane to open the model picker. It lists all available models, both built-in and custom, and lets you switch with a single keystroke. With the prompt focused, `Ctrl+M` toggles multiline input instead -- use `/model` to switch without leaving the prompt.
+Press `Ctrl+L` (agent screen or prompt focused) to open the searchable model picker — same chord as Pi TUI. It lists all available models, both built-in and custom, and keeps any text already in the editor. You can also use `/model`.
 
 ### Config Default
 
