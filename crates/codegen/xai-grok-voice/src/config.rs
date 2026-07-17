@@ -4,20 +4,15 @@ use crate::error::VoiceError;
 
 /// Voice settings for the STT transport.
 ///
-<<<<<<< HEAD
 /// Carries the transport knobs parsed from optional `[voice]` in
 /// `~/.grok/config.toml` (STT URL pieces, language, sample rate, endpointing)
 /// plus two `#[serde(skip)]` request-identity fields the pager stamps in after
-/// parsing (documented on the fields below). Whether voice is available is
-/// resolved by the pager (GA default on; remote kill switch /
-/// `GROK_VOICE_MODE` override) — there is deliberately no local enable/disable
-/// knob in this config table. All serde fields have defaults, so the `[voice]`
-/// table is optional.
-=======
-/// Prefer **https** `api_base` (same shape as chat). [`Self::stt_ws_url`] derives
-/// `wss://`. When `[voice].api_base` is unset, inherits
-/// `[endpoints].xai_api_base_url` so enterprise proxies need no second knob.
->>>>>>> upstream/main
+/// parsing (documented on the fields below). Prefer **https** `api_base`
+/// (same shape as chat); [`Self::stt_ws_url`] derives `wss://`. When
+/// `[voice].api_base` is unset, inherits `[endpoints].xai_api_base_url`.
+/// Whether voice is available is resolved by the pager (GA default on;
+/// remote kill switch / `GROK_VOICE_MODE` override) — no local enable/disable
+/// knob. All serde fields have defaults, so the `[voice]` table is optional.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VoiceConfig {

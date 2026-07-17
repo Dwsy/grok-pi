@@ -996,21 +996,11 @@ pub(crate) fn run_wrap_driving(
     let mut harness =
         PtyHarness::new(&binary, DEFAULT_ROWS, DEFAULT_COLS, &args, &env).expect("spawn grok wrap");
 
-<<<<<<< HEAD
-    // All wrap e2e children are short-lived; wait for exit, don't gate on text.
-    let deadline = Instant::now() + WRAP_TIMEOUT;
-    let mut code = None;
-    while code.is_none() && Instant::now() < deadline {
-        harness.update(Duration::from_millis(100));
-        code = harness.wait_exit_code(Duration::ZERO);
-    }
-=======
     drive(&mut harness);
 
     let code = harness
         .wait_for_exit_and_drain(WRAP_TIMEOUT, WRAP_DRAIN_TIMEOUT)
         .ok();
->>>>>>> upstream/main
     if code.is_none() {
         let _ = harness.quit(); // kill a hung child so the suite doesn't leak it
     }

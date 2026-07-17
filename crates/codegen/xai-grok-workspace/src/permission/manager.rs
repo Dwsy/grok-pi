@@ -1184,8 +1184,6 @@ fn spawn_permission_manager_with_pin(
                             let _ = event_tx.send(event);
                         };
 
-<<<<<<< HEAD
-=======
                     if respond_to.is_closed() {
                         tracing::info!(tool = %tool_name, "permission requester gone; skipped at dequeue");
                         emit_event(
@@ -1203,7 +1201,6 @@ fn spawn_permission_manager_with_pin(
                         _ => None,
                     };
 
->>>>>>> upstream/main
                     // Evaluate managed policy (direct access + per-segment Bash command
                     // rules + Bash shell-file args) up front so the YOLO/sandbox fast
                     // paths below honor a deny or forced prompt.
