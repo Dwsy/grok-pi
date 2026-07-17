@@ -2,7 +2,7 @@
 
 > **One native terminal UI, one agent core.** Grok Build's production Pager owns every visible terminal interaction; Pi owns the agent, models, tools, extensions, and sessions.
 
-[中文文档](README.zh-CN.md) · [Architecture alignment](NATIVE_GROK_TUI_ALIGNMENT.md) · [Feature matrix](FEATURE_MATRIX.md) · [Verification record](VERIFICATION.md)
+[README.zh-CN](README.zh-CN.md) · [Architecture alignment](NATIVE_GROK_TUI_ALIGNMENT.md) · [Feature matrix](FEATURE_MATRIX.md) · [Verification record](VERIFICATION.md)
 
 ## Overview
 
