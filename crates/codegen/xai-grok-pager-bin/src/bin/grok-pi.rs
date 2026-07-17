@@ -103,7 +103,7 @@ struct Args {
     system_prompt: Option<String>,
 
     /// Append text or file contents to the system prompt (can be used multiple times).
-    #[arg(long, value_name = "TEXT")]
+    #[arg(long = "append-system-prompt", value_name = "TEXT")]
     append_system_prompts: Vec<String>,
 
     /// Disable skills discovery and loading.
@@ -115,7 +115,7 @@ struct Args {
     no_context_files: bool,
 
     /// Load an extension file (can be used multiple times).
-    #[arg(short = 'e', long, value_name = "PATH")]
+    #[arg(short = 'e', long = "extension", value_name = "PATH")]
     extensions: Vec<String>,
 
     /// Disable extension discovery (explicit -e paths still work).
