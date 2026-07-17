@@ -22,7 +22,7 @@ const FILLER_ROWS: usize = 120;
 /// reclamp keeping the head on the range while it scrolls out.
 /// `SSH_CONNECTION` forces the OSC 52 clipboard route for readback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn drag_select_autoscroll_full_scrollout_copy_pty() {
     let content = ContentController::start().await.expect("start content");
     // Turn 1: a three-row anchor message (markdown hard breaks keep one row

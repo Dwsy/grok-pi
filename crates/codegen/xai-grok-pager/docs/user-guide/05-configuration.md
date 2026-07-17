@@ -54,12 +54,11 @@ remember_tool_approvals = false        # show per-command "Always allow" options
 show_thinking_blocks = true            # show agent thinking blocks in the TUI (default: true)
 group_tool_verbs = true                # fold runs of read/search/list tool calls and subagent rows
                                        # — and finished thoughts among them — into one row (default: true)
-collapsed_edit_blocks = false          # show edits as one-line +N/-M diffstat summaries and merge
-                                       # back-to-back same-file edits into one row, expand for the
-                                       # diffs (default: false; pager.toml [scrollback.blocks.edit]
-                                       # expanded_by_default/line_summary override its fold shape)
-screen_mode = "fullscreen"             # default render mode: "fullscreen" | "minimal"
-                                       # (unset → fullscreen); set via /settings → Default screen mode
+collapsed_edit_blocks = false          # show edits as one-line +N/-M diffstat summaries, expand for
+                                       # the diff (default: false; pager.toml [scrollback.blocks.edit]
+                                       # expanded_by_default/line_summary override it when set)
+screen_mode = "fullscreen"             # sticky render mode: "minimal" or "fullscreen"; written
+                                       # automatically by --minimal/--fullscreen and /minimal//fullscreen
 
 [features]
 telemetry = false                      # anonymous usage telemetry
@@ -166,21 +165,22 @@ navigation, while `simple_mode` controls editing in the prompt.
 
 #### Screen Mode
 
-The `screen_mode` setting under `[ui]` is the **default render mode** for plain
-`grok` launches. Configure it from `/settings` → **Default screen mode**
-(restart required), or edit `config.toml` by hand. Both choices write
-`config.toml`. CLI flags (`--minimal` / `--fullscreen`) and slash commands
-(`/minimal` / `/fullscreen`) are session-scoped and do **not** write this key —
-after a slash switch, the reverse command (`/fullscreen` ⇄ `/minimal`) returns
-you for that session only.
+The `screen_mode` setting under `[ui]` is the **sticky render-mode
+preference**: whichever mode you last chose explicitly is what a plain `grok`
+opens with next time.
 
 | Value | Behavior |
 |-------|----------|
-| unset | Settings shows **Fullscreen**. At startup there is no sticky preference: legacy `pager.toml` `[terminal] minimal` can still force minimal, and terminals that leak mouse reports (JediTerm/Windows) may auto-open minimal until you set an explicit value. Otherwise the alt-screen policy picks fullscreen vs inline. |
-| `"fullscreen"` | Sticky non-minimal. Fullscreen-vs-inline still follows the alt-screen policy (`--no-alt-screen`, `[terminal] alt_screen`, terminal auto-detection). |
-| `"minimal"` | Sticky minimal (scrollback-native) mode. |
+| unset (default) | Legacy resolution: pager.toml `[terminal] minimal`, then the alt-screen policy. |
+| `"minimal"` | Open in minimal (scrollback-native) mode. |
+| `"fullscreen"` | Open in the standard TUI. Fullscreen-vs-inline still follows the alt-screen policy (`--no-alt-screen`, `[terminal] alt_screen`, terminal auto-detection), so environments like Zellij or tmux control mode keep their automatic inline fallback. |
 
-A CLI flag always wins over the config value for that invocation.
+You normally never edit this key by hand — Grok writes it whenever you pass an
+explicit `--minimal` / `--fullscreen` flag or run `/minimal` / `/fullscreen`.
+A plain `grok` launch only reads it. A CLI flag always wins over the config
+value for that invocation (and updates it), and `screen_mode` takes precedence
+over the legacy `[terminal] minimal` key in `pager.toml`. Delete the key to
+restore the legacy behavior.
 
 #### Scrolling
 

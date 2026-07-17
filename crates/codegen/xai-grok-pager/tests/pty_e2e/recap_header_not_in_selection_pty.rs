@@ -18,7 +18,7 @@ const RECAP_BODY_TOKEN: &str = "RECAP_BODY_SEL_TOKEN";
 /// scripted scenarios and this test re-inject a dummy one for OSC 52
 /// readback — same pattern as `tests/scenarios/copy_selection.yaml`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn recap_header_not_in_selection_pty() {
     let content = ContentController::start().await.expect("start content");
 

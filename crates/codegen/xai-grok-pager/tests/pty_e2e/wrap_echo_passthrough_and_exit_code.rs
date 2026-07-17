@@ -6,7 +6,7 @@ use super::common::*;
 /// command inside the wrap PTY with output passing through, and propagates the
 /// child's exit code — both for success and for a nonzero exit.
 #[test]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 #[cfg(unix)]
 fn wrap_echo_passthrough_and_exit_code() {
     let (code, raw) = run_wrap(&["/bin/echo", "wrap-e2e-hello"], &[]);

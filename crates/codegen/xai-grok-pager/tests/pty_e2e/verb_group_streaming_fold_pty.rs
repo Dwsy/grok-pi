@@ -12,7 +12,7 @@ const DONE_SENTINEL: &str = "VERB_GROUP_STREAM_DONE";
 /// before the 3-file label or the final completion exists — and the settled
 /// transcript then shows the final "Read 3 files".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn verb_group_streaming_fold_pty() {
     let content = ContentController::start().await.expect("start content");
     // Pin ON via the config tier so the test doesn't ride the client default.

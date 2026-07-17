@@ -13,10 +13,8 @@ use super::common::*;
 async fn interjection_reaches_model_in_same_turn() {
     let content = ContentController::start().await.expect("start content");
     // Gate turn 1's terminal event so the typed text + chord provably land
-    // mid-turn regardless of suite load. Chunk delay widens the mid-stream
-    // window under remote CI load (same shape as cancel_discards_*).
+    // mid-turn regardless of suite load.
     content.hold_agent_completions();
-    content.set_chunk_delay(Some(Duration::from_millis(100)));
     content.set_turns([
         slow_turn_text("TURNONE"),
         "TURNTWO reply to the sent-now message.".to_owned(),
@@ -36,39 +34,20 @@ async fn interjection_reaches_model_in_same_turn() {
     harness
         .wait_for_text("TURNONE", Duration::from_secs(30))
         .expect("turn 1 streaming");
-    // Still mid-stream (hold gates completion) — not "Worked for".
-    assert!(
-        !harness.contains_text("Worked for"),
-        "turn must still be open before send-now\nscreen:\n{}",
-        harness.screen_contents()
-    );
 
     harness
         .inject_keys(b"please also check the logs")
         .expect("type message");
-    harness
-        .wait_for_text("please also check the logs", Duration::from_secs(5))
-        .expect("draft visible in composer");
     harness.inject_keys(CTRL_ENTER).expect("send-now chord");
     content.release_agent_completions();
-
-    // Cancel-and-send: message leaves the composer and commits as a scrollback
-    // user block (not just the draft line that also carries ❯).
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        harness.update(Duration::from_millis(100));
-        if !composer_holds(&harness, "please also check the logs")
-            && block_lines_containing(&harness, "please also check the logs") >= 1
-        {
-            break;
-        }
-        if Instant::now() >= deadline {
-            panic!(
-                "send-now did not commit draft to scrollback\nscreen:\n{}",
-                harness.screen_contents()
-            );
-        }
-    }
+    // Cancel-and-send: the message commits as a standard "❯ " prompt block
+    // and runs as its own turn.
+    harness
+        .wait_for_text(
+            "\u{276F} please also check the logs",
+            Duration::from_secs(15),
+        )
+        .expect("send-now prompt block");
     harness
         .wait_for_text("TURNTWO", Duration::from_secs(40))
         .expect("sent-now message ran as the next turn");

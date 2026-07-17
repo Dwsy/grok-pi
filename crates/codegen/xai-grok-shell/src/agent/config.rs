@@ -615,8 +615,6 @@ pub struct Requirements {
     pub image_edit: Constrained<bool>,
     pub video_gen: Constrained<bool>,
     pub write_file: Constrained<bool>,
-    /// Voice dictation (STT). Pin via requirements/managed `[features] voice_mode`.
-    pub voice_mode: Constrained<bool>,
     pub sandbox_auto_allow_bash: Constrained<bool>,
     pub sandbox_profile: Constrained<String>,
     pub respect_gitignore: Constrained<bool>,
@@ -2047,9 +2045,6 @@ impl Config {
     pub fn is_session_recap_enabled(&self) -> bool {
         self.resolve_session_recap().value
     }
-    pub fn is_voice_mode_enabled(&self) -> bool {
-        self.resolve_voice_mode().value
-    }
     /// Two-pass (prefire) compaction gate. Default OFF (opt-in) — enable via
     /// remote settings `two_pass_compaction_enabled`, the `[features] two_pass_compaction`
     /// config.toml key, or `GROK_TWO_PASS_COMPACTION` env.
@@ -2265,23 +2260,6 @@ impl Config {
         let ff = self.remote_settings.as_ref().and_then(|s| s.session_recap);
         BoolFlag::env("GROK_SESSION_RECAP")
             .config(self.features.session_recap)
-            .feature_flag(ff)
-            .default(true)
-            .resolve()
-    }
-    /// Voice dictation gate. Default on.
-    ///
-    /// Precedence: requirements > `GROK_VOICE_MODE` > config/managed
-    /// `[features] voice_mode` > remote `voice_mode_enabled` > default true.
-    /// The pager may force API-key sessions on when only remote is off.
-    pub(crate) fn resolve_voice_mode(&self) -> Resolved<bool> {
-        let ff = self
-            .remote_settings
-            .as_ref()
-            .and_then(|s| s.voice_mode_enabled);
-        BoolFlag::env("GROK_VOICE_MODE")
-            .requirement(self.requirements.voice_mode.pinned())
-            .config(self.features.voice_mode)
             .feature_flag(ff)
             .default(true)
             .resolve()
@@ -4148,10 +4126,6 @@ pub struct Features {
     /// `None` = defer to remote settings / env / default (`true`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_recap: Option<bool>,
-    /// Voice dictation (STT). `None` = env / remote / default on.
-    /// Set `false` in requirements or managed config to force off.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice_mode: Option<bool>,
     /// Two-pass (prefire) compaction: speculatively summarize the history
     /// prefix in the background, then summarize NOTE₁ + recent tail at
     /// compaction. `None` = defer to remote settings / env / default (`false`).

@@ -16,7 +16,7 @@ const GAP_BOTTOM: &str = "GAPROW_OMEGA";
 /// head collapsed to the anchor there (a one-character copy).
 /// `SSH_CONNECTION` forces the OSC 52 clipboard route for readback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn drag_over_gap_rows_does_not_freeze_head_pty() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!(

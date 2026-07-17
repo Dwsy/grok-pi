@@ -62,7 +62,7 @@ fn enqueue_tool_turn(content: &ContentController, call_id: &str, name: &str, arg
 /// PTY demo: long abs path → collapsed header shows basename only; open block
 /// viewer and show full path in modal preamble. Dumps asciicast for video.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "demo video generator; run with cargo test -p xai-grok-pager --test pty_e2e_smoke basename_path_demo_pty -- --ignored --nocapture"]
+#[ignore = "demo video generator; run with cargo test -p xai-grok-pager --test pty_e2e basename_path_demo_pty -- --ignored --nocapture"]
 async fn basename_path_demo_pty() {
     fs::create_dir_all(ARTIFACT_DIR).expect("artifact dir");
     let content = ContentController::start().await.expect("start content");

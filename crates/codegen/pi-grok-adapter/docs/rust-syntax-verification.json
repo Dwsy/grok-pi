@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "parsedFileCount": 19,
+  "parsedFiles": [
+    "crates/codegen/pi-grok-adapter/src/lib.rs",
+    "crates/codegen/pi-grok-adapter/src/model.rs",
+    "crates/codegen/pi-grok-adapter/src/pi_adapter.rs",
+    "crates/codegen/pi-grok-adapter/src/pi_rpc.rs",
+    "crates/codegen/xai-grok-pager/src/acp/mod.rs",
+    "crates/codegen/xai-grok-pager/src/app/acp_handler/interactions.rs",
+    "crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs",
+    "crates/codegen/xai-grok-pager/src/app/actions.rs",
+    "crates/codegen/xai-grok-pager/src/app/app_view.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/queue.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/settings/setters.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs",
+    "crates/codegen/xai-grok-pager/src/app/effects/mod.rs",
+    "crates/codegen/xai-grok-pager/src/app/event_loop.rs",
+    "crates/codegen/xai-grok-pager/src/app/mod.rs",
+    "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
+    "crates/codegen/xai-grok-pager/src/slash/mod.rs",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs"
+  ],
+  "failures": {}
+}

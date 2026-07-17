@@ -8,7 +8,7 @@ use super::common::*;
 /// The parent env pins the var to `0` so a pass can only come from the wrap
 /// layer's own override, not from an inherited value.
 #[test]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 #[cfg(unix)]
 fn wrap_osc52_sink_env_advertised_through_shell() {
     let (code, raw) = run_wrap(

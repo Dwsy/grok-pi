@@ -37,9 +37,6 @@ async fn shift_tab_plan_nudge_from_always_approve_enters_plan() {
     harness
         .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
         .expect("turn rendered");
-    harness
-        .wait_for_turn_idle(Duration::from_secs(15))
-        .expect("turn idle before plan nudge");
 
     harness
         .inject_keys(b"plan the refactor")

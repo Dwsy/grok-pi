@@ -1458,8 +1458,8 @@ auto_update = true
         let cfg = apply(|cfg| cfg.ui.hunk_tracker_mode = Some("off".to_string()));
         assert_eq!(cfg.ui.hunk_tracker_mode, Some("off".to_string()));
 
-        // `[ui].screen_mode` is a manual config.toml preference (CLI flags do
-        // not write it); ensure the field still round-trips through merge.
+        // set_screen_mode wraps `cfg.ui.screen_mode = Some(value)` (the sticky
+        // minimal/fullscreen preference written on explicit CLI flags).
         let cfg = apply(|cfg| cfg.ui.screen_mode = Some("minimal".to_string()));
         assert_eq!(cfg.ui.screen_mode, Some("minimal".to_string()));
         let cfg = apply(|cfg| cfg.ui.screen_mode = Some("fullscreen".to_string()));

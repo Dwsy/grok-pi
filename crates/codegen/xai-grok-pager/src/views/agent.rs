@@ -127,13 +127,6 @@ pub struct AgentViewLayout {
     pub scrollback_content: Rect,
     /// Scrollbar track position (x coordinate).
     pub scrollbar_x: u16,
-    /// Timeline rail left edge (only meaningful when `timeline_width > 0`;
-    /// the rail's right edge lands on the scrollbar column, which the rail
-    /// replaces).
-    pub timeline_x: u16,
-    /// Columns reserved for the timeline rail (0 = rail hidden). Non-zero
-    /// also means the scrollbar does not render this frame.
-    pub timeline_width: u16,
 }
 impl AgentViewLayout {
     /// Compute layout from screen area, appearance config, prompt height,
@@ -151,15 +144,11 @@ impl AgentViewLayout {
     /// When `startup_warning_height` is 0, the startup warning area is omitted.
     /// `prompt_gap` is 0 or 1 — controls the gap row between turn status
     /// (or scrollback) and the prompt widget.
-    /// `timeline_width` reserves rail columns for the timeline sidebar in
-    /// place of the scrollbar (0 = hidden); it requires the scrollbar's
-    /// gutter geometry, so a disabled scrollbar forces it to 0.
     #[allow(clippy::too_many_arguments)]
     pub fn compute(
         area: Rect,
         layout_cfg: &LayoutConfig,
         scrollbar_cfg: &ScrollbarConfig,
-        timeline_width: u16,
         prompt_height: u16,
         tasks_height: u16,
         catalog_height: u16,
@@ -359,17 +348,7 @@ impl AgentViewLayout {
         }
         let shortcuts = chunks[i];
         let scrollbar_x = area.right().saturating_sub(scrollbar_cfg.gap_right + 1);
-        let timeline_width = if scrollbar_cfg.enabled {
-            timeline_width
-        } else {
-            0
-        };
-        let timeline_x = (scrollbar_x + 1).saturating_sub(timeline_width);
-        let content_end_x = if timeline_width > 0 {
-            timeline_x.saturating_sub(scrollbar_cfg.gap_left)
-        } else {
-            scrollbar_x.saturating_sub(scrollbar_cfg.gap_left)
-        };
+        let content_end_x = scrollbar_x.saturating_sub(scrollbar_cfg.gap_left);
         let scrollback_right = scrollback.x + scrollback.width;
         let scrollback_content = if !scrollbar_cfg.enabled || content_end_x >= scrollback_right {
             scrollback
@@ -397,8 +376,6 @@ impl AgentViewLayout {
             shortcuts,
             scrollback_content,
             scrollbar_x,
-            timeline_x,
-            timeline_width,
         }
     }
     /// Inner area width (for prompt height computation before full layout).
@@ -1758,7 +1735,6 @@ mod tests {
             area,
             &layout_cfg,
             &scrollbar_cfg,
-            0,
             2,
             0,
             0,
@@ -1778,67 +1754,6 @@ mod tests {
     }
     fn layout_with_cta(area: Rect, cta_height: u16) -> AgentViewLayout {
         layout_with_rows(area, 0, cta_height, 0)
-    }
-    /// Minimal layout with a timeline rail request — hides the cfg-dependent
-    /// arity of `compute` like `layout_with_rows` does.
-    fn layout_with_rail(
-        area: Rect,
-        timeline_width: u16,
-        scrollbar_cfg: &ScrollbarConfig,
-    ) -> AgentViewLayout {
-        let layout_cfg = LayoutConfig::default();
-        AgentViewLayout::compute(
-            area,
-            &layout_cfg,
-            scrollbar_cfg,
-            timeline_width,
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            false,
-        )
-    }
-    #[test]
-    fn timeline_rail_replaces_the_scrollbar_column() {
-        let area = Rect::new(0, 0, 80, 40);
-        let scrollbar_cfg = ScrollbarConfig::default();
-        let without = layout_with_rail(area, 0, &scrollbar_cfg);
-        let with_rail = layout_with_rail(area, 3, &scrollbar_cfg);
-        assert_eq!(with_rail.timeline_width, 3);
-        assert_eq!(with_rail.scrollbar_x, without.scrollbar_x);
-        assert_eq!(with_rail.timeline_x, with_rail.scrollbar_x + 1 - 3);
-        assert!(
-            with_rail.scrollback_content.x + with_rail.scrollback_content.width
-                <= with_rail.timeline_x,
-            "content (ends {}) must not overlap the rail (starts {})",
-            with_rail.scrollback_content.x + with_rail.scrollback_content.width,
-            with_rail.timeline_x,
-        );
-        assert!(
-            with_rail.scrollback_content.width <= without.scrollback_content.width,
-            "the rail never widens the content"
-        );
-        let no_scrollbar = ScrollbarConfig {
-            enabled: false,
-            ..ScrollbarConfig::default()
-        };
-        let forced_off = layout_with_rail(area, 3, &no_scrollbar);
-        assert_eq!(forced_off.timeline_width, 0);
-        assert_eq!(
-            forced_off.scrollback_content.width, forced_off.scrollback.width,
-            "no carve-out without the scrollbar gutter"
-        );
     }
     #[test]
     fn plugin_cta_row_present_above_prompt() {

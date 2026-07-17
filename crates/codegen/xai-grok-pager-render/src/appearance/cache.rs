@@ -26,10 +26,6 @@ use super::text_selection::TextSelection;
 
 const COMPACT_DEFAULT: bool = false;
 const TIMESTAMPS_DEFAULT: bool = true;
-/// Timeline sidebar (per-turn tick rail): single source of truth is
-/// [`UiConfig::SHOW_TIMELINE_DEFAULT`]; aliased here for the `Cell::new`
-/// const context and the effective-config fallback read.
-const TIMELINE_DEFAULT: bool = UiConfig::SHOW_TIMELINE_DEFAULT;
 const SIMPLE_MODE_DEFAULT: bool = true;
 /// Vim-mode scrollback default — matches the previous on-disk default.
 const VIM_MODE_DEFAULT: bool = false;
@@ -106,33 +102,6 @@ pub fn load_timestamps() -> bool {
 pub fn set_timestamps(enabled: bool) {
     TIMESTAMPS_CURRENT.with(|c| c.set(enabled));
     TIMESTAMPS_LOADED.with(|l| l.set(true));
-}
-
-// -- Timeline sidebar ----------------------------------------------------------
-
-thread_local! {
-    static TIMELINE_CURRENT: Cell<bool> = const { Cell::new(TIMELINE_DEFAULT) };
-    static TIMELINE_LOADED: Cell<bool> = const { Cell::new(false) };
-}
-
-pub fn load_show_timeline() -> bool {
-    TIMELINE_LOADED.with(|loaded| {
-        if !loaded.get() {
-            TIMELINE_CURRENT.with(|c| {
-                c.set(load_bool_from_effective_config(
-                    "show_timeline",
-                    TIMELINE_DEFAULT,
-                ))
-            });
-            loaded.set(true);
-        }
-    });
-    TIMELINE_CURRENT.with(|c| c.get())
-}
-
-pub fn set_show_timeline(enabled: bool) {
-    TIMELINE_CURRENT.with(|c| c.set(enabled));
-    TIMELINE_LOADED.with(|l| l.set(true));
 }
 
 // -- Simple mode --------------------------------------------------------------
@@ -544,7 +513,6 @@ pub fn set_render_mermaid(value: RenderMermaid) {
 pub fn prime(ui: &UiConfig) {
     set(ui.compact_mode);
     set_timestamps(ui.show_timestamps.unwrap_or(TIMESTAMPS_DEFAULT));
-    set_show_timeline(ui.show_timeline_enabled());
     set_simple_mode(ui.simple_mode.unwrap_or(SIMPLE_MODE_DEFAULT));
     set_keep_text_selection(text_selection_from_ui(ui));
     // Layered-config keys (not the `UiConfig` arg) — seed so the first frame
@@ -655,7 +623,6 @@ mod tests {
         let ui = UiConfig::default();
         assert_eq!(COMPACT_DEFAULT, ui.compact_mode);
         assert_eq!(TIMESTAMPS_DEFAULT, ui.show_timestamps.unwrap_or(true));
-        assert_eq!(TIMELINE_DEFAULT, ui.show_timeline_enabled());
         assert_eq!(SIMPLE_MODE_DEFAULT, ui.simple_mode.unwrap_or(true));
         assert_eq!(VIM_MODE_DEFAULT, ui.vim_mode.unwrap_or(false));
         assert_eq!(

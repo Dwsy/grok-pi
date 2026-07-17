@@ -15,8 +15,6 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Manage running leader processes
-    Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
     Logout,
     /// Sign in to Grok
@@ -153,36 +151,12 @@ pub struct WrapArgs {
     )]
     pub command: Vec<String>,
 }
-/// Targets a running leader process by PID (used by `grok leader` / `grok workspace`).
+/// Targets a running leader process by PID (used by `grok workspace`).
 #[derive(Debug, clap::Args, Clone, Default)]
 pub struct LeaderTargetArgs {
-    /// Leader process ID from `grok leader list`.
+    /// Leader process ID.
     #[arg(long)]
     pub pid: Option<u32>,
-}
-#[derive(Debug, clap::Args, Clone)]
-pub struct LeaderMgmtArgs {
-    #[command(subcommand)]
-    pub command: LeaderMgmtCommand,
-}
-#[derive(Debug, Subcommand, Clone)]
-pub enum LeaderMgmtCommand {
-    /// List running leader processes
-    List {
-        /// Emit machine-readable JSON output.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Show details for a leader process
-    Info {
-        #[command(flatten)]
-        target: LeaderTargetArgs,
-        /// Emit machine-readable JSON output.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Stop all running leader processes
-    Kill,
 }
 #[derive(Debug, clap::Args, Clone)]
 pub struct WorkspaceMgmtArgs {
@@ -711,14 +685,16 @@ pub struct PagerArgs {
     /// Experimental: scrollback-native rendering. Finalized blocks are printed
     /// into the terminal's native scrollback (use the terminal's own scroll /
     /// selection); a small pinned region holds the prompt + running turn.
-    /// Session-scoped only — does not write config. To default plain `grok` to
-    /// minimal, set `[ui] screen_mode = "minimal"` in ~/.grok/config.toml.
+    /// Sticky: records `[ui] screen_mode = "minimal"` in ~/.grok/config.toml
+    /// so future plain `grok` invocations open in minimal mode too.
     #[arg(long = "minimal")]
     pub minimal: bool,
-    /// Open in the standard fullscreen TUI for this session, overriding a
-    /// config `[ui] screen_mode = "minimal"` preference. Session-scoped only —
-    /// does not write config. Fullscreen-vs-inline still follows the alt-screen
-    /// policy (--no-alt-screen, [terminal] alt_screen, terminal auto-detection).
+    /// Open in the standard fullscreen TUI, overriding a sticky minimal
+    /// preference. Sticky counterpart of --minimal: records
+    /// `[ui] screen_mode = "fullscreen"` in ~/.grok/config.toml so future
+    /// plain `grok` invocations open fullscreen again. Fullscreen-vs-inline
+    /// still follows the alt-screen policy (--no-alt-screen, [terminal]
+    /// alt_screen, terminal auto-detection).
     #[arg(long = "fullscreen", conflicts_with = "minimal")]
     pub fullscreen: bool,
     /// Write sampling events to ~/.grok/logs/sampling.jsonl.
@@ -1086,36 +1062,6 @@ mod tests {
     fn leader_socket_flag_defaults_to_none() {
         let args = PagerArgs::try_parse_from(["grok"]).expect("bare grok parses");
         assert!(args.leader_socket.is_none());
-    }
-    #[test]
-    fn leader_mgmt_list_info_kill_parse() {
-        let list = PagerArgs::try_parse_from(["grok", "leader", "list", "--json"])
-            .expect("grok leader list --json");
-        assert!(matches!(
-            list.command,
-            Some(Command::Leader(LeaderMgmtArgs {
-                command: LeaderMgmtCommand::List { json: true },
-            }))
-        ));
-        let info = PagerArgs::try_parse_from(["grok", "leader", "info", "--pid", "42"])
-            .expect("grok leader info --pid");
-        assert!(matches!(
-            info.command,
-            Some(Command::Leader(LeaderMgmtArgs {
-                command: LeaderMgmtCommand::Info {
-                    target: LeaderTargetArgs { pid: Some(42) },
-                    json: false,
-                },
-            }))
-        ));
-        let kill = PagerArgs::try_parse_from(["grok", "leader", "kill"]).expect("grok leader kill");
-        assert!(matches!(
-            kill.command,
-            Some(Command::Leader(LeaderMgmtArgs {
-                command: LeaderMgmtCommand::Kill,
-            }))
-        ));
-        assert!(PagerArgs::try_parse_from(["grok", "leader", "profile"]).is_err());
     }
     #[test]
     fn debug_file_flag_parses_and_is_global() {

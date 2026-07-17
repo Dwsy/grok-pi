@@ -18,7 +18,7 @@ const THOUGHT_HEADER: &str = "Thought for";
 /// "Read 2 files" header (the collapsed thought row folded away); expanding
 /// the group reveals the thought as its own 1-row member.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn verb_group_thinking_fold_pty() {
     let content = ContentController::start().await.expect("start content");
     // Both opt-ins are explicit so the test doesn't ride rollout defaults:

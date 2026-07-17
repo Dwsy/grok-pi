@@ -76,10 +76,6 @@ impl AgentView {
             return false;
         };
 
-        // Inline edit takes input priority over the `/jump` picker; close a
-        // lingering one first so it can't reappear (stale) after edit exits.
-        self.dismiss_jump_picker();
-
         let mut textarea = TextArea::new();
         textarea.set_text(&text);
         textarea.set_cursor(text.len());

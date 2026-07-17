@@ -233,8 +233,8 @@ struct Bucket<'e> {
 /// label counts precisely the entries the fold claimed; callers without one
 /// pass `entries.len()` and rely on the [`RunStep::Break`] arm, which is
 /// kept as the in-bound stop in either case.
-pub fn verb_group_header_label(
-    entries: &[&ScrollbackEntry],
+pub fn verb_group_header_label<'e>(
+    entries: &[&'e ScrollbackEntry],
     header_idx: usize,
     end: usize,
     show_thinking: bool,
@@ -270,8 +270,8 @@ pub fn verb_group_header_label(
 /// (System/SessionEvent rows, lifecycle chrome): thoughts are the only
 /// participants a label may silently omit, anything else would make it
 /// under-describe what the fold conceals.
-pub fn truncation_header_label(
-    entries: &[&ScrollbackEntry],
+pub fn truncation_header_label<'e>(
+    entries: &[&'e ScrollbackEntry],
     range: std::ops::Range<usize>,
     limit: Option<usize>,
     show_thinking: bool,

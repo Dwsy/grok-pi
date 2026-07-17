@@ -46,6 +46,50 @@ pub enum AuthStartMode {
     Command,
 }
 
+/// Native pager policy for the connected ACP agent.
+///
+/// `Grok` preserves the production Grok Build surface. `External` keeps the
+/// same terminal, prompt, markdown, tool, scrolling, and modal implementation,
+/// while suppressing Grok-only product commands that an external agent cannot
+/// satisfy. The external adapter supplies its own ACP command catalog.
+#[derive(Debug, Clone)]
+pub enum UiProfile {
+    Grok,
+    External(ExternalUiProfile),
+}
+
+impl Default for UiProfile {
+    fn default() -> Self {
+        Self::Grok
+    }
+}
+
+impl UiProfile {
+    pub fn is_external(&self) -> bool {
+        matches!(self, Self::External(_))
+    }
+}
+
+/// Narrow configuration surface for an external ACP agent hosted by the Grok
+/// pager. It intentionally contains no rendering policy: rendering remains the
+/// pager's responsibility.
+#[derive(Debug, Clone)]
+pub struct ExternalUiProfile {
+    pub agent_name: String,
+    /// Pager-local builtins that remain available beside agent-advertised
+    /// commands. Names are normalized without a leading slash.
+    pub builtin_commands: Vec<String>,
+}
+
+impl Default for ExternalUiProfile {
+    fn default() -> Self {
+        Self {
+            agent_name: "External agent".to_string(),
+            builtin_commands: Vec::new(),
+        }
+    }
+}
+
 /// Result of connecting to an agent.
 pub struct AcpConnection {
     /// Send requests to the agent.
@@ -54,6 +98,8 @@ pub struct AcpConnection {
     pub rx: AcpClientRx,
     /// Available models and current selection.
     pub models: ModelState,
+    /// UI policy for this connection. The pager still owns all rendering.
+    pub ui_profile: UiProfile,
     /// Whether the agent is a grok-shell instance.
     pub is_grok_shell: bool,
     /// Auth methods advertised by the agent.
@@ -95,6 +141,45 @@ pub struct AcpConnection {
     /// mode builds a dedicated one off the same local `auth.json`. Either way it
     /// resolves a fresh bearer per request via the refresh chain.
     pub auth_manager: std::sync::Arc<xai_grok_shell::auth::AuthManager>,
+}
+
+impl AcpConnection {
+    /// Build a connection around an already-running external ACP adapter.
+    ///
+    /// The supplied channels are the exact channels consumed by the production
+    /// Grok pager event loop. No secondary terminal or rendering loop is involved.
+    pub fn external(
+        tx: AcpAgentTx,
+        rx: AcpClientRx,
+        models: Option<acp::SessionModelState>,
+        available_commands: Vec<acp::AvailableCommand>,
+        cancel: CancellationToken,
+        profile: ExternalUiProfile,
+    ) -> Self {
+        let auth_manager = std::sync::Arc::new(xai_grok_shell::auth::AuthManager::new(
+            &xai_grok_shell::util::grok_home::grok_home(),
+            xai_grok_shell::auth::GrokComConfig::default(),
+        ));
+        Self {
+            tx,
+            rx,
+            models: models.into(),
+            ui_profile: UiProfile::External(profile),
+            is_grok_shell: false,
+            auth_methods: Vec::new(),
+            cancel,
+            available_commands,
+            needs_login: false,
+            login_label: None,
+            login_method_id: None,
+            auth_start_mode: AuthStartMode::Pending,
+            auth_meta: None,
+            leader_status_rx: None,
+            cancel_rewind_enabled: false,
+            session_recap_available: false,
+            auth_manager,
+        }
+    }
 }
 
 /// CLI flags that affect agent configuration, threaded from PagerArgs.
@@ -225,6 +310,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
         tx,
         rx,
         models,
+        ui_profile: UiProfile::Grok,
         is_grok_shell,
         auth_methods,
         cancel: spawned.cancel,
@@ -351,6 +437,7 @@ pub async fn connect_via_leader(
         tx,
         rx,
         models,
+        ui_profile: UiProfile::Grok,
         is_grok_shell,
         auth_methods,
         cancel: bridge.cancel,

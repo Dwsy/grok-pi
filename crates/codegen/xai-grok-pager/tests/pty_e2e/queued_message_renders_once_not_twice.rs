@@ -14,7 +14,7 @@ use super::common::*;
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn queued_message_renders_once_not_twice() {
     const QUEUED_TEXT: &str = "queued exactly once probe";
 

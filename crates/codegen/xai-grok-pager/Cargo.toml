@@ -195,43 +195,13 @@ harness = false
 name = "edit_highlight"
 harness = false
 
-# PTY integration tests are split into coherent scheduling families. The test
-# modules remain under tests/pty_e2e/; these roots only define which cases share
-# one Cargo/Bazel process. All cases stay #[ignore]d for ordinary Cargo runs.
+# Integration testing.
 [[test]]
-name = "pty_e2e_smoke"
-path = "tests/pty_e2e_smoke.rs"
+name = "pty_e2e"
+path = "tests/pty_e2e/mod.rs"
 
-[[test]]
-name = "pty_e2e_queue"
-path = "tests/pty_e2e_queue.rs"
-
-[[test]]
-name = "pty_e2e_scroll_selection"
-path = "tests/pty_e2e_scroll_selection.rs"
-
-[[test]]
-name = "pty_e2e_minimal"
-path = "tests/pty_e2e_minimal.rs"
-
-[[test]]
-name = "pty_e2e_config_ui"
-path = "tests/pty_e2e_config_ui.rs"
-
-[[test]]
-name = "pty_e2e_shell_tools"
-path = "tests/pty_e2e_shell_tools.rs"
-
-[[test]]
-name = "pty_e2e_persistence"
-path = "tests/pty_e2e_persistence.rs"
-
-[[test]]
-name = "pty_e2e_clipboard"
-path = "tests/pty_e2e_clipboard.rs"
-
-# Leader-mode PTY e2e — split from ordinary PTY families so multi-process
-# cluster bring-up never contends with their bounded pools.
+# Leader-mode PTY e2e — split from pty_e2e so multi-process cluster bring-up
+# never contends with the main PTY pool (the LEADER_TIMEOUT flake root).
 [[test]]
 name = "leader_pty_e2e"
 path = "tests/leader_pty_e2e/mod.rs"

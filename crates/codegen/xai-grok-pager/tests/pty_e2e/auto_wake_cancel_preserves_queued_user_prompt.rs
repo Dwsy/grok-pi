@@ -37,7 +37,7 @@ const HOLD_SLEEP_SECS: &str = "15";
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn auto_wake_cancel_preserves_queued_user_prompt() {
     let content = ContentController::start().await.expect("start content");
 

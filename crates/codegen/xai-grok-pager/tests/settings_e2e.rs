@@ -29,9 +29,7 @@ use xai_grok_shell::agent::config::UiConfig;
 /// `SettingsRegistry::defaults().all()`.
 const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "compact_mode",
-    "screen_mode",
     "show_timestamps",
-    "show_timeline",
     "simple_mode",
     "vim_mode",
     "remember_tool_approvals",
@@ -109,8 +107,6 @@ fn matrix_is_subset_of_registry() {
 // ---------------------------------------------------------------------------
 
 fn make_state() -> SettingsModalState {
-    // Voice rows are hidden when the process gate is off (default until startup).
-    xai_grok_pager::app::set_voice_mode_enabled_for_test(true);
     SettingsModalState::new(
         Arc::new(SettingsRegistry::defaults()),
         UiConfig::default(),
@@ -204,9 +200,6 @@ fn assert_set_bool_action(outcome: SettingsKeyOutcome, key: &str, expected: bool
         }
         ("show_timestamps", Action::SetTimestamps(b)) => {
             assert_eq!(b, expected, "SetTimestamps value differs from expected")
-        }
-        ("show_timeline", Action::SetTimeline(b)) => {
-            assert_eq!(b, expected, "SetTimeline value differs from expected")
         }
         ("simple_mode", Action::SetSimpleMode(b)) => {
             assert_eq!(b, expected, "SetSimpleMode value differs from expected")
@@ -357,16 +350,6 @@ fn space_on_show_timestamps_dispatches_typed_setter() {
     navigate_to(&mut s, "show_timestamps");
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
     assert_set_bool_action(outcome, "show_timestamps", false);
-}
-
-#[test]
-fn space_on_show_timeline_dispatches_typed_setter() {
-    let mut s = make_state();
-    navigate_to(&mut s, "show_timeline");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
-    // Toggling flips the default; derived so it follows SHOW_TIMELINE_DEFAULT.
-    let default_on = UiConfig::default().show_timeline_enabled();
-    assert_set_bool_action(outcome, "show_timeline", !default_on);
 }
 
 #[test]
@@ -585,22 +568,6 @@ fn mouse_click_on_show_timestamps_two_stage_select_then_toggle() {
         row_y,
     );
     assert_set_bool_action(outcome, "show_timestamps", false);
-}
-
-/// Value-column click toggles `show_timeline` in one click.
-#[test]
-fn mouse_click_on_show_timeline_indicator_toggles_in_one_click() {
-    let mut s = make_state();
-    synth_rects(&mut s);
-    let row_y = row_idx_for(&s, "show_timeline") as u16;
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        72,
-        row_y,
-    );
-    let default_on = UiConfig::default().show_timeline_enabled();
-    assert_set_bool_action(outcome, "show_timeline", !default_on);
 }
 
 /// Value-column click toggles `remember_tool_approvals` in one click.
@@ -1586,7 +1553,6 @@ fn registry_kind_membership_through_pr_14() {
             "prompt_suggestions",
             "respect_manual_folds",
             "show_thinking_blocks",
-            "show_timeline",
             "show_timestamps",
             "simple_mode",
             "vim_mode",
@@ -1623,7 +1589,6 @@ fn registry_kind_membership_through_pr_14() {
             "permission_mode",
             "plan_mode",
             "render_mermaid",
-            "screen_mode",
             "scroll_mode",
             "theme",
             "voice_capture_mode",
@@ -1692,7 +1657,6 @@ fn enum_settings_membership_through_pr_14() {
             "permission_mode",
             "plan_mode",
             "render_mermaid",
-            "screen_mode",
             "scroll_mode",
             "theme",
             "voice_capture_mode",
@@ -1729,9 +1693,7 @@ fn defaults_round_trip_through_registry() {
     let expected = |key: &str| -> SettingValue {
         match key {
             "compact_mode" => SettingValue::Bool(false),
-            "screen_mode" => SettingValue::Enum("fullscreen"),
             "show_timestamps" => SettingValue::Bool(true),
-            "show_timeline" => SettingValue::Bool(false),
             "simple_mode" => SettingValue::Bool(true),
             "vim_mode" => SettingValue::Bool(false),
             "remember_tool_approvals" => SettingValue::Bool(false),
@@ -1827,7 +1789,6 @@ fn settings_value_payload_matches_kind() {
         match outcome {
             SettingsKeyOutcome::Action(Action::SetCompactMode(_))
             | SettingsKeyOutcome::Action(Action::SetTimestamps(_))
-            | SettingsKeyOutcome::Action(Action::SetTimeline(_))
             | SettingsKeyOutcome::Action(Action::SetSimpleMode(_))
             | SettingsKeyOutcome::Action(Action::SetMultilineMode(_))
             | SettingsKeyOutcome::Action(Action::SetVimMode(_))
@@ -1927,11 +1888,10 @@ fn repeat_j_navigation_is_processed() {
         state: crossterm::event::KeyEventState::NONE,
     };
     let outcome = handle_settings_key(&mut s, &key);
-    // From the initial state (compact_mode), Repeat j advances to the next
-    // Appearance row: screen_mode.
+    // From the initial state, Repeat j advances to show_timestamps.
     assert!(matches!(outcome, SettingsKeyOutcome::Changed));
     match &s.rows[s.selected] {
-        RowEntry::Setting { key, .. } => assert_eq!(*key, "screen_mode"),
+        RowEntry::Setting { key, .. } => assert_eq!(*key, "show_timestamps"),
         _ => panic!("expected setting row after Repeat j"),
     }
 }
@@ -5727,148 +5687,6 @@ fn mouse_click_on_render_mermaid_indicator_opens_picker_in_one_click() {
     match &s.mode {
         SettingsModalMode::PickingEnum { key, .. } => assert_eq!(*key, "render_mermaid"),
         _ => panic!("value click on render_mermaid must enter PickingEnum"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// screen_mode (SHELL Enum, Appearance, restart_required, no preview).
-// Catalog [fullscreen, minimal]; product default when unset is fullscreen.
-// Session-only switches stay on /minimal and /fullscreen (do not write config).
-// ---------------------------------------------------------------------------
-
-/// Enter on the `screen_mode` row opens the picker seeded at the product
-/// default `fullscreen` (UiConfig.screen_mode is None → canonical fullscreen).
-#[test]
-fn enter_on_screen_mode_row_enters_picking_enum() {
-    let mut s = make_state();
-    navigate_to(&mut s, "screen_mode");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "Enter on screen_mode row must transition to PickingEnum, got {outcome:?}"
-    );
-    match &s.mode {
-        SettingsModalMode::PickingEnum {
-            key,
-            original_value,
-            ..
-        } => {
-            assert_eq!(*key, "screen_mode");
-            assert_eq!(
-                original_value,
-                &SettingValue::Enum("fullscreen"),
-                "default UiConfig screen_mode=None → original 'fullscreen'"
-            );
-        }
-        other => panic!("expected PickingEnum mode, got {other:?}"),
-    }
-}
-
-/// **Regression test.** Up/Down/j/k nav in the `screen_mode` picker MUST NOT
-/// dispatch a preview Action — `supports_preview: false` (restart-required).
-#[test]
-fn screen_mode_picker_nav_does_not_dispatch_preview() {
-    for nav_key in &[
-        KeyCode::Down,
-        KeyCode::Char('j'),
-        KeyCode::Up,
-        KeyCode::Char('k'),
-    ] {
-        let mut s = make_state();
-        navigate_to(&mut s, "screen_mode");
-        let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
-        assert!(matches!(s.mode, SettingsModalMode::PickingEnum { .. }));
-
-        if matches!(nav_key, KeyCode::Up | KeyCode::Char('k')) {
-            let _ = handle_settings_key(&mut s, &press(KeyCode::Down));
-        }
-
-        let outcome = handle_settings_key(&mut s, &press(*nav_key));
-        assert!(
-            matches!(outcome, SettingsKeyOutcome::Changed),
-            "Nav key {nav_key:?} in screen_mode picker MUST NOT dispatch a preview \
-             Action. Got {outcome:?}",
-        );
-        assert!(matches!(s.mode, SettingsModalMode::PickingEnum { .. }));
-    }
-}
-
-/// Enter on the focused picker choice commits via
-/// `Action::SetScreenMode(String)` carrying the registry canonical. Seed is
-/// `fullscreen` (index 0); one Down moves to `minimal` (index 1).
-#[test]
-fn screen_mode_picker_enter_dispatches_set_commit() {
-    let mut s = make_state();
-    navigate_to(&mut s, "screen_mode");
-    let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    let _ = handle_settings_key(&mut s, &press(KeyCode::Down));
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    match outcome {
-        SettingsKeyOutcome::Action(Action::SetScreenMode(mode)) => {
-            assert_eq!(
-                mode, "minimal",
-                "Enter must commit `minimal` → SetScreenMode(\"minimal\")"
-            );
-        }
-        other => panic!("expected Action::SetScreenMode commit, got {other:?}"),
-    }
-    assert!(
-        matches!(s.mode, SettingsModalMode::Browse),
-        "Enter commit must return to Browse"
-    );
-}
-
-/// The choices catalog is EXACTLY {fullscreen, minimal} in order — contract
-/// with `canonical_screen_mode` and the settings UI labels.
-#[test]
-fn screen_mode_choices_use_canonical_strings() {
-    let reg = SettingsRegistry::defaults();
-    let meta = reg.find("screen_mode").unwrap();
-    let canonicals: Vec<&str> = match &meta.kind {
-        SettingKind::Enum { choices, .. } => choices.iter().map(|c| c.canonical).collect(),
-        _ => panic!("screen_mode must be Enum"),
-    };
-    assert_eq!(
-        canonicals,
-        vec!["fullscreen", "minimal"],
-        "screen_mode catalog must be exactly [fullscreen, minimal] in order — \
-         changing it requires updating canonical_screen_mode and the chooser",
-    );
-    match &meta.kind {
-        SettingKind::Enum {
-            supports_preview, ..
-        } => {
-            assert!(
-                !*supports_preview,
-                "screen_mode is restart-required — no live preview"
-            );
-        }
-        _ => unreachable!(),
-    }
-    assert!(meta.restart_required, "screen_mode requires restart");
-}
-
-/// Value-column click on the screen_mode row opens the picker in ONE click
-/// (mouse ↔ keyboard parity).
-#[test]
-fn mouse_click_on_screen_mode_indicator_opens_picker_in_one_click() {
-    let mut s = make_state();
-    synth_rects(&mut s);
-    let row_y = row_idx_for(&s, "screen_mode") as u16;
-
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        72,
-        row_y,
-    );
-    assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "value click must open picker in one click, got: {outcome:?}",
-    );
-    match &s.mode {
-        SettingsModalMode::PickingEnum { key, .. } => assert_eq!(*key, "screen_mode"),
-        _ => panic!("value click on screen_mode must enter PickingEnum"),
     }
 }
 

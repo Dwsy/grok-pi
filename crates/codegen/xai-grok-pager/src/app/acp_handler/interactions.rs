@@ -18,8 +18,29 @@ pub(crate) fn handle_ask_user_question(
         AskUserQuestionExtRequest, AskUserQuestionExtResponse,
     };
 
-    // Parse the typed request from the ext-method params.
-    let ext_req: AskUserQuestionExtRequest = match serde_json::from_str(ext.request.params.get()) {
+    // Parse both the typed request and the narrow Pi adapter extensions.
+    // `initialText` and `noFreeform` are deliberately client-side hints: the
+    // canonical ask-user-question wire type remains unchanged.
+    let raw_params: serde_json::Value = match serde_json::from_str(ext.request.params.get()) {
+        Ok(value) => value,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to parse ask-user-question params");
+            ext.response_tx
+                .send(Err(acp::Error::new(-32602, format!("Invalid params: {e}"))))
+                .ok();
+            return false;
+        }
+    };
+    let initial_text = raw_params
+        .get("initialText")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let no_freeform = raw_params
+        .get("noFreeform")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let ext_req: AskUserQuestionExtRequest = match serde_json::from_value(raw_params) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "Failed to parse AskUserQuestionExtRequest");
@@ -91,17 +112,33 @@ pub(crate) fn handle_ask_user_question(
         }
     }
 
-    // Stash the current prompt and create the question view.
-    agent.question_view = Some(QuestionViewState::with_response_tx(
+    // Stash the current prompt and create the question view. Pi's select and
+    // confirm requests set `noFreeform`; input/editor requests use the native
+    // freeform row and can seed it through `initialText`.
+    let mut question_view = QuestionViewState::with_response_tx(
         ext_req.tool_call_id,
         ext_req.questions,
         agent.prompt.stash(),
         Some(ext.response_tx),
         ext_req.mode,
-    ));
+    );
+    if no_freeform {
+        question_view = question_view.with_no_freeform();
+    }
 
-    // Clear prompt for question interaction.
-    agent.prompt.set_text("");
+    let mut editor_seed = String::new();
+    if !question_view.no_freeform
+        && let Some(text) = initial_text
+        && !question_view.questions.is_empty()
+    {
+        question_view.per_question_freeform[0] = text;
+        question_view.per_question_cursor[0] = question_view.questions[0].options.len();
+        editor_seed = question_view.activate_freeform_input();
+    }
+    agent.question_view = Some(question_view);
+
+    // QuestionView reuses the production PromptWidget as its freeform editor.
+    agent.prompt.set_text(&editor_seed);
 
     // Stamp the "last activity" anchor so the
     // dashboard's NeedsInput row reflects "time since this question

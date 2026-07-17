@@ -127,6 +127,13 @@ pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<E
         app.deferred_startup.new_session = true;
         return vec![];
     }
+    // External ACP agents own session lifecycle. Grok's worktree prompt is a
+    // product-specific policy layer and must not intercept `/new` for Pi (or
+    // any other hosted agent). The native pager still creates and renders the
+    // new session; only the backend decision is delegated directly to ACP.
+    if app.external_agent {
+        return dispatch_new_session_inner(app, None);
+    }
     let in_git_repo = get_active_agent(app)
         .map(|a| a.current_branch.is_some())
         .unwrap_or(app.cwd_has_git_ancestor);

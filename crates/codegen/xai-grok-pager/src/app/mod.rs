@@ -46,8 +46,8 @@ mod turn_completion;
 mod xt_filter;
 pub(crate) use crate::terminal::kitty_flags_pushed;
 pub use cli::{
-    AgentArgs, AgentCmd, Command, HeadlessArgs, LeaderArgs, LeaderMgmtArgs, LeaderMgmtCommand,
-    LeaderTargetArgs, OutputFormat, PagerArgs, ServeArgs, WrapArgs,
+    AgentArgs, AgentCmd, Command, HeadlessArgs, LeaderArgs, LeaderTargetArgs, OutputFormat,
+    PagerArgs, ServeArgs, WrapArgs,
 };
 pub use cli::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use crossterm::cursor::{self, SetCursorStyle};
@@ -107,15 +107,6 @@ static MINIMAL_AUTO_SET_FOR_MOUSE_LEAK: AtomicBool = AtomicBool::new(false);
 pub fn minimal_auto_set_for_mouse_leak() -> bool {
     MINIMAL_AUTO_SET_FOR_MOUSE_LEAK.load(Ordering::Acquire)
 }
-/// Set after a `/minimal` re-exec that actually stayed minimal (idle-status cue).
-static MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN: AtomicBool = AtomicBool::new(false);
-pub fn minimal_show_switch_back_to_fullscreen() -> bool {
-    MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.load(Ordering::Acquire)
-}
-#[cfg(test)]
-pub fn set_minimal_show_switch_back_to_fullscreen_for_test(on: bool) {
-    MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.store(on, Ordering::Release);
-}
 /// Whether startup actually applied a forced cursor style. Teardown (and the
 /// panic hook, which can't thread parameters) resets the style only when
 /// true: under inherit, `0 q` would clobber a shell-chosen style.
@@ -154,90 +145,56 @@ pub(crate) static MOUSE_REPORTING_TOGGLE_ENABLED: AtomicBool = AtomicBool::new(f
 pub(crate) fn mouse_reporting_toggle_enabled() -> bool {
     MOUSE_REPORTING_TOGGLE_ENABLED.load(Ordering::Acquire)
 }
-/// Process-global voice gate for view code without an `AppView`.
-/// Written only by [`crate::app::app_view::AppView::apply_voice_mode_enabled`].
+/// Whether voice mode is available (GA default on; remote/`GROK_VOICE_MODE` can
+/// kill or force). Mirrored from
+/// [`crate::app::app_view::AppView::apply_voice_mode_enabled`] so view-layer
+/// code that has no `AppView` handle — the shortcuts cheatsheet — can hide
+/// voice UI when the kill switch is active. Kept in sync on every gate change
+/// (startup + remote settings updates).
+///
+/// Only `apply_voice_mode_enabled` writes it, so tests that gate UI on voice
+/// must drive the flag through that method — setting `AppView::voice_mode_enabled`
+/// directly leaves this stale.
 pub(crate) static VOICE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Read the cached voice-mode gate (see [`VOICE_MODE_ENABLED`]).
 pub(crate) fn voice_mode_enabled() -> bool {
     VOICE_MODE_ENABLED.load(Ordering::Acquire)
 }
-/// Test helper for the process-global voice gate.
-pub fn set_voice_mode_enabled_for_test(on: bool) {
-    VOICE_MODE_ENABLED.store(on, Ordering::Release);
-}
-/// `[features] voice_mode` from merged `requirements.toml`.
-pub(crate) fn voice_mode_requirement_pin() -> Option<bool> {
-    xai_grok_config::load_merged_requirements().and_then(|req| {
-        req.get("features")
-            .and_then(|f| f.get("voice_mode"))
-            .and_then(|v| v.as_bool())
-    })
-}
-/// `[features] voice_mode` from effective config (user + managed).
-pub(crate) fn voice_mode_config_value() -> Option<bool> {
-    xai_grok_shell::config::load_effective_config()
-        .ok()
-        .and_then(|cfg| {
-            cfg.get("features")
-                .and_then(|f| f.get("voice_mode"))
-                .and_then(|v| v.as_bool())
-        })
-}
-/// Resolve voice availability.
+/// Resolve whether voice mode is enabled from layered sources.
 ///
-/// Precedence: requirements > `GROK_VOICE_MODE` > config/managed
-/// `[features] voice_mode` > remote `voice_mode_enabled` > default on.
-///
-/// When `is_api_key` and the only off-source is remote, force on. Requirement /
-/// env / config `false` still wins.
-pub(crate) fn resolve_voice_mode_enabled(
-    requirement: Option<bool>,
-    config: Option<bool>,
-    remote: Option<bool>,
-    is_api_key: bool,
-) -> bool {
-    use xai_grok_shell::agent::config::{BoolFlag, ConfigSource};
-    let resolved = BoolFlag::env("GROK_VOICE_MODE")
-        .requirement(requirement)
-        .config(config)
-        .feature_flag(remote)
-        .default(true)
-        .resolve();
-    if resolved.value {
-        return true;
-    }
-    is_api_key && resolved.source == ConfigSource::Remote
-}
-/// Resolve from live policy + env + remote + API-key state.
-pub(crate) fn resolve_voice_mode_live(remote: Option<bool>, is_api_key: bool) -> bool {
-    resolve_voice_mode_enabled(
-        voice_mode_requirement_pin(),
-        voice_mode_config_value(),
-        remote,
-        is_api_key,
-    )
+/// Precedence: `env` override (`GROK_VOICE_MODE`) > `remote` (`voice_mode_enabled`)
+/// > default **on**. Remote `Some(false)` is a kill switch; `None` means GA
+/// default (on). Free-tier SuperGrok upsell for `/voice` / Ctrl+Space is a
+/// separate gate (`is_voice_tier_restricted`).
+pub(crate) fn resolve_voice_mode_enabled(env: Option<bool>, remote: Option<bool>) -> bool {
+    env.or(remote).unwrap_or(true)
 }
 #[cfg(test)]
 mod voice_gate_tests {
     use super::resolve_voice_mode_enabled;
     #[test]
-    fn api_key_force_on_over_remote_kill_only() {
-        assert!(resolve_voice_mode_enabled(None, None, Some(false), true));
-        assert!(!resolve_voice_mode_enabled(None, None, Some(false), false));
+    fn voice_defaults_on_when_env_and_remote_absent() {
+        assert!(resolve_voice_mode_enabled(None, None));
     }
     #[test]
-    fn policy_false_outranks_api_key_force_on() {
-        assert!(!resolve_voice_mode_enabled(
-            Some(false),
-            Some(true),
-            Some(true),
-            true
-        ));
-        assert!(!resolve_voice_mode_enabled(
-            None,
-            Some(false),
-            Some(false),
-            true
-        ));
+    fn voice_remote_false_is_kill_switch() {
+        assert!(!resolve_voice_mode_enabled(None, Some(false)));
+    }
+    #[test]
+    fn voice_remote_true_enables() {
+        assert!(resolve_voice_mode_enabled(None, Some(true)));
+    }
+    #[test]
+    fn voice_env_overrides_remote_kill_switch() {
+        assert!(resolve_voice_mode_enabled(Some(true), Some(false)));
+    }
+    #[test]
+    fn voice_env_force_off_overrides_remote_true() {
+        assert!(!resolve_voice_mode_enabled(Some(false), Some(true)));
+    }
+    #[test]
+    fn voice_env_force_off_overrides_default_on() {
+        assert!(!resolve_voice_mode_enabled(Some(false), None));
     }
 }
 /// Sticky banner shown while mouse reporting is off, telling the user how to
@@ -416,6 +373,134 @@ fn resolve_hunk_tracker_mode(
         .find(|s| !s.is_empty())
         .map(str::to_owned)
 }
+
+/// Configuration for running the production Grok pager against an already
+/// connected external ACP adapter.
+pub struct ExternalRunConfig {
+    pub args: PagerArgs,
+    pub connection: crate::acp::AcpConnection,
+    pub session_id: String,
+    pub session_title: Option<String>,
+    pub session_cwd: Option<std::path::PathBuf>,
+}
+
+/// Run the native Grok pager against an external ACP backend.
+///
+/// The terminal lifecycle, prompt editor, slash dropdown, markdown renderer,
+/// scrollback, tool blocks, diff renderer and question overlay are exactly the
+/// same components used by the normal Grok Build client. Only authentication
+/// and agent spawning are bypassed.
+pub async fn run_external(config: ExternalRunConfig) -> anyhow::Result<()> {
+    let ExternalRunConfig {
+        args,
+        connection,
+        session_id,
+        session_title,
+        session_cwd,
+    } = config;
+
+    xai_tty_utils::redirect_native_stderr();
+    let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
+    let raw_config = xai_grok_shell::config::load_effective_config()
+        .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+
+    if let Some(ref cwd) = session_cwd {
+        crate::git_info::populate_from_cwd_async(cwd.clone());
+    } else if let Ok(cwd) = std::env::current_dir() {
+        crate::git_info::populate_from_cwd_async(cwd);
+    }
+
+    let mut config_watcher = crate::appearance::ConfigWatcher::start().await?;
+    let alt_screen_config_mode = config_watcher.current().alt_screen;
+    let term_ctx = crate::terminal::terminal_context();
+    let is_control_mode = crate::terminal::detect_tmux_control_mode(term_ctx);
+    let alt_screen_wants_fullscreen = crate::terminal::determine_alt_screen_policy(
+        args.no_alt_screen,
+        alt_screen_config_mode,
+        term_ctx,
+        is_control_mode,
+    );
+    let config_screen_mode = raw_config
+        .get("ui")
+        .and_then(|ui| ui.get("screen_mode"))
+        .and_then(|v| v.as_str());
+    let auto_minimal_mouse_leak = term_ctx.mouse_reporting_leaks_as_raw_text();
+    let explicit_minimal = screen_mode_relaunch::effective_minimal_preference(
+        args.minimal,
+        args.fullscreen,
+        config_screen_mode,
+        config_watcher.current().minimal,
+    );
+    let screen_mode = screen_mode_relaunch::resolve_screen_mode(
+        screen_mode_override,
+        explicit_minimal.unwrap_or(auto_minimal_mouse_leak),
+        alt_screen_wants_fullscreen,
+    );
+    MINIMAL_AUTO_SET_FOR_MOUSE_LEAK.store(
+        screen_mode.is_minimal() && explicit_minimal.is_none() && screen_mode_override.is_none(),
+        Ordering::Release,
+    );
+
+    let minimal = screen_mode.is_minimal();
+    let relaunched_into_minimal = screen_mode_override == Some(ScreenMode::Minimal);
+    engage_startup_theme(screen_mode);
+    let minimal_live_rows = config_watcher.current().minimal_live_rows;
+    let (frame_tx, writer_sync, writer_thread) = crate::render::draw::spawn_writer_thread();
+    let cursor_blink = event_loop::load_initial_ui_config().cursor_blink;
+    let (mut terminal, screen_mode) = init_terminal(
+        screen_mode,
+        minimal_live_rows,
+        relaunched_into_minimal,
+        frame_tx,
+        writer_sync,
+        cursor_blink,
+    )?;
+    apply_screen_mode_globals(screen_mode);
+    finish_theme_after_probe(minimal, screen_mode);
+    if let Some(ref title) = session_title {
+        set_terminal_title(title);
+    }
+
+    let effective_args = PagerArgs {
+        resume_session: None,
+        load_session: None,
+        continue_last_session: false,
+        session_id: None,
+        fork_session: false,
+        ..args
+    };
+    let materialized = session_startup::MaterializedStartup::Resume {
+        session_id,
+        original_cwd: session_cwd.clone(),
+        title: session_title,
+    };
+    let term_state = event_loop::TerminalState {
+        is_control_mode,
+        screen_mode,
+        relaunched_into_minimal,
+        initial_theme: crate::theme::cache::current_kind(),
+    };
+    let cancel = connection.cancel.clone();
+    let result = event_loop::run(
+        &mut terminal,
+        connection,
+        &mut config_watcher,
+        &effective_args,
+        session_cwd,
+        None,
+        term_state,
+        materialized,
+        None,
+    )
+    .await;
+
+    crate::unified_log::flush_blocking().await;
+    let _ = restore_terminal(terminal, writer_thread, screen_mode);
+    cancel.cancel();
+    xai_tty_utils::global_process_scope().kill_all();
+    result.map(|_| ())
+}
+
 /// Main entry point: connect to agent, init terminal, run event loop, restore.
 ///
 /// If a session ID is provided via `--resume` / `--load` / `--continue`, the
@@ -647,9 +732,24 @@ pub async fn run(
         screen_mode.is_minimal() && explicit_minimal.is_none() && screen_mode_override.is_none(),
         Ordering::Release,
     );
+    if args.minimal || args.fullscreen {
+        let want = if args.minimal {
+            "minimal"
+        } else {
+            "fullscreen"
+        };
+        if config_screen_mode != Some(want) {
+            tokio::spawn(async move {
+                if let Err(e) =
+                    xai_grok_shell::util::config::set_screen_mode(want.to_string()).await
+                {
+                    tracing::warn!("failed to persist screen mode preference: {e}");
+                }
+            });
+        }
+    }
     let minimal = screen_mode.is_minimal();
     let relaunched_into_minimal = screen_mode_override == Some(ScreenMode::Minimal);
-    let relaunched_into_fullscreen = screen_mode_override == Some(ScreenMode::Fullscreen);
     tracing::info!(
         use_alt_screen = screen_mode.is_fullscreen(), minimal = screen_mode.is_minimal(),
         mouse_capture = ! screen_mode.is_minimal(), minimal_live_rows = config_watcher
@@ -671,10 +771,6 @@ pub async fn run(
         writer_sync,
         cursor_blink,
     )?;
-    MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.store(
-        relaunched_into_minimal && screen_mode.is_minimal(),
-        Ordering::Release,
-    );
     apply_screen_mode_globals(screen_mode);
     finish_theme_after_probe(minimal, screen_mode);
     if let Some(ref t) = session_title {
@@ -692,7 +788,6 @@ pub async fn run(
         is_control_mode,
         screen_mode,
         relaunched_into_minimal,
-        relaunched_into_fullscreen,
         initial_theme: crate::theme::cache::current_kind(),
     };
     let result = event_loop::run(

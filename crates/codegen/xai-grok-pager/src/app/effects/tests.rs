@@ -673,17 +673,6 @@ async fn persist_setting_type_mismatch_errors_show_timestamps() {
         "error message must mention key + expected kind, got: {err}",
     );
 }
-/// Type-mismatch for `show_timeline`.
-#[tokio::test]
-async fn persist_setting_type_mismatch_errors_show_timeline() {
-    use crate::settings::SettingValue;
-    let r = persist_setting("show_timeline", SettingValue::String("nope".into())).await;
-    let err = r.expect_err("show_timeline with String payload must return Err");
-    assert!(
-        err.contains("persist_setting(show_timeline) expected Bool"),
-        "error message must mention key + expected kind, got: {err}",
-    );
-}
 /// Type-mismatch for `simple_mode`.
 #[tokio::test]
 async fn persist_setting_type_mismatch_errors_simple_mode() {

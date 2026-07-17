@@ -1,0 +1,116 @@
+name: Release grok-pi
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            runner: macos-14
+            asset: grok-pi-macos-aarch64.tar.gz
+          - name: Linux x64
+            runner: ubuntu-latest
+            asset: grok-pi-linux-x86_64.tar.gz
+          - name: Windows x64
+            runner: windows-latest
+            asset: grok-pi-windows-x86_64.zip
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.92.0
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Install protoc on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Install protoc on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Install protoc on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install protoc --yes --no-progress
+          $protoc = (Get-Command protoc).Source
+          "PROTOC=$protoc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build release binary
+        run: >-
+          cargo build
+          --manifest-path grok-build-main/Cargo.toml
+          --release
+          --features release-dist
+          -p xai-grok-pager-bin
+          --bin grok-pi
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C grok-build-main/target/release -czf "dist/${{ matrix.asset }}" grok-pi
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path grok-build-main/target/release/grok-pi.exe -DestinationPath "dist/${{ matrix.asset }}"
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out release scripts
+        uses: actions/checkout@v4
+
+      - name: Download release binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Add installer scripts
+        shell: bash
+        run: |
+          cp install.sh install.ps1 release-assets/
+          chmod +x release-assets/install.sh
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*

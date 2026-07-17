@@ -686,6 +686,22 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::FetchExternalSessionCatalog => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    "pi/session/list",
+                    serde_json::value::to_raw_value(&serde_json::json!({}))
+                        .expect("serialize Pi session catalog request")
+                        .into(),
+                );
+                let result: Result<acp::ExtResponse, _> = acp_send(request, &tx).await;
+                if let Err(error) = result {
+                    tracing::warn!(%error, "failed to request external session catalog");
+                }
+                TaskResult::ExternalSessionCatalogRequested
+            });
+        }
         Effect::FetchSessionList { query, seq } => {
             let tx = acp_tx.clone();
             let cwd = cwd.to_path_buf();
@@ -1428,13 +1444,20 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::Compact { agent_id, session_id } => {
+        Effect::Compact {
+            agent_id,
+            session_id,
+            custom_instructions,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let params = serde_json::json!(
+                    let mut params = serde_json::json!(
                         { "sessionId" : session_id.0.to_string(), }
                     );
+                    if let Some(instructions) = custom_instructions {
+                        params["customInstructions"] = serde_json::Value::String(instructions);
+                    }
                     let req = acp::ExtRequest::new(
                         "x.ai/compact_conversation",
                         serde_json::value::to_raw_value(&params)

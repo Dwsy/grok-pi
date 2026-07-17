@@ -7,7 +7,7 @@ use super::common::*;
 /// the block, and a second double-click restores the full output — never
 /// the first/last preview.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 #[cfg(unix)]
 async fn bash_full_output_double_click_fold_pty() {
     let content = ContentController::start().await.expect("start content");

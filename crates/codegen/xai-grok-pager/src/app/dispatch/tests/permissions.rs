@@ -535,36 +535,3 @@ fn classify_top_level_permission_queue_non_empty_is_needs_input() {
     let _rx = push_synthetic_permission(agent, 1, vec![("allow", "Allow")]);
     assert_eq!(classify_top_level(agent), RowState::NeedsInput);
 }
-
-#[test]
-fn permission_select_reject_does_not_steer_sticky_cursor() {
-    use crate::appearance::permission_cursor::{
-        DefaultSelectedPermission, last_used_permission, set_last_used_permission,
-    };
-    use std::sync::Arc;
-
-    let mut app = test_app_with_agent();
-    let _rx_allow = enqueue_permission_with_enable_always_approve(&mut app);
-    let _rx_reject = enqueue_permission_with_enable_always_approve(&mut app);
-
-    set_last_used_permission(DefaultSelectedPermission::AlwaysAllowAllSessions);
-    let _ = dispatch(
-        Action::PermissionSelect(acp::PermissionOptionId::new(Arc::from("opt-allow-once"))),
-        &mut app,
-    );
-    assert_eq!(
-        last_used_permission(),
-        DefaultSelectedPermission::AllowOnce,
-        "allow selection records the sticky cursor target"
-    );
-
-    let _ = dispatch(
-        Action::PermissionSelect(acp::PermissionOptionId::new(Arc::from("opt-reject-once"))),
-        &mut app,
-    );
-    assert_eq!(
-        last_used_permission(),
-        DefaultSelectedPermission::AllowOnce,
-        "reject selection must not steer the sticky cursor"
-    );
-}

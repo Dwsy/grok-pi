@@ -26,7 +26,7 @@ const MIN_EXTEND_LINES: usize = 12;
 /// extend the head to the revealed rows. `SSH_CONNECTION` forces the OSC 52
 /// clipboard route for readback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn drag_select_wheel_scroll_extends_pty() {
     let (mut harness, _content, top_before) = spawn_bottom_pinned_marker_scrollback_with_env(
         MARKER_COUNT,

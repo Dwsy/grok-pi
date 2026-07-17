@@ -7,13 +7,10 @@ pub mod groups;
 mod layout;
 mod nav;
 mod selection;
-mod timeline;
 mod types;
 pub mod verb_group;
 
-pub(crate) use layout::ScrollAnchor;
 pub use layout::compute_paint_window;
-pub use timeline::TimelineEntry;
 pub use types::*;
 
 use layout::LayoutCache;
@@ -1324,18 +1321,6 @@ impl ScrollbackState {
     /// Get the index of an entry by its ID. O(1) average via IndexMap.
     pub fn index_of_id(&self, id: EntryId) -> Option<usize> {
         self.entries.get_index_of(&id)
-    }
-
-    /// Capture a width-stable bookmark of the viewport-top content, to re-pin
-    /// it after a resize/re-wrap (the `/jump` capture-and-restore). `None` when
-    /// there's no layout to anchor to.
-    pub(crate) fn capture_scroll_bookmark(&self) -> Option<ScrollAnchor> {
-        self.capture_scroll_anchor()
-    }
-
-    /// Re-pin the viewport to a bookmark from [`Self::capture_scroll_bookmark`].
-    pub(crate) fn restore_scroll_bookmark(&mut self, bookmark: ScrollAnchor) {
-        self.restore_scroll_anchor(bookmark);
     }
 
     /// Mark an entry as finished (no longer running).

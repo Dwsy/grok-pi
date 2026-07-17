@@ -625,8 +625,193 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
             handle_mcp_server_status(notif, app)
         }
         "x.ai/mcp/servers_updated" => handle_mcp_servers_updated(notif, app),
+        // Pi RPC extension UI is projected onto native Grok pager surfaces.
+        // These are notifications (no fake response/ack text is inserted into
+        // the transcript), matching Pi's fire-and-forget protocol contract.
+        "pi/ui/notify" => handle_pi_ui_notify(notif, app),
+        "pi/ui/status" => handle_pi_ui_status(notif, app),
+        "pi/ui/widget" => handle_pi_ui_widget(notif, app),
+        "pi/ui/title" => handle_pi_ui_title(notif),
+        "pi/ui/editor_text" => handle_pi_ui_editor_text(notif, app),
+        "pi/ui/session_catalog" => handle_pi_ui_session_catalog(notif, app),
+        "pi/ui/cancel_interaction" => handle_pi_ui_cancel_interaction(notif, app),
         _ => false,
     }
+}
+
+fn pi_ui_params(notif: &acp::ExtNotification) -> Option<serde_json::Value> {
+    serde_json::from_str(notif.params.get())
+        .map_err(|error| {
+            tracing::warn!(method = %notif.method, %error, "invalid Pi UI notification payload");
+        })
+        .ok()
+}
+
+fn handle_pi_ui_notify(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(message) = params.get("message").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let kind = params
+        .get("notifyType")
+        .or_else(|| params.get("kind"))
+        .and_then(serde_json::Value::as_str);
+    app.show_external_notification(message, kind);
+    true
+}
+
+fn handle_pi_ui_status(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(key) = params
+        .get("statusKey")
+        .or_else(|| params.get("key"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return false;
+    };
+    let text = params
+        .get("statusText")
+        .or_else(|| params.get("text"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    app.set_external_status(key, text)
+}
+
+fn handle_pi_ui_widget(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(key) = params
+        .get("widgetKey")
+        .or_else(|| params.get("key"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return false;
+    };
+    let lines = match params.get("widgetLines").or_else(|| params.get("lines")) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(values)) => Some(
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        ),
+        Some(_) => return false,
+    };
+    let placement = match params
+        .get("widgetPlacement")
+        .or_else(|| params.get("placement"))
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("belowEditor") => crate::app::app_view::ExternalWidgetPlacement::BelowEditor,
+        _ => crate::app::app_view::ExternalWidgetPlacement::AboveEditor,
+    };
+    app.set_external_widget(key, lines, placement)
+}
+
+fn handle_pi_ui_title(notif: &acp::ExtNotification) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(title) = params.get("title").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    super::set_terminal_title(title);
+    true
+}
+
+fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(sessions) = params.get("sessions").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    let timestamp = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(|value| value.as_i64().and_then(chrono::DateTime::from_timestamp_millis))
+            .or_else(|| {
+                value
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.with_timezone(&chrono::Utc))
+            })
+            .unwrap_or_else(chrono::Utc::now)
+    };
+    let entries = sessions
+        .iter()
+        .filter_map(|session| {
+            let id = session.get("id")?.as_str()?.to_owned();
+            let summary = session
+                .get("summary")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(no messages)")
+                .to_owned();
+            let cwd = session
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            Some(crate::app::app_view::SessionPickerEntry {
+                id,
+                summary,
+                updated_at: timestamp(session.get("updatedAt")),
+                created_at: timestamp(session.get("createdAt")),
+                cwd: cwd.clone(),
+                hostname: None,
+                source: "pi".to_owned(),
+                model_id: None,
+                num_messages: session
+                    .get("messageCount")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize,
+                last_active_at: None,
+                branch: None,
+                repo_name: crate::views::session_picker::repo_name_from_cwd(&cwd),
+                worktree_label: None,
+                card_detail: None,
+            })
+        })
+        .collect();
+    app.set_external_session_catalog(entries)
+}
+
+fn handle_pi_ui_editor_text(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(text) = params
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return false;
+    };
+    app.set_external_editor_text(text)
+}
+
+/// Retract a native QuestionView after Pi's dialog timeout resolves.
+/// Pi includes the timeout on the original request but emits no later cancel
+/// event, so the adapter sends this narrow lifecycle notification.
+fn handle_pi_ui_cancel_interaction(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(tool_call_id) = params
+        .get("toolCallId")
+        .or_else(|| params.get("tool_call_id"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    app.dismiss_external_interaction(tool_call_id)
 }
 
 /// Handle `x.ai/session/interjection` — the leader broadcasts this

@@ -326,6 +326,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app.apply_foreign_resume_detection(launch_token, &canonical_cwd, hint);
             vec![]
         }
+        TaskResult::ExternalSessionCatalogRequested => vec![],
         TaskResult::SessionListFailed { error, seq, query } => {
             handle_session_list_failed(app, error, seq, query)
         }

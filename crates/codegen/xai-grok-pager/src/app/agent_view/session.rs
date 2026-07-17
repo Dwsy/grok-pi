@@ -253,10 +253,6 @@ impl AgentView {
             rewind_points: None,
             inline_edit: None,
             pending_inline_resubmit: None,
-            jump_state: None,
-            timeline_rail: None,
-            timeline_hover: None,
-            timeline_hover_preview: None,
             session_agent_name: None,
             subagent_sessions: HashMap::new(),
             subagent_views: HashMap::new(),
@@ -334,7 +330,6 @@ impl AgentView {
     /// recoverable until [`finish_session_reload`](Self::finish_session_reload)
     /// decides the outcome.
     pub(crate) fn begin_session_reload(&mut self, generation: u64) {
-        self.dismiss_jump_picker();
         if let Some(prev) = self.session_reload.take() {
             tracing::warn!(
                 generation,

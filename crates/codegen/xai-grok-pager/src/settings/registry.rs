@@ -339,16 +339,6 @@ pub fn canonical_hunk_tracker_mode(value: Option<&str>) -> &'static str {
     }
 }
 
-/// `minimal` stays; everything else (including unset / legacy `default`) → `fullscreen`.
-pub fn canonical_screen_mode(value: Option<&str>) -> &'static str {
-    let raw = value.unwrap_or_default().trim();
-    if raw.eq_ignore_ascii_case("minimal") {
-        "minimal"
-    } else {
-        "fullscreen"
-    }
-}
-
 impl PagerLocalSnapshot {
     /// Iterate over just the display names. Convenience helper for
     /// validator paths that don't need the ids.
@@ -483,7 +473,6 @@ pub fn current_value_for(
         // SHARED — UiConfig source of truth, pager keeps a cache.
         "compact_mode" => Some(SettingValue::Bool(ui.compact_mode)),
         "show_timestamps" => Some(SettingValue::Bool(ui.show_timestamps.unwrap_or(true))),
-        "show_timeline" => Some(SettingValue::Bool(ui.show_timeline_enabled())),
         "simple_mode" => Some(SettingValue::Bool(ui.simple_mode.unwrap_or(true))),
         // Per-tip contextual hints — `None` (inherit) reads as the default ON.
         "contextual_hints.undo" => {
@@ -550,9 +539,6 @@ pub fn current_value_for(
         // SHELL — canonicalized from `[ui].hunk_tracker_mode`.
         "hunk_tracker_mode" => Some(SettingValue::Enum(canonical_hunk_tracker_mode(
             ui.hunk_tracker_mode.as_deref(),
-        ))),
-        "screen_mode" => Some(SettingValue::Enum(canonical_screen_mode(
-            ui.screen_mode.as_deref(),
         ))),
         // SHELL — canonicalized from `[ui].voice_capture_mode`; None → "hold".
         "voice_capture_mode" => Some(SettingValue::Enum(canonical_voice_capture_mode(
@@ -759,15 +745,6 @@ mod tests {
                         *default,
                         ui.show_timestamps.unwrap_or(true),
                         "show_timestamps default drifts from UiConfig::default()"
-                    );
-                }
-                ("show_timeline", SettingKind::Bool { default }) => {
-                    // Single-sourced via UiConfig::show_timeline_enabled(); this
-                    // guards that defs.rs wired the resolver, not a stray literal.
-                    assert_eq!(
-                        *default,
-                        ui.show_timeline_enabled(),
-                        "show_timeline default drifts from UiConfig::default()"
                     );
                 }
                 ("simple_mode", SettingKind::Bool { default }) => {
@@ -980,18 +957,6 @@ mod tests {
                         canonical_hunk_tracker_mode(ui.hunk_tracker_mode.as_deref()),
                         "hunk_tracker_mode default drifts from UiConfig::default()",
                     );
-                }
-                ("screen_mode", SettingKind::Enum { default, .. }) => {
-                    assert_eq!(
-                        ui.screen_mode, None,
-                        "test assumes UiConfig::default().screen_mode is None",
-                    );
-                    assert_eq!(
-                        *default,
-                        canonical_screen_mode(ui.screen_mode.as_deref()),
-                        "screen_mode default drifts from UiConfig::default()",
-                    );
-                    assert_eq!(*default, "fullscreen");
                 }
                 // render_mermaid: Option<String>; None → "auto".
                 ("render_mermaid", SettingKind::Enum { default, .. }) => {
@@ -1308,19 +1273,6 @@ mod tests {
         assert_eq!(canonical_hunk_tracker_mode(Some("bogus")), "agent_only");
         assert_eq!(canonical_hunk_tracker_mode(Some("")), "agent_only");
         assert_eq!(canonical_hunk_tracker_mode(None), "agent_only");
-    }
-
-    #[test]
-    fn canonical_screen_mode_maps_aliases_and_unknowns() {
-        assert_eq!(canonical_screen_mode(Some("minimal")), "minimal");
-        assert_eq!(canonical_screen_mode(Some("fullscreen")), "fullscreen");
-        assert_eq!(canonical_screen_mode(Some("full")), "fullscreen");
-        assert_eq!(canonical_screen_mode(Some("  MINIMAL ")), "minimal");
-        assert_eq!(canonical_screen_mode(Some("default")), "fullscreen");
-        assert_eq!(canonical_screen_mode(Some("auto")), "fullscreen");
-        assert_eq!(canonical_screen_mode(Some("bogus")), "fullscreen");
-        assert_eq!(canonical_screen_mode(Some("")), "fullscreen");
-        assert_eq!(canonical_screen_mode(None), "fullscreen");
     }
 
     /// Corrupted `auto_dark_theme = "auto"` (would cause circular ref)

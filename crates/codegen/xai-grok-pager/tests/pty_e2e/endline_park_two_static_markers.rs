@@ -19,7 +19,7 @@ use super::common::*;
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn endline_park_two_static_markers() {
     let content = ContentController::start().await.expect("start content");
     // Gates the background command the markers count (released at the end).

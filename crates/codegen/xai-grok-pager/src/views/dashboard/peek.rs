@@ -569,7 +569,6 @@ fn paint_peek_config_badge(
 /// Returns the reply caret position (so the caller can park the
 /// terminal cursor) plus the reply input's screen rect (recorded for
 /// mouse routing — click-to-focus and drag selection).
-#[allow(clippy::too_many_arguments)]
 pub fn render_peek_panel(
     buf: &mut Buffer,
     area: Rect,

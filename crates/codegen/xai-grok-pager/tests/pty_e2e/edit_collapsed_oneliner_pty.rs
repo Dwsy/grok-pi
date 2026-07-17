@@ -17,7 +17,7 @@ const BODY_MARKER: &str = "EXPANDED_BODY_MARKER";
 /// `edit_hl_inplace_refresh_pty`, which relies on expanded-on-arrival diffs.
 /// Doubles as the demo-cast generator via `GROK_PTY_CAST_DIR`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn edit_collapsed_oneliner_pty() {
     let content = ContentController::start().await.expect("start content");
     seed_ui_config(&content, "collapsed_edit_blocks = true");

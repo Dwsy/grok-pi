@@ -32,13 +32,16 @@ async fn cancel_then_resend_prompt_appears_once() {
     harness
         .inject_keys(format!("{RESEND_PROMPT}\r").as_bytes())
         .expect("submit prompt");
-    harness
-        .wait_until(
-            "prompt block committed and composer cleared",
-            Duration::from_secs(30),
-            |h| block_lines_containing(h, RESEND_PROMPT) == 1 && !composer_holds(h, RESEND_PROMPT),
-        )
-        .expect("prompt block committed");
+    let block_committed = wait_until(Duration::from_secs(30), || {
+        harness.update(Duration::from_millis(100));
+        block_lines_containing(&harness, RESEND_PROMPT) == 1
+            && !composer_holds(&harness, RESEND_PROMPT)
+    });
+    assert!(
+        block_committed,
+        "prompt block never committed\nscreen:\n{}",
+        harness.screen_contents()
+    );
     harness
         .wait_for_text("Waiting for response", Duration::from_secs(25))
         .expect("turn running pre-first-token");
@@ -50,14 +53,16 @@ async fn cancel_then_resend_prompt_appears_once() {
     // contended runner, resending during that gap pairs the stale copy with
     // the resend in one wire request (the 2x this test guards). Holding the
     // rewound state continuously lets the trim land first.
-    harness
-        .wait_until_stable(
-            "rewound prompt restored after session history trim",
-            Duration::from_secs(30),
-            Duration::from_millis(1500),
-            |h| composer_holds(h, RESEND_PROMPT) && block_lines_containing(h, RESEND_PROMPT) == 0,
-        )
-        .expect("rewound prompt restored after history trim");
+    let rewound = wait_until_stable(Duration::from_secs(30), Duration::from_millis(1500), || {
+        harness.update(Duration::from_millis(100));
+        composer_holds(&harness, RESEND_PROMPT)
+            && block_lines_containing(&harness, RESEND_PROMPT) == 0
+    });
+    assert!(
+        rewound,
+        "expected the prompt restored to the composer\nscreen:\n{}",
+        harness.screen_contents()
+    );
 
     // Resend the restored text as a fresh turn.
     content.set_chunk_delay(None);
@@ -67,13 +72,16 @@ async fn cancel_then_resend_prompt_appears_once() {
         .expect("resent turn reply");
 
     // Exactly once in scrollback (block back, composer empty again).
-    harness
-        .wait_until(
-            "resent prompt rendered exactly once",
-            Duration::from_secs(30),
-            |h| block_lines_containing(h, RESEND_PROMPT) == 1 && !composer_holds(h, RESEND_PROMPT),
-        )
-        .expect("resent prompt rendered exactly once");
+    let settled = wait_until(Duration::from_secs(30), || {
+        harness.update(Duration::from_millis(100));
+        block_lines_containing(&harness, RESEND_PROMPT) == 1
+            && !composer_holds(&harness, RESEND_PROMPT)
+    });
+    assert!(
+        settled,
+        "resent prompt must render exactly once\nscreen:\n{}",
+        harness.screen_contents()
+    );
 
     // Exactly once per wire request: the rewound copy must have been cut from
     // session history, so no request pairs a stale copy with the resend.

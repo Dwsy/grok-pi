@@ -89,7 +89,7 @@ fn write_asciicast(path: &Path, cols: u16, rows: u16, events: &[(f64, String)]) 
 /// target line restyles in place (hunk-only → file-scoped upgrade) and dump
 /// asciicast + HTML demo artifacts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn edit_hl_inplace_refresh_pty() {
     fs::create_dir_all(ARTIFACT_DIR).expect("artifact dir");
     let content = ContentController::start().await.expect("start content");

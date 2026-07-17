@@ -35,9 +35,7 @@ async fn esc_esc_opens_rewind_picker_silent_first_press() {
     harness
         .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
         .expect("turn rendered (has a user turn)");
-    harness
-        .wait_for_turn_idle(Duration::from_secs(15))
-        .expect("turn idle");
+    wait_for_turn_idle(&mut harness);
 
     // First Esc: arm the rewind picker SILENTLY — no clear/rewind confirm hint.
     // Settle between the presses: a single `ESC ESC` byte pair collapses to

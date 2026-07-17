@@ -731,11 +731,6 @@ impl AcpPrompter {
             tool_name: tool_name.clone(),
         });
         let prompt_start = Instant::now();
-        let mut resolved_guard = ResolvedOnDrop {
-            event_writer: &self.event_writer,
-            tool_name: Some(tool_name),
-            prompt_start,
-        };
 
         let outcome = match &self.hub_permission {
             // Route the prompt to chat over the server (see
@@ -778,10 +773,6 @@ impl AcpPrompter {
 
         // events.jsonl: `PermissionResolved` at decision-time, with the truthful
         // user-facing wait derived from the prompt-start `Instant` above.
-        let tool_name = resolved_guard
-            .tool_name
-            .take()
-            .expect("guard is armed until normal completion");
         self.event_writer.emit(Event::PermissionResolved {
             tool_name,
             decision: permission_decision_for_outcome(&outcome),
@@ -789,24 +780,6 @@ impl AcpPrompter {
         });
 
         outcome
-    }
-}
-
-struct ResolvedOnDrop<'a> {
-    event_writer: &'a EventWriter,
-    tool_name: Option<String>,
-    prompt_start: Instant,
-}
-
-impl Drop for ResolvedOnDrop<'_> {
-    fn drop(&mut self) {
-        if let Some(tool_name) = self.tool_name.take() {
-            self.event_writer.emit(Event::PermissionResolved {
-                tool_name,
-                decision: PermissionDecision::Cancelled,
-                wait_ms: self.prompt_start.elapsed().as_millis() as u64,
-            });
-        }
     }
 }
 

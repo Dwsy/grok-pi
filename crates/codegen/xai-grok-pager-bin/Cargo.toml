@@ -15,11 +15,18 @@ default-run = "xai-grok-pager"
 name = "xai-grok-pager"
 path = "src/main.rs"
 
+# Pi uses this second composition root, but all rendering and input remain in
+# the exact same production Grok pager library and minimal-renderer package.
+[[bin]]
+name = "grok-pi"
+path = "src/bin/grok-pi.rs"
+
 [dependencies]
 # The pager library (all application logic + the public API main.rs drives).
 xai-grok-pager = { path = "../xai-grok-pager" }
 # Optional scrollback-native render mode, wired in via the fn-pointer seam.
 xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
+pi-grok-adapter = { path = "../pi-grok-adapter" }
 
 # Agent runtime + leader/stdio/headless entry points.
 xai-grok-shell = { workspace = true }
@@ -40,8 +47,9 @@ tokio = { workspace = true, features = [
     "io-util",
     "io-std",
 ] }
-tokio-util = { workspace = true, features = ["compat"] }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
 anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
@@ -78,9 +86,6 @@ tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats", "u
 
 [dev-dependencies]
 serial_test = { workspace = true }
-# `PagerArgs::try_parse_from` in the CLI-parsing unit tests (needs the
-# `clap::Parser` trait in scope).
-clap = { workspace = true, features = ["derive"] }
 
 [features]
 default = [

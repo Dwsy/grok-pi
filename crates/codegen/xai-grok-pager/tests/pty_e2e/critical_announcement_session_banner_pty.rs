@@ -70,7 +70,7 @@ fn spawn_with_announcements(content: &ContentController, override_json: &str) ->
 
 /// Welcome shows the announcement title (hero path still paints `title`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn critical_announcement_title_on_welcome() {
     let content = ContentController::start().await.expect("start content");
     let mut harness = spawn_with_announcements(&content, &critical_override_json());
@@ -98,7 +98,7 @@ async fn critical_announcement_title_on_welcome() {
 /// layout: `! Title` with a right-aligned `[hide]` button, then the message
 /// (column-aligned with the title) followed by `hide: /announcements hide`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn critical_announcement_session_banner_two_lines() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} after critical banner."));
@@ -166,7 +166,7 @@ async fn critical_announcement_session_banner_two_lines() {
 /// `/announcements hide`. Also pins the row-1 reservation: a long message
 /// truncates with an ellipsis while the CTA keeps its full width.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn critical_announcement_hide_button_click_hides_banner() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} hide button click."));
@@ -241,7 +241,7 @@ async fn critical_announcement_hide_button_click_hides_banner() {
 
 /// Info-only announcements never open the session top banner (no hide CTA).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn info_announcement_no_session_banner() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} info-only path."));
@@ -276,7 +276,7 @@ async fn info_announcement_no_session_banner() {
 
 /// `/announcements hide` clears the session critical banner; `show` restores it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn critical_announcements_slash_hide_and_show() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} for hide/show."));
@@ -330,7 +330,7 @@ async fn critical_announcements_slash_hide_and_show() {
 
 /// Slash menu lists `/announcements` only when a critical announcement exists.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn announcements_slash_listed_only_for_critical() {
     // ── Critical: command appears in dropdown ──────────────────────────
     {
@@ -407,7 +407,7 @@ async fn announcements_slash_listed_only_for_critical() {
 /// the open TUI via the shell's periodic settings refresh — no `/new`, no
 /// restart. Uses the shared 1s-poll oauth spawn (no announcements override).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn critical_announcement_reaches_live_session_via_periodic_refresh() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} periodic refresh."));
@@ -464,7 +464,7 @@ async fn critical_announcement_reaches_live_session_via_periodic_refresh() {
 /// pushed later in the same session — the banner re-arms for new ids. Uses
 /// the shared 1s-poll oauth spawn (no announcements override).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn hidden_critical_does_not_suppress_new_critical_id() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} per-id hide."));
@@ -546,7 +546,7 @@ async fn hidden_critical_does_not_suppress_new_critical_id() {
 /// `/announcements` slash gate; a critical published mid-promo takes over the
 /// single banner slot (promo row gone, red critical up).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn promo_announcement_banner_slash_gate_and_critical_preemption() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} promo banner."));
@@ -655,7 +655,7 @@ async fn promo_announcement_banner_slash_gate_and_critical_preemption() {
 /// the CTA URL as OSC 8 (WezTerm pin), the mouse-off/tmux fallback. Then the
 /// promo hide roundtrip: `/announcements hide` clears the row, `show` restores.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn promo_cta_click_opens_link_and_hide_roundtrip() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} promo click."));
@@ -781,7 +781,7 @@ async fn promo_cta_click_opens_link_and_hide_roundtrip() {
 /// re-arms [hide] and hides normally (back-compat pinned in-scenario). The
 /// message is hero-only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn non_dismissible_promo_ignores_hide_then_dismissible_hides() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} pinned promo."));
@@ -909,7 +909,7 @@ fn spawn_with_announcements_and_env(
 /// pinned CTA" fallback are covered by the colocated unit tests (dashboard
 /// render/input, agent input arm).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn pinned_promo_multi_surface_and_ctrl_o_open() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} multi-surface promo."));

@@ -151,7 +151,6 @@ use std::time::Instant;
 mod cta;
 mod input;
 mod interactions;
-mod jump;
 mod links;
 mod media;
 mod modals;
@@ -1308,18 +1307,6 @@ pub struct AgentView {
     /// Set only when the rewind flow emits `Effect::RewindExecute` while the
     /// inline editor is open (see `stash_inline_resubmit_if_editing`).
     pub(crate) pending_inline_resubmit: Option<String>,
-    /// `/jump` picker overlay (pure client-side turn navigation).
-    pub(crate) jump_state: Option<crate::views::jump::JumpState>,
-    /// Timeline sidebar rail geometry for the current frame (`None` =
-    /// hidden). Set by the renderer, consumed by mouse hit-testing.
-    pub(crate) timeline_rail: Option<crate::views::timeline::TimelineRail>,
-    /// Rail part under the mouse — drives hover styling + the tick
-    /// preview popup.
-    pub(crate) timeline_hover: Option<crate::views::timeline::TimelineHit>,
-    /// Cached tick-hover preview `(turn_idx, text)`. Filled when hover
-    /// lands on a tick; borrowed during render so streaming redraws don't
-    /// rescan/allocate the prompt every frame.
-    pub(crate) timeline_hover_preview: Option<(usize, String)>,
     /// Running agent definition for this session (`x.ai/session/info` `agentName`).
     pub session_agent_name: Option<String>,
     /// Map of child session IDs to subagent metadata. Populated on

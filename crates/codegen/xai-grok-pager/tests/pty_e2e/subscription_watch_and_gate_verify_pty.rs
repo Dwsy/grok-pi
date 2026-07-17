@@ -228,7 +228,7 @@ fn spawn_subscription_session(
 /// catalog with a **paid** JWT (mock IdP on `:22255`) and the paid-only model
 /// id appears in the `/model` picker — not merely that `/v1/models` was called.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn subscription_watch_polls_free_tier_then_goes_dormant_after_upgrade() {
     // Start free-targeted (no paid-only model); swap after upgrade.
     // OIDC mock is started only after free-phase polling so early refresh
@@ -325,7 +325,7 @@ async fn subscription_watch_polls_free_tier_then_goes_dormant_after_upgrade() {
 /// after a live subscription check confirmed the block (the gate is never
 /// painted straight from the stale source).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn startup_gate_shows_paywall_for_free_user_after_live_check() {
     let content = ContentController::start().await.expect("start content");
     // Gated settings (no allow_access), free user (no subscriptionTier).
@@ -372,7 +372,7 @@ async fn startup_gate_shows_paywall_for_free_user_after_live_check() {
 /// gate — a time-travel artifact of the scripted one-shot, not a client
 /// bug (observed as a flake).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn stale_gate_push_never_flashes_paywall_for_subscribed_user() {
     let content = ContentController::start().await.expect("start content");
     // Live tier: already paid; steady settings allow access.

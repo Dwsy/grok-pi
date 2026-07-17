@@ -1256,7 +1256,6 @@ pub(super) mod paste_key_tests {
             area,
             &layout_cfg,
             &scrollbar_cfg,
-            0,
             clamped,
             0,
             0,

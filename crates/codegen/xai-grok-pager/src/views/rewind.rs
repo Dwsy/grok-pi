@@ -398,11 +398,27 @@ pub fn rewind_row_at(phase: &RewindPhase, area: Rect, col: u16, row: u16) -> Opt
         return None;
     }
     match phase {
-        RewindPhase::Picker { points, selected } => crate::views::overlay_list::ListOverlay {
-            len: points.len(),
-            selected: *selected,
+        RewindPhase::Picker { points, selected } => {
+            let first = area.y + 2;
+            if row < first {
+                return None;
+            }
+            let visible_rows = area.height.saturating_sub(3) as usize;
+            let rel = (row - first) as usize;
+            if rel >= visible_rows {
+                return None;
+            }
+            let scroll_offset = if *selected >= visible_rows {
+                selected - visible_rows + 1
+            } else {
+                0
+            };
+            let idx = scroll_offset + rel;
+            if idx >= points.len() {
+                return None;
+            }
+            Some(idx)
         }
-        .row_at(area, col, row),
         RewindPhase::CancelOffer { .. } => match row.checked_sub(area.y + 3) {
             Some(0) => Some(0),
             Some(1) => Some(1),
@@ -539,12 +555,11 @@ pub fn rewind_activate(phase: &RewindPhase) -> RewindInput {
 pub fn rewind_overlay_height(phase: &RewindPhase, screen_h: u16) -> u16 {
     let content = match phase {
         RewindPhase::Loading => 2,
-        RewindPhase::Picker { points, selected } => {
-            return crate::views::overlay_list::ListOverlay {
-                len: points.len(),
-                selected: *selected,
-            }
-            .height(screen_h);
+        RewindPhase::Picker { points, .. } => {
+            let rows = points.len().min(15) as u16;
+            let h = 2 + rows;
+            let cap = (screen_h as u32 * 60 / 100).max(6) as u16;
+            return h.min(cap) + 1;
         }
         RewindPhase::CancelOffer { .. } => 5,
         // One row shorter when the "File changes only" row is hidden
@@ -615,29 +630,62 @@ pub fn render_rewind_overlay(buf: &mut Buffer, area: Rect, phase: &RewindPhase, 
             );
         }
         RewindPhase::Picker { points, selected } => {
-            // Shared list-overlay chrome + row geometry (also used by /jump).
-            // It applies the unfocus dim itself, so return before the shared
-            // blend at the bottom of this function.
-            crate::views::overlay_list::ListOverlay {
-                len: points.len(),
-                selected: *selected,
-            }
-            .render(buf, area, "Rewind to which turn?", focused, |i, ctx| {
-                let point = &points[i];
-                let dot_style = Style::default().fg(theme.gray).bg(ctx.row_bg);
-                let preview: String = crate::render::line_utils::truncate_str(
-                    point.prompt_preview.as_deref().unwrap_or("(no preview)"),
-                    ctx.content_width.saturating_sub(8) as usize,
-                );
+            let mut y = area.y + 1;
+            buf.set_line(
+                content_x,
+                y,
+                &Line::from(Span::styled("Rewind to which turn?", title_style)),
+                content_w,
+            );
+            y += 1;
+
+            let visible_rows = (area.height.saturating_sub(3)) as usize;
+            let scroll_offset = if *selected >= visible_rows {
+                selected - visible_rows + 1
+            } else {
+                0
+            };
+
+            for (i, point) in points
+                .iter()
+                .enumerate()
+                .skip(scroll_offset)
+                .take(visible_rows)
+            {
+                if y >= area.y + area.height {
+                    break;
+                }
+                let is_cursor = i == *selected;
+                let row_bg = if is_cursor && focused {
+                    theme.bg_visual
+                } else {
+                    bg
+                };
+                let row_rect = Rect {
+                    x: content_x.saturating_sub(1),
+                    y,
+                    width: content_w + 2,
+                    height: 1,
+                };
+                buf.set_style(row_rect, Style::default().bg(row_bg));
+
+                let dot_style = Style::default().fg(theme.gray).bg(row_bg);
+                let preview: String = point
+                    .prompt_preview
+                    .as_deref()
+                    .unwrap_or("(no preview)")
+                    .chars()
+                    .take(content_w.saturating_sub(8) as usize)
+                    .collect();
                 let text_style = Style::default()
                     .fg(theme.text_primary)
-                    .bg(ctx.row_bg)
-                    .add_modifier(if ctx.is_cursor {
+                    .bg(row_bg)
+                    .add_modifier(if is_cursor {
                         Modifier::BOLD
                     } else {
                         Modifier::empty()
                     });
-                let meta_style = Style::default().fg(theme.gray).bg(ctx.row_bg);
+                let meta_style = Style::default().fg(theme.gray).bg(row_bg);
 
                 let file_info = if point.has_file_changes {
                     format!(" \u{00B7} {} files", point.num_file_snapshots)
@@ -645,13 +693,14 @@ pub fn render_rewind_overlay(buf: &mut Buffer, area: Rect, phase: &RewindPhase, 
                     String::new()
                 };
 
-                Line::from(vec![
+                let line = Line::from(vec![
                     Span::styled("\u{00B7} ", dot_style),
                     Span::styled(preview, text_style),
                     Span::styled(file_info, meta_style),
-                ])
-            });
-            return;
+                ]);
+                buf.set_line(content_x, y, &line, content_w);
+                y += 1;
+            }
         }
         RewindPhase::CancelOffer { active_idx } => {
             let mut y = area.y + 1;

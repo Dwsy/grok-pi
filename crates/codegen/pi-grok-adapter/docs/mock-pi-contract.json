@@ -1,0 +1,41 @@
+{
+  "passed": true,
+  "checks": {
+    "mock_ui_methods": true,
+    "mock_stream_events": true,
+    "rust_routes_all_ui_methods": true,
+    "pi_rpc_declares_all_ui_methods": true,
+    "agent_settled_is_completion_barrier": true,
+    "history_is_requested": true,
+    "pi_commands_are_discovered": true
+  },
+  "uiMethods": [
+    "confirm",
+    "editor",
+    "input",
+    "notify",
+    "select",
+    "setStatus",
+    "setTitle",
+    "setWidget",
+    "set_editor_text"
+  ],
+  "eventTypes": [
+    "agent_end",
+    "agent_settled",
+    "agent_start",
+    "extension_ui_request",
+    "message_end",
+    "message_start",
+    "message_update",
+    "response",
+    "tool_execution_end",
+    "tool_execution_start",
+    "tool_execution_update",
+    "turn_end",
+    "turn_start"
+  ],
+  "receivedLines": 27,
+  "mockExitCode": 0,
+  "mockStderr": ""
+}

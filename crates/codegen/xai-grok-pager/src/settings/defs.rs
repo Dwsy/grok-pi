@@ -300,19 +300,6 @@ const HUNK_TRACKER_MODE_CHOICES: &[EnumChoice] = &[
     },
 ];
 
-const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
-    EnumChoice {
-        canonical: "fullscreen",
-        display: "Fullscreen",
-        description: "Open plain grok in the standard fullscreen TUI. Default when unset.",
-    },
-    EnumChoice {
-        canonical: "minimal",
-        display: "Minimal",
-        description: "Open plain grok in scrollback-native (minimal) mode.",
-    },
-];
-
 // Voice-capture-mode catalog. SHELL-owned, persisted to `[ui].voice_capture_mode`.
 // `hold` is only offered on terminals that report key releases (Kitty keyboard
 // protocol); `effective_enum_choices` hides it elsewhere, and it falls back to
@@ -539,34 +526,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
         },
         SettingMeta {
-            key: "screen_mode",
-            category: SettingCategory::Appearance,
-            owner: SettingOwner::Shell,
-            label: "Default screen mode",
-            description: "How plain grok opens next time: Fullscreen (default when unset) or \
-                          Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
-                          Switch this session only with /minimal or /fullscreen.",
-            keywords: &[
-                "screen",
-                "mode",
-                "minimal",
-                "fullscreen",
-                "full",
-                "scrollback",
-                "native",
-                "alt-screen",
-                "render",
-                "default",
-            ],
-            kind: SettingKind::Enum {
-                default: "fullscreen",
-                choices: SCREEN_MODE_CHOICES,
-                supports_preview: false,
-            },
-            restart_required: true,
-            hidden_in_minimal: false,
-        },
-        SettingMeta {
             key: "show_timestamps",
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shared,
@@ -579,21 +538,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
             },
             restart_required: false,
             hidden_in_minimal: false,
-        },
-        SettingMeta {
-            key: "show_timeline",
-            category: SettingCategory::Appearance,
-            owner: SettingOwner::Shared,
-            label: "Timeline sidebar",
-            description: "Per-turn tick rail in place of the scrollbar: hover previews a turn, click jumps to it.",
-            keywords: &["timeline", "sidebar", "ticks", "turns", "navigator", "rail"],
-            kind: SettingKind::Bool {
-                // Single source: UiConfig::SHOW_TIMELINE_DEFAULT (opt-in).
-                default: ui_default.show_timeline_enabled(),
-            },
-            restart_required: false,
-            // Minimal mode has no interactive scrollback pane for the rail.
-            hidden_in_minimal: true,
         },
         SettingMeta {
             // Persisted key stays `simple_mode`; the user-facing label
@@ -943,9 +887,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Collapsed edit blocks",
-            description: "Show edits as one-line +N/-M diffstat summaries and merge \
-                          back-to-back edits to the same file into one block; expand a \
-                          row to see the diffs.",
+            description: "Show edits as one-line +N/-M diffstat summaries; expand a row to \
+                          see the diff.",
             keywords: &[
                 "edit",
                 "edits",
@@ -956,8 +899,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "summary",
                 "expand",
                 "one-line",
-                "merge",
-                "coalesce",
             ],
             kind: SettingKind::Bool {
                 default: ui_default.collapsed_edit_blocks.unwrap_or(false),

@@ -405,9 +405,17 @@ pub(crate) fn maybe_drain_queue(agent: &mut AgentView) -> Vec<Effect> {
             agent.session.start_command(AgentCommand::Compact);
             agent.turn_started_at = Some(Instant::now());
 
+            let custom_instructions = queued
+                .text
+                .strip_prefix("/compact")
+                .map(str::trim)
+                .filter(|instructions| !instructions.is_empty())
+                .map(str::to_owned);
+
             vec![Effect::Compact {
                 agent_id,
                 session_id,
+                custom_instructions,
             }]
         }
         QueueEntryKind::BashCommand => {

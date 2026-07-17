@@ -15,7 +15,7 @@ const CHROMEHOLD_BOTTOM: &str = "CHROMEHOLD_BOTTOM";
 ///
 /// `SSH_CONNECTION` forces the OSC 52 clipboard route for readback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn drag_from_chrome_stays_block_pty() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!(

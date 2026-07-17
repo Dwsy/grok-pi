@@ -17,12 +17,6 @@ pub async fn set_show_timestamps(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.show_timestamps = Some(value)).await
 }
 
-/// Persist `[ui].show_timeline` via `update_config`. Same `Option<bool>`
-/// shape as `show_timestamps`.
-pub async fn set_show_timeline(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.show_timeline = Some(value)).await
-}
-
 /// Persist `[ui].simple_mode` via `update_config`. Same `Option<bool>`
 /// shape as `show_timestamps`.
 pub async fn set_simple_mode(value: bool) -> Result<()> {
@@ -261,12 +255,12 @@ pub async fn set_cancel_subagents_on_turn_cancel(value: String) -> Result<()> {
     .await
 }
 
-/// Persist `[ui].screen_mode` (`fullscreen` | `minimal`). Empty clears the key.
+/// Persist `[ui].screen_mode` (`minimal` | `fullscreen`) via `update_config`.
+/// The sticky screen-mode preference: written by the pager when an explicit
+/// `--minimal`/`--fullscreen` flag (including the `/minimal`//`/fullscreen`
+/// relaunch argv) is used; read once at pager startup.
 pub async fn set_screen_mode(value: String) -> Result<()> {
-    update_config(|cfg| {
-        cfg.ui.screen_mode = if value.is_empty() { None } else { Some(value) };
-    })
-    .await
+    update_config(|cfg| cfg.ui.screen_mode = Some(value)).await
 }
 
 /// Persist `[cli].show_tips` via `update_config`.

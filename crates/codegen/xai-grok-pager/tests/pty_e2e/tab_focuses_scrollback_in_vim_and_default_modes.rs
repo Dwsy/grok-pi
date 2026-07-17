@@ -86,9 +86,7 @@ async fn esc_policy_and_tab_focus_work_in_simple_mode() {
     harness
         .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
         .expect("turn rendered");
-    harness
-        .wait_for_turn_idle(Duration::from_secs(15))
-        .expect("turn idle");
+    wait_for_turn_idle(&mut harness);
 
     // Esc policy (clear) works the same under simple_mode; the hint wait keeps
     // the presses distinct (`ESC ESC` in one write collapses to one `Esc`).

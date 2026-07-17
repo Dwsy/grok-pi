@@ -30,8 +30,8 @@ use std::env;
 use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
 use xai_grok_pager::app::{
-    AgentCmd, Command, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand, LeaderTargetArgs,
-    PagerArgs, join_early_prefetch, resolve_use_leader,
+    AgentCmd, Command, HeadlessArgs, LeaderTargetArgs, PagerArgs, join_early_prefetch,
+    resolve_use_leader,
 };
 use xai_grok_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use xai_grok_pager::client_identity::PAGER_CLIENT_VERSION;
@@ -206,91 +206,6 @@ async fn run_setup_command(json: bool) {
         }
     }
 }
-async fn run_leader_mgmt(args: LeaderMgmtArgs) -> Result<()> {
-    match args.command {
-        LeaderMgmtCommand::Kill => kill_leaders().await,
-        LeaderMgmtCommand::List { json } => {
-            let leaders = xai_grok_shell::leader::discover_leaders().await;
-            if json {
-                let payload: Vec<_> = leaders.iter().map(leader_descriptor_json).collect();
-                println!(
-                    "{}",
-                    serde_json::to_string(&serde_json::Value::Array(payload))?
-                );
-            } else if leaders.is_empty() {
-                println!("No leader candidates found.");
-            } else {
-                for d in &leaders {
-                    print_leader_descriptor(d);
-                }
-            }
-            Ok(())
-        }
-        LeaderMgmtCommand::Info { target, json } => {
-            let (descriptor, client) = connect_to_leader(&target).await?;
-            let info = match ensure_control_caps(client.registration()) {
-                Ok(_) => client
-                    .send_control(ControlCommand::GetLeaderInfo)
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok()),
-                Err(_) => None,
-            };
-            if json {
-                let payload = leader_info_json(&descriptor, client.registration(), info.as_ref())?;
-                println!("{}", serde_json::to_string(&payload)?);
-            } else if let Some(info) = info {
-                println!("{info:#?}");
-            } else {
-                print_leader_descriptor(&descriptor);
-                eprintln!(
-                    "  (detailed info unavailable — leader does not advertise control capabilities)"
-                );
-            }
-            client.cancel();
-            Ok(())
-        }
-    }
-}
-async fn kill_leaders() -> Result<()> {
-    let leaders = xai_grok_shell::leader::discover_leaders().await;
-    if leaders.is_empty() {
-        eprintln!("No leader candidates found.");
-        return Ok(());
-    }
-    let mut killed = 0u32;
-    let mut cleaned = 0u32;
-    for d in &leaders {
-        let Some(pid) = leader_pid(d) else {
-            continue;
-        };
-        if !xai_grok_shell::util::is_grok_process(pid) {
-            if let Some(ref lock) = d.lock_path {
-                eprintln!("  PID {pid} is not a grok process, removing stale lock");
-                let _ = std::fs::remove_file(lock);
-                cleaned += 1;
-            }
-            if let Some(ref sock) = d.socket_path {
-                let _ = std::fs::remove_file(sock);
-            }
-            continue;
-        }
-        eprintln!("  Killing leader PID {pid}");
-        if let Err(e) = xai_grok_shell::util::kill_process_by_pid(pid) {
-            eprintln!("  warning: failed to terminate PID {pid}: {e}");
-            continue;
-        }
-        killed += 1;
-    }
-    if killed > 0 {
-        eprintln!("Killed {killed} leader process(es).");
-    } else if cleaned > 0 {
-        eprintln!("No live leader processes found (cleaned up {cleaned} stale lock(s)).");
-    } else {
-        eprintln!("No live leader processes found.");
-    }
-    Ok(())
-}
 fn resolve_target(args: &LeaderTargetArgs) -> LeaderTarget {
     match args.pid {
         Some(pid) => LeaderTarget::Pid(pid),
@@ -315,43 +230,6 @@ async fn connect_to_leader(
     )
     .await?;
     Ok((selection.descriptor, client))
-}
-/// Prefer socket-verified live PID over a possibly-recycled lock file PID.
-fn leader_pid(d: &LeaderDescriptor) -> Option<u32> {
-    d.live_info.as_ref().map(|li| li.pid).or(d.pid_from_lock)
-}
-fn print_leader_descriptor(d: &LeaderDescriptor) {
-    let pid = leader_pid(d)
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "?".into());
-    let sock = d
-        .socket_path
-        .as_deref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "?".into());
-    let state = format!("{:?}", d.classification);
-    eprintln!("  PID {pid} ({state}) -- {sock}");
-}
-fn leader_descriptor_json(d: &LeaderDescriptor) -> serde_json::Value {
-    serde_json::json!(
-        { "pid" : leader_pid(d), "pidFromLock" : d.pid_from_lock, "pidLive" : d.live_info
-        .as_ref().map(| li | li.pid), "classification" : format!("{:?}", d
-        .classification), "socketPath" : d.socket_path.as_deref().map(| p | p.display()
-        .to_string()), "lockPath" : d.lock_path.as_deref().map(| p | p.display()
-        .to_string()), "wsUrlSuffix" : d.ws_url_suffix, }
-    )
-}
-fn leader_info_json(
-    d: &LeaderDescriptor,
-    reg: &LeaderRegistration,
-    info: Option<&xai_grok_shell::leader::ControlPayload>,
-) -> Result<serde_json::Value> {
-    let mut val = leader_descriptor_json(d);
-    val["clientId"] = serde_json::json!(reg.client_id);
-    if let Some(info) = info {
-        val["info"] = serde_json::to_value(info)?;
-    }
-    Ok(val)
 }
 fn ensure_control_caps(reg: &LeaderRegistration) -> Result<&LeaderCapabilities> {
     reg.leader_capabilities
@@ -1787,11 +1665,6 @@ async fn async_main() -> Result<()> {
                 let agent_config = AgentConfig::new_from_toml_cfg(&config)
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return xai_grok_pager::models::list_available_models(&agent_config).await;
-            }
-            Command::Leader(leader_args) => {
-                init_tracing_simple("cli");
-                let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                return run_leader_mgmt(leader_args).await;
             }
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");

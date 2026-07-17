@@ -96,10 +96,6 @@ pub(super) fn dispatch_rewind(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
 
-    // Rewind takes input priority over the `/jump` picker; close a lingering
-    // one first so it can't reappear (stale) after rewind finishes.
-    agent.dismiss_jump_picker();
-
     let selected_idx = agent.scrollback.selected();
     let selected_shell_idx =
         selected_idx.and_then(|idx| shell_prompt_index_at(&agent.scrollback, idx));
@@ -140,10 +136,6 @@ pub(super) fn dispatch_rewind_show_picker(app: &mut AppView) -> Vec<Effect> {
         app.show_toast("No active session");
         return vec![];
     };
-
-    // Rewind takes input priority over the `/jump` picker; close a lingering
-    // one first so it can't reappear (stale) after rewind finishes.
-    agent.dismiss_jump_picker();
 
     if agent.session.state.is_busy() {
         let anchor = agent.scrollback.len().saturating_sub(1);

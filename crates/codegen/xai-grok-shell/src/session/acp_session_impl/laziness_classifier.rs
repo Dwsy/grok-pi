@@ -471,7 +471,8 @@ pub(crate) const CLASSIFIER_REFRESH_TURNS: usize = 16;
 /// user message or huge tool args can't blow up the per-call classifier request
 /// (token/latency, or context overflow → error → silent heuristic fallback).
 /// Mirrors the laziness classifier's 400-char field cap; truncation appends the
-const CLASSIFIER_TURN_MAX_LEN: usize = xai_grok_workspace::permission::CLASSIFIER_TURN_MAX_LEN;
+/// marker so the cut is model-visible.
+const CLASSIFIER_TURN_MAX_LEN: usize = 400;
 
 /// Build the auto-mode classifier transcript from the most recent `max_items`
 /// conversation items, chronological. Captures GENUINE user text (real input or

@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 2,
+  "deliveryVersion": "4.0.0",
+  "frontend": {
+    "binary": "grok-pi",
+    "compositionPackage": "xai-grok-pager-bin",
+    "tui": "xai-grok-pager",
+    "minimalRenderer": "xai-grok-pager-minimal",
+    "markdownRenderer": "xai-grok-markdown",
+    "customRenderer": false,
+    "fallbackRenderer": false,
+    "adapterTerminalDependencies": []
+  },
+  "core": {
+    "agent": "Pi",
+    "transport": "Pi JSONL RPC over stdio",
+    "bridge": "pi-grok-adapter -> ACP"
+  },
+  "nativeGrokComponents": [
+    "production terminal lifecycle",
+    "PromptWidget",
+    "completion dropdown and slash registry",
+    "QuestionView",
+    "agent status and sticky banner",
+    "scrollback",
+    "Markdown and code rendering",
+    "tool cards and diff rendering",
+    "minimal/fullscreen modes",
+    "theme, timestamps, mouse, vim and multiline controls"
+  ],
+  "bootstrap": [
+    "get_state",
+    "get_available_models",
+    "get_commands",
+    "get_messages"
+  ],
+  "piRpcCommandsUsed": [
+    "get_state",
+    "get_available_models",
+    "get_commands",
+    "get_messages",
+    "prompt",
+    "abort",
+    "abort_bash",
+    "bash",
+    "new_session",
+    "compact",
+    "set_model",
+    "set_thinking_level",
+    "set_session_name"
+  ],
+  "nativeSlashCommands": [
+    "exit",
+    "help",
+    "new",
+    "compact",
+    "model",
+    "effort",
+    "rename",
+    "copy",
+    "find",
+    "transcript",
+    "export",
+    "expand",
+    "queue",
+    "multiline",
+    "compact-mode",
+    "vim-mode",
+    "theme",
+    "timestamps",
+    "toggle-mouse-reporting"
+  ],
+  "slashRouting": {
+    "piCatalog": "get_commands -> ACP AvailableCommand -> Grok native slash registry",
+    "adapterSpecificCommands": [],
+    "excludedGrokProductCommands": [
+      "history",
+      "minimal",
+      "fullscreen",
+      "login",
+      "logout",
+      "usage",
+      "plugins",
+      "mcp",
+      "memory",
+      "workspace",
+      "share",
+      "voice",
+      "debug"
+    ],
+    "notes": {
+      "minimalFullscreen": "native renderer modes remain available at process startup; their stock slash commands are omitted because Grok re-exec argv is not compatible with the grok-pi composition CLI",
+      "history": "omitted because Pi RPC does not expose the pager prompt-history endpoint; restored-session history would otherwise be incomplete"
+    }
+  },
+  "extensionUi": {
+    "notify": "Grok native toast",
+    "setStatus": "Grok native sticky status/banner",
+    "setWidget": "Grok native persistent banner surface",
+    "setTitle": "Grok native terminal title",
+    "set_editor_text": "Grok native PromptWidget",
+    "select": "Grok native QuestionView options",
+    "confirm": "Grok native QuestionView yes/no",
+    "input": "QuestionView freeform PromptWidget",
+    "editor": "QuestionView multiline PromptWidget"
+  },
+  "events": [
+    "agent_start",
+    "agent_end",
+    "agent_settled",
+    "turn_start",
+    "turn_end",
+    "message_start",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+    "queue_update",
+    "compaction_start",
+    "compaction_end",
+    "auto_retry_start",
+    "auto_retry_end",
+    "session_info_changed",
+    "thinking_level_changed",
+    "extension_ui_request",
+    "extension_error"
+  ],
+  "notExposedByPiRpc": [
+    "raw terminal input hook",
+    "custom component factories",
+    "custom header/footer/editor components",
+    "synchronous getEditorText",
+    "Pi TUI theme/component objects"
+  ]
+}

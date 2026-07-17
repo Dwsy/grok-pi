@@ -39,7 +39,7 @@ fn row_cells(lines: &[StyledLine], row: u16) -> Vec<(Option<String>, bool)> {
 /// test re-injects a dummy one for OSC 52 readback — same pattern as
 /// `recap_header_not_in_selection_pty`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn quote_block_drag_copy_excludes_bars_pty() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!(

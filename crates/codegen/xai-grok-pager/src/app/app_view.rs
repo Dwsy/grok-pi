@@ -73,6 +73,65 @@ impl NewWorktreeDialogState {
         }
     }
 }
+/// State surfaced by an external ACP backend through native Grok pager UI.
+///
+/// The adapter owns no terminal widgets. It only updates this small semantic
+/// state; the existing Grok toast, sticky-banner, prompt and question-view
+/// components remain the sole renderers.
+#[derive(Debug, Default)]
+pub struct ExternalUiState {
+    pub statuses: std::collections::BTreeMap<String, String>,
+    pub widgets: std::collections::BTreeMap<String, ExternalWidget>,
+    pub pending_toasts: std::collections::VecDeque<String>,
+    /// Session metadata from the external agent, rendered by the existing
+    /// native SessionPicker rather than by an adapter-owned selector.
+    pub session_catalog: Vec<SessionPickerEntry>,
+}
+
+/// Semantic placement supplied by an external ACP adapter. Grok's native
+/// pager has one persistent status/banner surface rather than arbitrary
+/// extension-owned terminal regions, so placement controls ordering within
+/// that surface instead of creating a second renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalWidgetPlacement {
+    AboveEditor,
+    BelowEditor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalWidget {
+    pub lines: Vec<String>,
+    pub placement: ExternalWidgetPlacement,
+}
+
+fn append_external_widgets(
+    output: &mut Vec<String>,
+    widgets: &std::collections::BTreeMap<String, ExternalWidget>,
+    placement: ExternalWidgetPlacement,
+) {
+    for (key, widget) in widgets {
+        if widget.placement != placement {
+            continue;
+        }
+        let text = widget
+            .lines
+            .iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        if text.is_empty() {
+            continue;
+        }
+        let rendered = if widgets.len() == 1 {
+            text
+        } else {
+            format!("{key}: {text}")
+        };
+        output.push(rendered);
+    }
+}
+
 /// Per-visit announcement UI state on the welcome screen. Reset on every
 /// return-to-welcome transition (see `show_welcome`) so a previously expanded
 /// announcement can't leak into a freshly shown screen; the non-`expanded`
@@ -298,7 +357,7 @@ impl VoiceState {
     }
 }
 /// Entry in the session picker list on the welcome screen.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPickerEntry {
     pub id: String,
     pub summary: String,
@@ -321,7 +380,7 @@ pub struct SessionPickerEntry {
     pub card_detail: Option<CardDetail>,
 }
 /// Detail loaded on-demand when a session card is expanded.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardDetail {
     pub turn_count: usize,
     pub tool_call_count: usize,
@@ -868,8 +927,6 @@ pub struct AppView {
     pub yolo_policy_block: Option<&'static str>,
     /// One-shot notice that a launch `--yolo` was pinned off; shown on the first agent view.
     pub yolo_launch_block_notice: Option<&'static str>,
-    /// One-shot switch-back toast after a screen-mode re-exec.
-    pub screen_mode_switch_hint: Option<&'static str>,
     /// Require explicit plan approval via the plan viewer UI even in
     /// always-approve (YOLO) mode. Loaded from `[ui] require_plan_approval`
     /// in config.toml at startup.
@@ -1076,6 +1133,12 @@ pub struct AppView {
     /// combinations are unrepresentable; production mutates it only through the
     /// `AppView::voice_*` transition methods.
     pub voice_state: VoiceState,
+    /// Semantic state supplied by an external ACP adapter (for example Pi).
+    /// Empty for the normal Grok backend.
+    pub external_ui: ExternalUiState,
+    /// True when the native pager is hosting an external ACP adapter. Used to
+    /// suppress Grok-backend persistence while preserving native controls.
+    pub external_agent: bool,
 }
 impl AppView {
     pub fn is_zdr_blocked(&self) -> bool {
@@ -1149,13 +1212,8 @@ impl AppView {
             self.show_resolved_model = show;
         }
     }
-    /// Force voice on for API-key sessions when only a remote rule left it off.
-    /// Requirement / env / config pins still win.
     pub(crate) fn ensure_voice_for_api_key(&mut self) {
-        if !self.is_api_key_auth || self.voice_mode_enabled {
-            return;
-        }
-        if crate::app::resolve_voice_mode_live(None, false) {
+        if self.is_api_key_auth && !self.voice_mode_enabled {
             self.apply_voice_mode_enabled(true);
         }
     }
@@ -1262,7 +1320,6 @@ impl AppView {
             auto_mode_gate: xai_grok_shell::util::config::auto_permission_mode_enabled_from_disk(),
             yolo_policy_block: None,
             yolo_launch_block_notice: None,
-            screen_mode_switch_hint: None,
             require_plan_approval: false,
             plan_mode: false,
             subagents: false,
@@ -1350,6 +1407,8 @@ impl AppView {
             voice_auth: None,
             voice_cmd_tx: None,
             voice_state: VoiceState::Idle,
+            external_ui: ExternalUiState::default(),
+            external_agent: false,
         }
     }
     /// Seed `deferred_model_switch` from CLI `-m`. The CLI effort token is
@@ -1380,25 +1439,16 @@ impl AppView {
     pub fn voice_can_start_pipeline(&self) -> bool {
         self.voice_mode_enabled && xai_grok_voice::AUDIO_SUPPORTED
     }
-    /// Sync voice availability into slash surfaces, cheatsheet, and settings.
-    /// Mirrors `apply_session_recap_available` for `/recap`.
+    /// Sync voice availability into the execution gate and every slash surface
+    /// (so `/voice` is hidden/shown in lockstep). Callers resolve the gate via
+    /// [`crate::app::resolve_voice_mode_enabled`] (env > remote > default on);
+    /// `false` is a kill switch. Mirrors `apply_session_recap_available` for
+    /// `/recap`.
     pub fn apply_voice_mode_enabled(&mut self, enabled: bool) {
         self.voice_mode_enabled = enabled;
         crate::app::VOICE_MODE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
         for agent in self.agents.values_mut() {
             agent.set_voice_mode_available(enabled);
-            match agent.active_modal.as_mut() {
-                Some(crate::views::modal::ActiveModal::Settings { state }) => {
-                    state.rebuild_rows();
-                }
-                Some(crate::views::modal::ActiveModal::ResetSettingsConfirm {
-                    settings_state,
-                    ..
-                }) => {
-                    settings_state.rebuild_rows();
-                }
-                _ => {}
-            }
         }
         self.welcome_prompt.set_voice_visible(enabled);
         if let Some(dashboard) = self.dashboard.as_mut() {
@@ -1694,6 +1744,169 @@ impl AppView {
             }
             ActiveView::Welcome => {}
         }
+    }
+
+    /// Show a Pi/external-backend notification through Grok's native toast.
+    /// Notifications that arrive before a session view exists are queued and
+    /// drained by [`Self::tick`] once the native agent view is active.
+    pub fn show_external_notification(&mut self, message: &str, kind: Option<&str>) {
+        let rendered = match kind {
+            Some("warning") => format!("Warning: {message}"),
+            Some("error") => format!("Error: {message}"),
+            _ => message.to_string(),
+        };
+        if matches!(self.active_view, ActiveView::Agent(_)) {
+            self.show_toast(&rendered);
+        } else {
+            self.external_ui.pending_toasts.push_back(rendered);
+        }
+    }
+
+    /// Update one external status key and redraw the native sticky banner.
+    pub fn set_external_session_catalog(&mut self, entries: Vec<SessionPickerEntry>) -> bool {
+        if !self.external_agent {
+            return false;
+        }
+        let catalog_changed = self.external_ui.session_catalog != entries;
+        if catalog_changed {
+            self.external_ui.session_catalog = entries;
+        }
+        let ActiveView::Agent(agent_id) = self.active_view else {
+            return catalog_changed;
+        };
+        let Some(agent) = self.agents.get_mut(&agent_id) else {
+            return catalog_changed;
+        };
+        let Some(crate::views::modal::ActiveModal::SessionPicker {
+            entries, loading, ..
+        }) = agent.active_modal.as_mut()
+        else {
+            return catalog_changed;
+        };
+        let picker_changed = entries.as_ref() != Some(&self.external_ui.session_catalog) || *loading;
+        *entries = Some(self.external_ui.session_catalog.clone());
+        *loading = false;
+        catalog_changed || picker_changed
+    }
+
+    pub fn set_external_status(&mut self, key: String, text: Option<String>) -> bool {
+        match text.filter(|value| !value.trim().is_empty()) {
+            Some(value) => {
+                self.external_ui.statuses.insert(key, value);
+            }
+            None => {
+                self.external_ui.statuses.remove(&key);
+            }
+        }
+        self.refresh_external_ui_surface()
+    }
+
+    /// Set or clear one Pi extension widget. The content remains owned and
+    /// rendered by Grok: we project it into the existing persistent banner
+    /// surface, preserving the requested above/status/below ordering without
+    /// introducing adapter-side Ratatui widgets.
+    pub fn set_external_widget(
+        &mut self,
+        key: String,
+        lines: Option<Vec<String>>,
+        placement: ExternalWidgetPlacement,
+    ) -> bool {
+        match lines.filter(|lines| lines.iter().any(|line| !line.trim().is_empty())) {
+            Some(lines) => {
+                self.external_ui
+                    .widgets
+                    .insert(key, ExternalWidget { lines, placement });
+            }
+            None => {
+                self.external_ui.widgets.remove(&key);
+            }
+        }
+        self.refresh_external_ui_surface()
+    }
+
+    /// Replace the text in whichever native Grok composer currently owns
+    /// keyboard input.
+    pub fn set_external_editor_text(&mut self, text: String) -> bool {
+        match self.active_view {
+            ActiveView::Agent(id) => {
+                let Some(agent) = self.agents.get_mut(&id) else {
+                    return false;
+                };
+                if let Some(child_sid) = agent.active_subagent.clone()
+                    && let Some(child) = agent.subagent_views.get_mut(&child_sid)
+                {
+                    child.prompt.set_text(&text);
+                } else {
+                    agent.prompt.set_text(&text);
+                }
+                true
+            }
+            ActiveView::Welcome => {
+                self.welcome_prompt.set_text(&text);
+                true
+            }
+            ActiveView::AgentDashboard => {
+                if let Some(dashboard) = self.dashboard.as_mut() {
+                    dashboard.dispatch.set_text(&text);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Dismiss a Pi-backed interaction that expired in Pi's RPC layer.
+    ///
+    /// The production QuestionView owns prompt stashing/restoration, so this
+    /// uses the same resolved-interaction path rather than mutating overlay
+    /// fields from the adapter.
+    pub fn dismiss_external_interaction(&mut self, tool_call_id: &str) -> bool {
+        let mut changed = false;
+        for agent in self.agents.values_mut() {
+            changed |= agent.dismiss_resolved_interaction(tool_call_id);
+            for child in agent.subagent_views.values_mut() {
+                changed |= child.dismiss_resolved_interaction(tool_call_id);
+            }
+        }
+        changed
+    }
+
+    /// Reconcile external status state into Grok's native sticky banner.
+    /// Called on updates and every tick so a newly loaded session inherits the
+    /// current external status without adapter-owned rendering state.
+    pub fn refresh_external_ui_surface(&mut self) -> bool {
+        if !self.external_agent {
+            return false;
+        }
+        let mut parts = Vec::new();
+        append_external_widgets(
+            &mut parts,
+            &self.external_ui.widgets,
+            ExternalWidgetPlacement::AboveEditor,
+        );
+        for (key, value) in &self.external_ui.statuses {
+            let line = if self.external_ui.statuses.len() == 1 {
+                value.clone()
+            } else {
+                format!("{key}: {value}")
+            };
+            parts.push(line);
+        }
+        append_external_widgets(
+            &mut parts,
+            &self.external_ui.widgets,
+            ExternalWidgetPlacement::BelowEditor,
+        );
+        let banner = (!parts.is_empty()).then(|| parts.join("  ·  "));
+        let mut changed = false;
+        for agent in self.agents.values_mut() {
+            if agent.sticky_toast.as_deref() != banner.as_deref() {
+                agent.set_sticky_toast_recursive(banner.as_deref());
+                changed = true;
+            }
+        }
+        changed
     }
     /// Insert or replace a leader roster entry, keyed by `session_id`.
     pub fn upsert_roster_entry(&mut self, entry: crate::app::roster::RosterEntry) {
@@ -4505,6 +4718,15 @@ impl AppView {
     /// or when new tracing entries arrive via the channel.
     pub fn tick(&mut self) -> bool {
         let mut needs_redraw = false;
+        needs_redraw |= self.refresh_external_ui_surface();
+        if let ActiveView::Agent(id) = self.active_view
+            && let Some(agent) = self.agents.get_mut(&id)
+            && agent.toast.is_none()
+            && let Some(message) = self.external_ui.pending_toasts.pop_front()
+        {
+            agent.show_toast(&message);
+            needs_redraw = true;
+        }
         needs_redraw |= self.minimal_state.transcript.is_some();
         needs_redraw |= self.poll_clipboard_focus_tip();
         if matches!(self.active_view, ActiveView::Welcome) {
@@ -5097,7 +5319,6 @@ pub(crate) mod tests {
             auto_mode_gate: true,
             yolo_policy_block: None,
             yolo_launch_block_notice: None,
-            screen_mode_switch_hint: None,
             require_plan_approval: false,
             plan_mode: false,
             subagents: false,
@@ -5238,6 +5459,8 @@ pub(crate) mod tests {
             voice_auth: None,
             voice_cmd_tx: None,
             voice_state: VoiceState::Idle,
+            external_ui: ExternalUiState::default(),
+            external_agent: false,
         }
     }
     fn test_app_with_agent() -> AppView {

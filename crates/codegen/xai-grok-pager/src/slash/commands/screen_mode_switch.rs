@@ -1,4 +1,15 @@
-//! `/minimal` and `/fullscreen` — session-scoped re-exec of the active session.
+//! `/minimal` and `/fullscreen` — reopen the current session in the other
+//! screen mode.
+//!
+//! The two commands are exact mirrors, so one parameterized [`SlashCommand`]
+//! backs both: each is offered only while the *other* mode is active, and
+//! `run` dispatches [`Action::RelaunchInScreenMode`], which quits the event
+//! loop and re-execs the pager with `--resume <session_id>` plus an explicit
+//! `--minimal`/`--fullscreen` so the same conversation comes back under the
+//! requested render path. The relaunched process persists the flag as the
+//! sticky `[ui] screen_mode` config.toml preference, so future plain `grok`
+//! invocations reuse the mode. See `crate::app::screen_mode_relaunch` for the
+//! re-exec side.
 
 use crate::app::ScreenMode;
 use crate::app::actions::Action;
@@ -61,9 +72,9 @@ impl SlashCommand for ScreenModeSwitchCommand {
 
     fn description(&self) -> &str {
         if self.to_minimal {
-            "Reopen this session in minimal (scrollback-native) mode — switch back with /fullscreen"
+            "Reopen this session in minimal (scrollback-native) mode and make it the default"
         } else {
-            "Reopen this session in fullscreen mode — switch back with /minimal"
+            "Reopen this session in fullscreen mode and make it the default"
         }
     }
 

@@ -2592,46 +2592,12 @@ async fn data_collection_enabled_for_non_zdr_team_with_unrelated_blocks() {
         "non-ZDR blocked reasons must not disable data collection"
     );
 }
-fn enable_product_telemetry(agent: &MvpAgent) {
-    agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-}
 /// Enable trace uploads via config so only the auth-level privacy gate
 /// can disable collection in the tests below.
 fn enable_trace_upload_config(agent: &MvpAgent) {
     let mut cfg = agent.cfg.borrow_mut();
     cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
     cfg.telemetry.trace_upload = Some(true);
-}
-#[tokio::test]
-async fn product_analytics_enabled_for_normal_user_with_telemetry_on() {
-    let agent = build_agent_with_auth(crate::auth::GrokAuth::test_default());
-    enable_product_telemetry(&agent);
-    assert!(agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_enabled_despite_coding_retention_opt_out() {
-    let agent = build_agent_with_auth(crate::auth::GrokAuth {
-        coding_data_retention_opt_out: true,
-        ..crate::auth::GrokAuth::test_default()
-    });
-    enable_product_telemetry(&agent);
-    assert!(agent.is_data_collection_disabled());
-    assert!(agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_disabled_for_zdr_team() {
-    let agent = build_agent_with_auth(crate::auth::GrokAuth {
-        team_blocked_reasons: vec!["BLOCKED_REASON_NO_LOGS".into()],
-        ..crate::auth::GrokAuth::test_default()
-    });
-    enable_product_telemetry(&agent);
-    assert!(!agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_disabled_when_telemetry_off() {
-    let agent = build_agent_with_auth(crate::auth::GrokAuth::test_default());
-    agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
-    assert!(!agent.product_analytics_enabled());
 }
 /// Counting HTTP stub: any request increments the counter and gets a
 /// storage-proxy-shaped 200 so the client does not retry.

@@ -39,10 +39,6 @@ pub struct UiConfig {
     /// Written by the pager's appearance persist module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_timestamps: Option<bool>,
-    /// Timeline sidebar (per-turn tick rail in place of the scrollbar).
-    /// `None` = off (client default; opt-in). Written by the pager's settings modal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub show_timeline: Option<bool>,
     /// Theme to use when the OS is in dark mode. Written by the pager's theme persist module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_dark_theme: Option<String>,
@@ -141,7 +137,12 @@ pub struct UiConfig {
     /// steady block. Config-file-only knob (no /settings row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor_blink: Option<bool>,
-    /// `"fullscreen"` | `"minimal"`; unset → product default fullscreen.
+    /// Sticky screen-mode preference (`"minimal"` | `"fullscreen"`). Written by
+    /// the pager when an explicit `--minimal`/`--fullscreen` flag or a
+    /// `/minimal`//`/fullscreen` command is used, and read at startup so plain
+    /// `grok` reopens in whatever mode was last explicitly chosen. Unset keeps
+    /// the legacy resolution (pager.toml `[terminal] minimal`, alt-screen
+    /// policy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_mode: Option<String>,
     /// Retired hidden opt-in for terminal-like double/triple-click word/line
@@ -238,7 +239,6 @@ impl Default for UiConfig {
             approval_mode: None,
             default_selected_permission: None,
             show_timestamps: None,
-            show_timeline: None,
             auto_dark_theme: None,
             auto_light_theme: None,
             scroll_speed: None,
@@ -269,24 +269,6 @@ impl Default for UiConfig {
 }
 
 impl UiConfig {
-    /// The single source of truth for the timeline-sidebar default (opt-in).
-    /// Flip this one line to change the default everywhere.
-    ///
-    // TODO: migrate the other boolean UI settings (show_timestamps,
-    // simple_mode, show_thinking_blocks, …) to the same const + resolver
-    // pattern. They currently duplicate their default literal across
-    // cache.rs / config.rs / defs.rs / setters.rs / registry.rs and rely on
-    // the registry drift-guard test to catch mismatches.
-    pub const SHOW_TIMELINE_DEFAULT: bool = false;
-
-    /// Resolved timeline-sidebar setting: the configured value, or
-    /// [`Self::SHOW_TIMELINE_DEFAULT`] when unset. The one place the default
-    /// is applied — every layer (cache, appearance config, settings modal)
-    /// reads through here so they cannot drift.
-    pub fn show_timeline_enabled(&self) -> bool {
-        self.show_timeline.unwrap_or(Self::SHOW_TIMELINE_DEFAULT)
-    }
-
     /// True when the highlight should not timer-dismiss (`hold` / `word_select`,
     /// or legacy duration 0).
     pub fn keep_text_selection_enabled(&self) -> bool {

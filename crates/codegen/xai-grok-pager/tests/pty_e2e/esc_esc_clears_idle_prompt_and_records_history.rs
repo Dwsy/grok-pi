@@ -30,9 +30,7 @@ async fn esc_esc_clears_idle_prompt_and_records_history() {
     harness
         .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
         .expect("first turn rendered");
-    harness
-        .wait_for_turn_idle(Duration::from_secs(15))
-        .expect("turn idle");
+    wait_for_turn_idle(&mut harness);
 
     let draft = "ZZCLEARDRAFT";
     harness.inject_keys(draft.as_bytes()).expect("type draft");

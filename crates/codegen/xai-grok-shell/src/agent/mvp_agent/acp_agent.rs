@@ -429,8 +429,7 @@ impl acp::Agent for MvpAgent {
                         ::session::slash_commands::builtin_commands(self
                         .command_availability()), "cancelRewind" : self.cfg.borrow()
                         .resolve_cancel_rewind().value, "sessionRecap" : self.cfg
-                        .borrow().is_session_recap_enabled(), "voiceMode" : self.cfg
-                        .borrow().is_voice_mode_enabled(), }
+                        .borrow().is_session_recap_enabled(), }
                     )
                         .as_object()
                         .cloned()
@@ -1080,8 +1079,9 @@ impl acp::Agent for MvpAgent {
             remote_settings.as_ref(),
         );
         let bridge_attach = BridgeAttach::NotAttached;
-        let product_analytics = self.product_analytics_enabled();
-        if product_analytics || xai_grok_telemetry::external::is_active() {
+        if !self.is_data_collection_disabled()
+            || xai_grok_telemetry::external::is_active()
+        {
             let sid = session_id.0.to_string();
             let ci = client_identifier.clone();
             let cv = self.client_version();
@@ -1095,6 +1095,7 @@ impl acp::Agent for MvpAgent {
             } else {
                 xai_grok_telemetry::enums::PermissionMode::Ask
             };
+            let internal_gate_open = !self.is_data_collection_disabled();
             tokio::spawn(async move {
                 let git = xai_grok_telemetry::context::collect_git_context(&cwd_str);
                 let ev = xai_grok_telemetry::events::SessionNew {
@@ -1104,7 +1105,7 @@ impl acp::Agent for MvpAgent {
                     is_git_repo: git.is_git_repo,
                     permission_mode: perm,
                 };
-                xai_grok_telemetry::session_ctx::log_event_dual(product_analytics, ev);
+                xai_grok_telemetry::session_ctx::log_event_dual(internal_gate_open, ev);
             });
         }
         if let Some(model_id) = resolved_custom_model {
@@ -1940,7 +1941,7 @@ impl acp::Agent for MvpAgent {
                 let _ = handle.cmd_tx.send(SessionCommand::RestorePlanApproval);
             }
         }
-        if self.product_analytics_enabled() {
+        if !self.is_data_collection_disabled() {
             log_event(xai_grok_telemetry::events::SessionLoad {
                 session_id: session_id.0.to_string(),
                 compaction_count: restored_compaction_count,

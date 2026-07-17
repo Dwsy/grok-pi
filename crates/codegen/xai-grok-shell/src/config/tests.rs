@@ -2782,21 +2782,10 @@ fn apply_requirements_pins_minimum_version() {
     apply_requirements_inner(&mut cfg_b, &req, &source);
     assert_eq!(cfg_b.cli.minimum_version.as_deref(), Some("0.1.150"));
 }
-#[test]
-fn apply_requirements_pins_voice_mode_false() {
-    let mut cfg = crate::agent::config::Config::default();
-    let req: toml::Value = toml::from_str("[features]\nvoice_mode = false\n").unwrap();
-    let source = RequirementSource::Requirements {
-        path: std::path::PathBuf::from("/test/requirements.toml"),
-    };
-    apply_requirements_inner(&mut cfg, &req, &source);
-    assert_eq!(cfg.requirements.voice_mode.pinned(), Some(false));
-    assert_eq!(cfg.features.voice_mode, Some(false));
-    assert!(! cfg.resolve_voice_mode().value);
-}
 /// Requirements enforcement beats a campaign-supplied default. The on-disk
 /// `Config` arrives campaign-overlaid (`models.default` = a campaign value);
-/// a requirements layer enforcing `[models] default` clamps it back.
+/// a requirements layer enforcing `[models] default` clamps it back, so
+/// requirements wins on the typed `Config`.
 #[test]
 fn apply_requirements_default_beats_campaign_default() {
     let raw: toml::Value = toml::from_str("[models]\ndefault = \"campaign-model\"\n")

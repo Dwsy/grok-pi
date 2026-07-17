@@ -9,11 +9,22 @@ use std::time::{Duration, Instant};
 
 use crate::{ContentController, PtyHarness};
 
-/// Pump PTY output until every label is absent from the visible screen.
+/// Pump PTY output until every label in `labels` is absent from the screen, or
+/// until `timeout` elapses. Reattach tests use this to wait out a slow replay
+/// before the negative spinner asserts — a fixed-duration settle would flake
+/// under host load. On timeout it returns and lets the caller's assert produce
+/// the rich screen-dump failure.
 pub fn wait_for_labels_absent(h: &mut PtyHarness, labels: &[&str], timeout: Duration) {
-    let _ = h.wait_until("screen labels to disappear", timeout, |h| {
-        labels.iter().all(|label| !h.contains_text(label))
-    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        if labels.iter().all(|l| !h.contains_text(l)) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        h.update(Duration::from_millis(100));
+    }
 }
 
 /// Submit `prompt` from `h`, then keep re-pressing Enter until the turn

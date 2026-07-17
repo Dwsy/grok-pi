@@ -307,6 +307,9 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
         effects.extend(dispatch(Action::SendPrompt(prompt), app));
         return effects;
     }
+    if source == "pi" {
+        return dispatch_load_session(app, session_id, Some(std::path::PathBuf::from(cwd)), false);
+    }
     let chat_kind = source == "conversation";
     if chat_kind {
         return dispatch_load_session(app, session_id, None, true);
@@ -1190,11 +1193,13 @@ pub(in crate::app::dispatch) fn handle_deep_search_results(
 }
 pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) -> Vec<Effect> {
     use crate::views::modal::ActiveModal;
+    let external_agent = app.external_agent;
+    let external_entries = external_agent.then(|| app.external_ui.session_catalog.clone());
     with_active_agent(app, |agent| {
         agent.active_modal = Some(ActiveModal::SessionPicker {
             state: crate::views::picker::PickerState::default(),
-            entries: None,
-            loading: true,
+            entries: external_entries,
+            loading: external_agent,
             lanes: Default::default(),
             previous_palette: None,
             window: crate::views::modal_window::ModalWindowState::new(),
@@ -1206,7 +1211,11 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
             pending_delete: None,
         });
     });
-    dispatch_fetch_session_list(app)
+    if external_agent {
+        vec![Effect::FetchExternalSessionCatalog]
+    } else {
+        dispatch_fetch_session_list(app)
+    }
 }
 /// The picker (modal `/resume` or welcome screen) was dismissed without a
 /// pick. Its own fields die with it, but a still-current in-flight

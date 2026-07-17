@@ -32,10 +32,10 @@ use super::{PagerArgs, PagerTerminal, acp_handler, dispatch, effects};
 pub(crate) struct TerminalState {
     pub is_control_mode: bool,
     pub screen_mode: super::ScreenMode,
-    /// One-shot `/minimal` re-exec (env override already consumed).
+    /// This process was re-exec'd by `/minimal` (one-shot env override, already
+    /// consumed). Queues the minimal welcome card so the viewport re-anchors at
+    /// the top of the freshly cleared main screen.
     pub relaunched_into_minimal: bool,
-    /// One-shot `/fullscreen` re-exec (env override already consumed).
-    pub relaunched_into_fullscreen: bool,
     /// Do NOT re-resolve via `theme::cache::resolve_initial_theme()` here:
     /// its OSC 11 fallback reads stdin and competes with the input reader.
     pub initial_theme: ThemeKind,
@@ -482,11 +482,37 @@ pub(crate) async fn run(
 
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
+
+    // Select the native pager command surface before any PromptWidget is
+    // constructed. External agents still use the exact same Grok composer,
+    // dropdown, modal, markdown, tool, and scrollback implementations; only
+    // product commands that their protocol cannot satisfy are omitted.
+    let ui_profile = connection.ui_profile.clone();
+    let external_agent = ui_profile.is_external();
+    match &ui_profile {
+        crate::acp::UiProfile::Grok => crate::slash::set_builtin_command_profile(
+            crate::slash::BuiltinCommandProfile::Grok,
+        ),
+        crate::acp::UiProfile::External(profile) => {
+            crate::slash::set_builtin_command_profile(
+                crate::slash::BuiltinCommandProfile::External(
+                    profile.builtin_commands.clone(),
+                ),
+            );
+            crate::unified_log::info(
+                "external agent pager profile enabled",
+                None,
+                Some(serde_json::json!({ "agent": profile.agent_name })),
+            );
+        }
+    }
+
     let mut app = AppView::new(
         connection.tx,
         connection.models,
         connection.available_commands,
     );
+    app.external_agent = external_agent;
     app.tracing_rx = Some(tracing_handle.rx);
     // Startup terminal height for the auto-compact derivation; kept fresh by
     // `Event::Resize` from here on. 0 (probe failure) never forces compact.
@@ -501,13 +527,13 @@ pub(crate) async fn run(
     // (`apply_app_scoped_gates` / `ensure_dashboard_state`); the welcome prompt
     // already exists, so inject here.
     app.welcome_prompt.set_screen_mode(term_state.screen_mode);
+    // Screen-mode relaunch into minimal (`/minimal` from fullscreen): queue the
+    // same top-of-screen welcome card `/new` uses so the first draw re-homes the
+    // viewport to row 0 and the resumed session starts cleanly under it. The
+    // `is_minimal` guard covers a Minimal→Inline probe downgrade in
+    // `init_terminal`, where the card must not be queued.
     if app.screen_mode.is_minimal() && term_state.relaunched_into_minimal {
         app.minimal_state.welcome_pending = true;
-    }
-    if term_state.relaunched_into_minimal && app.screen_mode.is_minimal() {
-        app.screen_mode_switch_hint = Some("Switched to minimal mode · /fullscreen to go back");
-    } else if term_state.relaunched_into_fullscreen && !app.screen_mode.is_minimal() {
-        app.screen_mode_switch_hint = Some("Switched to fullscreen mode · /minimal to go back");
     }
     let remote_permission_mode = remote_settings
         .as_ref()
@@ -551,10 +577,14 @@ pub(crate) async fn run(
         // Consumed by `switch_to_agent` once the first agent view opens.
         app.yolo_launch_block_notice = Some(warning);
     }
-    app.require_plan_approval = xai_grok_shell::util::config::load_require_plan_approval();
-    app.plan_mode = !args.no_plan;
-    app.subagents = !args.no_subagents;
-    app.ask_user = !args.no_ask_user;
+    app.require_plan_approval = if external_agent {
+        false
+    } else {
+        xai_grok_shell::util::config::load_require_plan_approval()
+    };
+    app.plan_mode = !external_agent && !args.no_plan;
+    app.subagents = !external_agent && !args.no_subagents;
+    app.ask_user = !external_agent && !args.no_ask_user;
     app.chat_mode = args.chat();
     app.restore_code = args.restore_code.then_some(true);
     if let Some(ref agent) = args.agent {
@@ -600,14 +630,27 @@ pub(crate) async fn run(
         .as_ref()
         .and_then(|s| s.show_resolved_model)
         .unwrap_or(true);
-    app.sharing_enabled = remote_settings
-        .as_ref()
-        .and_then(|s| s.sharing_enabled)
-        .unwrap_or(false);
-    app.plugin_cta_enabled = xai_grok_config::env_bool("GROK_PLUGIN_CTA")
-        .or_else(|| remote_settings.as_ref().and_then(|s| s.plugin_cta))
-        .unwrap_or(false);
-    // Voice is applied after auth_meta so API-key detection is accurate.
+    app.sharing_enabled = !external_agent
+        && remote_settings
+            .as_ref()
+            .and_then(|s| s.sharing_enabled)
+            .unwrap_or(false);
+    app.plugin_cta_enabled = !external_agent
+        && xai_grok_config::env_bool("GROK_PLUGIN_CTA")
+            .or_else(|| remote_settings.as_ref().and_then(|s| s.plugin_cta))
+            .unwrap_or(false);
+    // Voice/auth/product surfaces belong to the Grok backend. An external
+    // adapter may expose its own dynamic commands, but it must not accidentally
+    // activate Grok.com services.
+    let voice_mode_enabled = !external_agent
+        && crate::app::resolve_voice_mode_enabled(
+            xai_grok_config::env_bool("GROK_VOICE_MODE"),
+            remote_settings.as_ref().and_then(|s| s.voice_mode_enabled),
+        );
+    app.apply_voice_mode_enabled(voice_mode_enabled);
+    if external_agent {
+        app.usage_visible = false;
+    }
     app.session_picker_grouped = std::env::var("GROK_SESSION_PICKER_GROUPED")
         .ok()
         .and_then(|v| match v.as_str() {
@@ -716,22 +759,12 @@ pub(crate) async fn run(
         app.is_api_key_auth = app.auth_methods.iter().any(|m| {
             m.id().0.as_ref() == xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID
         });
-        // No AuthMeta on this path — hide `/usage` for API keys.
+        // No AuthMeta on this path — hide `/usage` and enable voice for API keys.
         if app.is_api_key_auth {
             app.usage_visible = false;
+            app.ensure_voice_for_api_key();
         }
     }
-
-    // After auth so API-key + managed policy resolve correctly.
-    let voice_mode_enabled = crate::app::resolve_voice_mode_live(
-        remote_settings.as_ref().and_then(|s| s.voice_mode_enabled),
-        app.is_api_key_auth,
-    );
-    if !voice_mode_enabled {
-        app.voice_reset();
-        app.voice_ui_active = false;
-    }
-    app.apply_voice_mode_enabled(voice_mode_enabled);
 
     // Fallback: prefetch may have gate info the shell's AuthMeta missed.
     // Errs on the side of blocking if stale.
@@ -840,7 +873,7 @@ pub(crate) async fn run(
         app.welcome_prompt_focused = false;
     }
 
-    {
+    if !external_agent {
         use xai_grok_shell::util::config::{resolve_announcements, resolve_tips};
 
         let remote_announcements = remote_settings
@@ -872,6 +905,11 @@ pub(crate) async fn run(
             let grok_home = xai_grok_tools::util::grok_home::grok_home();
             app.tip = xai_grok_shell::util::tips::pick_and_advance(&app.tips, &grok_home);
         }
+    } else {
+        app.active_announcements.clear();
+        app.announcement = None;
+        app.tips.clear();
+        app.tip = None;
     }
 
     let hints = xai_grok_shell::util::config::resolve_hints(
@@ -981,7 +1019,6 @@ pub(crate) async fn run(
         app.last_known_terminal_rows,
     );
     initial_config.show_timestamps = crate::appearance::cache::load_timestamps();
-    initial_config.show_timeline = crate::appearance::cache::load_show_timeline();
     let tick_interval = initial_config.animation.tick_interval();
     crate::appearance::set_tab_width(initial_config.scrollback.display.tab_width);
     app.set_appearance(initial_config);
@@ -989,17 +1026,6 @@ pub(crate) async fn run(
     // Seed app state from disk once at the I/O boundary so dispatch
     // stays sans-IO.
     app.current_ui = load_initial_ui_config();
-    // Field-tolerant: a whole-`UiConfig` default (malformed unrelated `[ui]`
-    // field) must not wipe a valid `show_timeline` or leave appearance /
-    // cache / `current_ui` disagreeing — `/timeline` and the rail all read
-    // the same canonical value after this sync + `prime` below.
-    let show_timeline = crate::appearance::cache::load_show_timeline();
-    app.current_ui.show_timeline = Some(show_timeline);
-    if app.appearance.show_timeline != show_timeline {
-        let mut config = app.appearance.clone();
-        config.show_timeline = show_timeline;
-        app.set_appearance(config);
-    }
     // Disk load replaces `current_ui`. Assign one policy-clamped resolved
     // launch mode unconditionally (CLI > TOML > remote > Ask) so disk Auto
     // cannot win over `--permission-mode ask`, and a policy-clamped remote
@@ -1076,8 +1102,16 @@ pub(crate) async fn run(
         })),
     );
     let config_session_bools = load_initial_config_session_bools();
-    app.show_tips = config_session_bools.show_tips;
-    app.auto_update = config_session_bools.auto_update;
+    app.show_tips = if external_agent {
+        Some(false)
+    } else {
+        config_session_bools.show_tips
+    };
+    app.auto_update = if external_agent {
+        Some(false)
+    } else {
+        config_session_bools.auto_update
+    };
     app.ask_user_question_timeout_enabled = config_session_bools.ask_user_question_timeout_enabled;
     // Prime thread-local caches so first render doesn't hit disk.
     crate::appearance::cache::prime(&app.current_ui);
@@ -1214,7 +1248,8 @@ pub(crate) async fn run(
     // immediately at loop start so an already-open dashboard refreshes
     // without waiting a full interval.
     const ROSTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
-    let mut roster_poll_at: Option<Instant> = Some(Instant::now());
+    let mut roster_poll_at: Option<Instant> =
+        (!external_agent).then(Instant::now);
 
     // Pre-generate the automatic "return-from-away" recap while the terminal is
     // unfocused, so it's already in the scrollback (instant) when the user
@@ -1222,19 +1257,24 @@ pub(crate) async fn run(
     // heavy lifting (the model call) only fires once per away period via
     // `should_pregenerate_away_recap`.
     const RECAP_POLL_INTERVAL: Duration = Duration::from_secs(20);
-    let mut recap_poll_at: Option<Instant> = Some(Instant::now() + RECAP_POLL_INTERVAL);
+    let mut recap_poll_at: Option<Instant> = (!external_agent)
+        .then(|| Instant::now() + RECAP_POLL_INTERVAL);
 
     // Seed the folder-trust verdict BEFORE the first render and before any
     // session is created (no repo-local MCP/LSP/hooks/plugins have loaded yet).
     // Feature-off (kill-switch / opt-out / local build) resolves `Trusted`, so
     // this stays `TrustState::Done`.
-    seed_trust_state(&mut app, remote_settings.as_ref());
+    if external_agent {
+        app.trust_state = TrustState::Done;
+    } else {
+        seed_trust_state(&mut app, remote_settings.as_ref());
+    }
 
     // Initial render
     app.draw(terminal);
 
     // status only; shell auto-syncs post-auth
-    if matches!(app.auth_state, AuthState::Done) {
+    if !external_agent && matches!(app.auth_state, AuthState::Done) {
         let effs = dispatch::dispatch(Action::RequestBundleStatus, &mut app);
         if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
             return Ok(make_run_result(&app));
@@ -2025,7 +2065,6 @@ pub(crate) async fn run(
                 // `PromptWidget.compact`).
                 config.prompt.compact = app.appearance.prompt.compact;
                 config.show_timestamps = app.appearance.show_timestamps;
-                config.show_timeline = app.appearance.show_timeline;
                 tick_interval = config.animation.tick_interval();
                 crate::appearance::set_tab_width(config.scrollback.display.tab_width);
                 app.set_appearance(config);

@@ -31,6 +31,42 @@ pub use command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
 /// Maximum number of visible rows in the dropdown (scroll beyond this).
 pub const MAX_VISIBLE_SUGGESTIONS: usize = 6;
 
+/// Process-wide builtin command policy. The pager hosts one agent backend per
+/// process, so setting this once before constructing `AppView` keeps every
+/// prompt surface (welcome, agent tabs, dashboard) on the same native command
+/// registry without threading renderer policy through the component tree.
+#[derive(Debug, Clone, Default)]
+pub enum BuiltinCommandProfile {
+    #[default]
+    Grok,
+    External(Vec<String>),
+}
+
+fn command_profile_cell() -> &'static std::sync::RwLock<BuiltinCommandProfile> {
+    static PROFILE: std::sync::OnceLock<std::sync::RwLock<BuiltinCommandProfile>> =
+        std::sync::OnceLock::new();
+    PROFILE.get_or_init(|| std::sync::RwLock::new(BuiltinCommandProfile::Grok))
+}
+
+/// Select the native slash-command surface for the backend hosted by this
+/// pager process. ACP-advertised commands are still merged dynamically.
+pub fn set_builtin_command_profile(profile: BuiltinCommandProfile) {
+    *command_profile_cell()
+        .write()
+        .expect("slash command profile lock poisoned") = profile;
+}
+
+fn profiled_builtin_commands() -> Vec<std::sync::Arc<dyn SlashCommand>> {
+    match command_profile_cell()
+        .read()
+        .expect("slash command profile lock poisoned")
+        .clone()
+    {
+        BuiltinCommandProfile::Grok => commands::builtin_commands(),
+        BuiltinCommandProfile::External(names) => commands::builtin_commands_named(&names),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SuggestionRow
 // ---------------------------------------------------------------------------
@@ -371,7 +407,7 @@ impl SlashController {
 
     /// Create a controller pre-loaded with pager builtin commands.
     pub fn with_builtins(cwd: std::path::PathBuf) -> Self {
-        Self::new(CommandRegistry::new(commands::builtin_commands()), cwd)
+        Self::new(CommandRegistry::new(profiled_builtin_commands()), cwd)
     }
 
     /// Mutable access to the registry (for ACP sync).

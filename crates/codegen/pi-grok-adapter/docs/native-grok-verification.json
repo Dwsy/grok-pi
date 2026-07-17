@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 2,
+  "passed": true,
+  "workspace": "/Users/dengwenyu/Downloads/pi-grok-native-v4.0.0/grok-build-main",
+  "piSource": "/Users/dengwenyu/Downloads/pi-grok-native-v4.0.0/pi-main",
+  "checks": {
+    "adapter_is_workspace_library": {
+      "passed": true,
+      "detail": "pi-grok-adapter is a library-only workspace member; the former standalone TUI target is absent"
+    },
+    "adapter_has_no_terminal_dependencies": {
+      "passed": true,
+      "detail": "no terminal/rendering dependencies in the Pi adapter"
+    },
+    "adapter_has_no_renderer_input_or_terminal_loop": {
+      "passed": true,
+      "detail": "adapter only translates Pi JSONL RPC to ACP"
+    },
+    "composition_binary_is_native_grok_package": {
+      "passed": true,
+      "detail": "grok-pi is a second composition root in xai-grok-pager-bin",
+      "evidence": "crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs"
+    },
+    "composition_binary_does_not_render": {
+      "passed": true,
+      "detail": "grok-pi performs process/ACP composition only"
+    },
+    "binary_enters_production_grok_pager": {
+      "passed": true,
+      "detail": "grok-pi enters Grok's production terminal initialization, writer, event loop and restore path"
+    },
+    "native_grok_tui_components_present": {
+      "passed": true,
+      "detail": "native prompt, slash, question, status, scrollback, minimal and Markdown components are present"
+    },
+    "uploaded_grok_tree_is_byte_identical_outside_declared_seams": {
+      "passed": true,
+      "detail": "2696 uploaded Grok files are SHA-256 identical; only 19 declared semantic/manifest seams may differ"
+    },
+    "native_renderer_input_markdown_hashes_match": {
+      "passed": true,
+      "detail": "283 native renderer/input/Markdown files match the uploaded Grok source"
+    },
+    "modified_surface_is_exact_and_semantic": {
+      "passed": true,
+      "detail": "exactly 19 workspace/ACP/state/dispatch/slash seams are declared; no renderer module is mutable"
+    },
+    "no_fallback_or_old_custom_tui": {
+      "passed": true,
+      "detail": "no fallback acknowledgement, old pi-grok-tui crate, or custom renderer remains"
+    },
+    "slash_surface_uses_grok_native_commands_and_pi_catalog": {
+      "passed": true,
+      "detail": "retained 20 existing Grok UI or ACP-backed commands; no adapter-specific slash UI",
+      "evidence": [
+        "exit",
+        "help",
+        "new",
+        "compact",
+        "model",
+        "effort",
+        "rename",
+        "resume",
+        "copy",
+        "find",
+        "transcript",
+        "export",
+        "expand",
+        "queue",
+        "multiline",
+        "compact-mode",
+        "vim-mode",
+        "theme",
+        "timestamps",
+        "toggle-mouse-reporting"
+      ]
+    },
+    "pi_commands_are_dynamic_acp_commands": {
+      "passed": true,
+      "detail": "Pi extension/prompt/skill commands are discovered from get_commands and merged by Grok's native ACP slash registry"
+    },
+    "adapter_rpc_calls_exist_in_uploaded_pi": {
+      "passed": true,
+      "detail": "validated 13 adapter RPC calls against Pi rpc-types.ts"
+    },
+    "all_pi_extension_ui_methods_use_native_grok_surfaces": {
+      "passed": true,
+      "detail": "all 9 Pi Extension UI methods map to Grok toast/status/widget/title/prompt/question surfaces"
+    },
+    "pi_runtime_events_are_projected_to_acp": {
+      "passed": true,
+      "detail": "validated 20 Pi lifecycle, stream, tool, queue, compaction, retry and UI event routes"
+    },
+    "adapter_event_routes_exist_in_uploaded_pi": {
+      "passed": true,
+      "detail": "all 20 routed events exist in the uploaded Pi source contract"
+    },
+    "pi_semantics_feed_grok_native_views": {
+      "passed": true,
+      "detail": "history, Markdown/reasoning streams, images, tools, model/effort, steer/follow-up and Bash are mapped into ACP"
+    },
+    "extension_dialog_semantics_match_pi": {
+      "passed": true,
+      "detail": "Pi timeouts cancel Grok QuestionView; confirm/value/cancel response shapes match rpc-types.ts"
+    },
+    "documentation_describes_native_grok_architecture": {
+      "passed": true,
+      "detail": "README and capabilities identify the production Grok pager and the headless Pi adapter"
+    }
+  }
+}

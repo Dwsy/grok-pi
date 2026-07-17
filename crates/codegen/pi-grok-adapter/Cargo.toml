@@ -1,0 +1,25 @@
+[package]
+name = "pi-grok-adapter"
+version = "0.4.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+description = "Headless Pi JSONL RPC to ACP adapter for the native Grok Build pager"
+
+[lib]
+name = "pi_grok_adapter"
+path = "src/lib.rs"
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "macros", "time"] }
+tracing = { workspace = true }
+xai-acp-lib = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

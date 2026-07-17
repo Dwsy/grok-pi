@@ -5,13 +5,13 @@
 //! skip this whole subtree. These exercise the sibling `xai-grok-pager-minimal`
 //! crate end-to-end through the built binary (which installs the minimal hook),
 //! so they live with the rest of the pty suite rather than in a separate crate.
-//! Shared harness helpers are reached via `crate::common` (the family root).
+//! Shared harness helpers are reached via `crate::common` (the `pty_e2e` root).
 
-mod minimal_cli_screen_mode_does_not_persist;
 mod minimal_commits_response_to_scrollback;
 mod minimal_committed_content_survives_overlay_grow;
 mod minimal_continue_reprints_transcript;
 mod minimal_ctrl_c_arms_and_quits;
+mod minimal_ctrl_o_send_now_queued_apple_terminal;
 mod minimal_double_esc_committed_queued_prompt_single_render;
 mod minimal_esc_mid_turn_is_swallowed;
 mod minimal_flush_left_no_hpad;
@@ -25,6 +25,7 @@ mod minimal_short_response_stays_on_screen;
 mod minimal_slash_dropdown_dismisses_with_esc;
 mod minimal_slash_switches_from_fullscreen;
 mod minimal_slash_switches_to_fullscreen;
+mod minimal_sticky_screen_mode_persists;
 mod minimal_transcript_expands_collapsed_thinking;
 mod minimal_transcript_opens_in_pager;
 mod minimal_transcript_pager_restore_no_artifacts;

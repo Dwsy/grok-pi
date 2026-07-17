@@ -31,7 +31,6 @@ pub mod home;
 pub mod imagine;
 pub mod imagine_video;
 pub mod import_claude;
-pub mod jump;
 pub mod login;
 pub mod logout;
 pub mod loop_cmd;
@@ -58,7 +57,6 @@ pub mod share;
 pub mod tasks;
 pub mod terminal_setup;
 pub mod theme;
-pub mod timeline;
 pub mod timestamps;
 pub mod toggle_mouse_reporting;
 pub mod transcript;
@@ -124,12 +122,10 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(imagine::ImagineCommand),
         Arc::new(imagine_video::ImagineVideoCommand),
         Arc::new(timestamps::TimestampsCommand),
-        Arc::new(timeline::TimelineCommand),
         Arc::new(toggle_mouse_reporting::ToggleMouseReportingCommand),
         Arc::new(settings_cmd::SettingsCommand),
         Arc::new(privacy::PrivacyCommand),
         Arc::new(rewind::RewindCommand),
-        Arc::new(jump::JumpCommand),
         Arc::new(login::LoginCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(import_claude::ImportClaudeCommand),
@@ -143,6 +139,29 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(scroll_debug::ScrollDebugCommand),
         Arc::new(debug::DebugCommand),
     ]
+}
+
+/// Return the subset of pager-local commands requested by an external agent
+/// profile. A requested alias (for example `exit`) also selects its canonical
+/// command (`quit`). Unknown names are ignored so an adapter can stay forward
+/// compatible with older pager builds.
+pub fn builtin_commands_named(names: &[String]) -> Vec<Arc<dyn SlashCommand>> {
+    let allowed: std::collections::HashSet<String> = names
+        .iter()
+        .map(|name| name.trim().trim_start_matches('/').to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+
+    builtin_commands()
+        .into_iter()
+        .filter(|command| {
+            allowed.contains(&command.name().to_ascii_lowercase())
+                || command
+                    .aliases()
+                    .iter()
+                    .any(|alias| allowed.contains(&alias.to_ascii_lowercase()))
+        })
+        .collect()
 }
 #[cfg(test)]
 mod tests {
@@ -680,4 +699,27 @@ mod tests {
         reg.set_voice_visible(false);
         assert!(reg.get("voice").is_none());
     }
+    #[test]
+    fn external_builtin_filter_accepts_aliases_and_omits_product_commands() {
+        let names = vec![
+            "exit".to_string(),
+            "help".to_string(),
+            "model".to_string(),
+            "queue".to_string(),
+            "theme".to_string(),
+        ];
+        let reg = CommandRegistry::new(builtin_commands_named(&names));
+        assert!(reg.get("quit").is_some());
+        assert!(reg.get("exit").is_some());
+        assert!(reg.get("model").is_some());
+        assert!(reg.get("queue").is_some());
+        assert!(reg.get("theme").is_some());
+        assert!(reg.get("history").is_none());
+        assert!(reg.get("minimal").is_none());
+        assert!(reg.get("fullscreen").is_none());
+        assert!(reg.get("login").is_none());
+        assert!(reg.get("plugins").is_none());
+        assert!(reg.get("usage").is_none());
+    }
+
 }

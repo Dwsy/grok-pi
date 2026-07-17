@@ -4,10 +4,14 @@ use crate::error::VoiceError;
 
 /// Voice settings for the STT transport.
 ///
-/// Parsed from optional `[voice]` in config (URL, language, sample rate,
-/// endpointing) plus pager-stamped request-identity fields. Availability is
-/// owned by the pager (`GROK_VOICE_MODE` / `[features] voice_mode` / remote);
-/// this table has no enable/disable knob.
+/// Carries the transport knobs parsed from optional `[voice]` in
+/// `~/.grok/config.toml` (STT URL pieces, language, sample rate, endpointing)
+/// plus two `#[serde(skip)]` request-identity fields the pager stamps in after
+/// parsing (documented on the fields below). Whether voice is available is
+/// resolved by the pager (GA default on; remote kill switch /
+/// `GROK_VOICE_MODE` override) — there is deliberately no local enable/disable
+/// knob in this config table. All serde fields have defaults, so the `[voice]`
+/// table is optional.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VoiceConfig {

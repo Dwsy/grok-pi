@@ -155,7 +155,7 @@ fn submit_rename(harness: &mut PtyHarness, title: &str) {
 /// top border (info-line dim text treatment), right-aligned before the `╮`
 /// corner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn rename_title_shows_in_prompt_border() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} rename title turn."));
@@ -186,7 +186,7 @@ async fn rename_title_shows_in_prompt_border() {
 /// resume. The inverse holds too: a session that was never renamed resumes
 /// with a plain top border (auto titles never show on the border).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn rename_title_survives_resume_and_stays_absent_without_rename() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} resume title turn."));

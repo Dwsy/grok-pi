@@ -86,9 +86,7 @@ impl AgentView {
     /// an `@` token, so `text().is_empty()` already covers it — the explicit
     /// check keeps the predicate honest if that coupling ever changes. An open
     /// modal or media surface ([`Self::modal_owns_input`]) also fails the guard
-    /// so those own Esc/Left rather than the overlay back-out stealing them. An
-    /// open `/jump` picker fails it too, so the picker owns Esc/Left instead of
-    /// being left latent.
+    /// so those own Esc/Left rather than the overlay back-out stealing them.
     pub(crate) fn is_empty_focused_prompt(&self) -> bool {
         self.active_pane == AgentPane::Prompt
             && self.prompt.text().is_empty()
@@ -96,20 +94,18 @@ impl AgentView {
             && !self.prompt.file_search_visible()
             && self.no_input_overlay_pending()
             && !self.modal_owns_input()
-            && self.jump_state.is_none()
     }
     /// No per-pane `Esc` consumer is pending (text selection, link highlight,
-    /// goal detail, rewind overlay, open `/btw` panel, or open `/jump` picker),
-    /// so `Esc` is free to back out of the dashboard overlay rather than
-    /// clear/dismiss one of them first. Shared by both overlay back-out guards
-    /// so a future Esc consumer is added once here.
+    /// goal detail, rewind overlay, or open `/btw` panel), so `Esc` is free to
+    /// back out of the dashboard overlay rather than clear/dismiss one of them
+    /// first. Shared by both overlay back-out guards so a future Esc consumer is
+    /// added once here.
     pub(crate) fn no_esc_consumer_pending(&self) -> bool {
         self.persistent_text_selection.is_none()
             && self.highlighted_link_idx.is_none()
             && !self.show_goal_detail
             && self.rewind_state.is_none()
             && self.btw_state.is_none()
-            && self.jump_state.is_none()
     }
     /// Esc on the prompt pane in a dashboard overlay backs out to the dashboard
     /// list (the prompt-focus mirror of the Left-arrow back-out), but only for an
@@ -296,14 +292,6 @@ impl AgentView {
                 return child_view.handle_input_inner(ev, registry, prompt_paging);
             }
             return InputOutcome::Unchanged;
-        }
-        if self.dismiss_jump_picker_if_suppressed()
-            && let Event::Key(key) = ev
-            && key.kind != KeyEventKind::Release
-            && key.code == KeyCode::Esc
-            && key.modifiers.is_empty()
-        {
-            return InputOutcome::Changed;
         }
         if let Event::Paste(text) = ev
             && let Some(outcome) = self.try_handle_wrap_host_image_paste(text)
@@ -751,25 +739,6 @@ impl AgentView {
                 _ => InputOutcome::Unchanged,
             };
         }
-        if self.jump_state.is_some() {
-            return match ev {
-                Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
-                    if key!('q', CONTROL).matches(key) {
-                        return InputOutcome::Unchanged;
-                    }
-                    if registry.matches_id(ActionId::CancelTurn, key)
-                        && (self.session.state.is_turn_running()
-                            || self.session.state.is_cancelling())
-                    {
-                        self.dismiss_jump_picker();
-                        return self.handle_agent_action(ActionId::CancelTurn);
-                    }
-                    self.handle_jump_key(key)
-                }
-                Event::Mouse(mouse) => self.handle_jump_mouse(mouse),
-                _ => InputOutcome::Unchanged,
-            };
-        }
         if self.cancel_turn_view.is_some() && self.active_pane != AgentPane::Scrollback {
             return match ev {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -1201,7 +1170,6 @@ mod btw_focus_tests {
     use crate::actions::ActionRegistry;
     use crate::app::app_view::InputOutcome;
     use crate::views::btw_overlay::BtwOverlayState;
-    use crate::views::jump::{JumpRestore, JumpState};
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -1355,38 +1323,6 @@ mod btw_focus_tests {
         assert!(agent.btw_state.is_none(), "Esc dismisses the /btw panel");
         assert!(!agent.btw_focused, "dismissing the panel clears its focus");
     }
-    /// A hidden `/jump` picker shadowed by the `/btw` panel must not let one Esc
-    /// close both: the first Esc drops the shadowed picker (and is spent there),
-    /// the panel survives, and only a second Esc dismisses it.
-    #[test]
-    fn esc_over_shadowed_jump_picker_spares_btw_panel() {
-        let mut agent = prompt_focused_agent();
-        let reg = ActionRegistry::defaults();
-        agent.btw_state = Some(BtwOverlayState::done("q".into(), long_btw_answer()));
-        agent.jump_state = Some(JumpState {
-            entries: Vec::new(),
-            selected: 0,
-            restore: JumpRestore {
-                bookmark: None,
-                selected: None,
-                follow_mode: false,
-            },
-        });
-        agent.handle_input(&key(KeyCode::Esc), &reg);
-        assert!(
-            agent.jump_state.is_none(),
-            "first Esc drops the shadowed picker"
-        );
-        assert!(
-            agent.btw_state.is_some(),
-            "the /btw panel survives the picker-dismissing Esc"
-        );
-        agent.handle_input(&key(KeyCode::Esc), &reg);
-        assert!(
-            agent.btw_state.is_none(),
-            "a second Esc dismisses the /btw panel"
-        );
-    }
     #[test]
     fn clicking_panel_refocuses_it() {
         let mut agent = prompt_focused_agent();
@@ -1521,56 +1457,6 @@ mod focus_gained_restore_tests {
             running_count: 1,
         });
         assert!(agent.should_restore_prompt_on_focus_gained());
-    }
-}
-#[cfg(test)]
-mod jump_backout_key_tests {
-    use super::test_fixtures::make_agent;
-    use super::{AgentPane, AgentView};
-    use crate::views::jump::{JumpRestore, JumpState};
-    fn open_jump(agent: &mut AgentView) {
-        agent.jump_state = Some(JumpState {
-            entries: Vec::new(),
-            selected: 0,
-            restore: JumpRestore {
-                bookmark: None,
-                selected: None,
-                follow_mode: false,
-            },
-        });
-    }
-    /// In the dashboard overlay, a bare Esc backs out via
-    /// `no_esc_consumer_pending`; the open `/jump` picker must count as a
-    /// consumer so Esc dismisses it (restoring the viewport) instead of
-    /// exiting the overlay and leaving the picker latent.
-    #[test]
-    fn jump_picker_is_an_esc_consumer() {
-        let mut agent = make_agent();
-        assert!(
-            agent.no_esc_consumer_pending(),
-            "baseline: no Esc consumer pending"
-        );
-        open_jump(&mut agent);
-        assert!(
-            !agent.no_esc_consumer_pending(),
-            "an open /jump picker consumes Esc"
-        );
-    }
-    /// The Left-arrow mirror: an open picker fails `is_empty_focused_prompt`
-    /// so the overlay Left back-out defers to the picker's own handling.
-    #[test]
-    fn jump_picker_defeats_empty_focused_prompt() {
-        let mut agent = make_agent();
-        agent.set_active_pane(AgentPane::Prompt, true);
-        assert!(
-            agent.is_empty_focused_prompt(),
-            "baseline: empty prompt focused"
-        );
-        open_jump(&mut agent);
-        assert!(
-            !agent.is_empty_focused_prompt(),
-            "an open /jump picker owns Esc/Left in the overlay back-out"
-        );
     }
 }
 #[cfg(test)]

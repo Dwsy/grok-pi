@@ -16,7 +16,7 @@ use super::common::*;
 /// - reboot against the *same* server settings → the **config** model wins
 ///   and stays winning across `/new`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn campaign_remote_settings_nudge_and_dismiss() {
     const CONFIG_MODEL: &str = "config-model";
     const CAMPAIGN_MODEL: &str = "campaign-model";

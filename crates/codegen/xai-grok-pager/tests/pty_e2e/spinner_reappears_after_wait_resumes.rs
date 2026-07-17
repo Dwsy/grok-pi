@@ -19,7 +19,7 @@ const CANCEL_HINT: &str = "Ctrl+c:cancel";
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn spinner_reappears_after_wait_resumes() {
     let content = ContentController::start().await.expect("start content");
     let park_flag = content.home().join("spinner_park_flag");
@@ -202,9 +202,7 @@ async fn spinner_reappears_after_wait_resumes() {
 
     // Let the turn end cleanly (drop pacing so the tail flushes fast).
     content.set_chunk_delay(None);
-    harness
-        .wait_for_turn_idle(Duration::from_secs(15))
-        .expect("turn idle");
+    wait_for_turn_idle(&mut harness);
 
     assert!(
         !harness.contains_text("panicked"),

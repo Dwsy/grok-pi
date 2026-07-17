@@ -15,8 +15,8 @@ use super::*;
 /// non-wrapping anchor line; if the anchor line itself re-wraps, restore clamps
 /// the offset within the re-resolved line so the top can drift by at most that
 /// one line's wrap delta and never spills into the next logical line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScrollAnchor {
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScrollAnchor {
     entry_idx: usize,
     logical_line: usize,
     sub_rows: i64,

@@ -59,11 +59,10 @@ async fn minimal_slash_switches_from_fullscreen() {
 
     // After the relaunch the PTY stays live (Unix: same process via `exec`;
     // Windows: child on the same console with the parent parked in `wait`);
-    // wait for minimal's idle status. A `/minimal` re-exec shows the
-    // switch-back form (`… /fullscreen to go back · /help`), not the cold-start
-    // `minimal · /help` sentinel alone.
+    // wait for minimal's idle status line (not present in fullscreen) and the
+    // prior turn's content to reappear.
     harness
-        .wait_for_text(MINIMAL_SWITCH_BACK_IDLE_SENTINEL, Duration::from_secs(45))
+        .wait_for_text(MINIMAL_IDLE_SENTINEL, Duration::from_secs(45))
         .unwrap_or_else(|e| {
             panic!(
                 "/minimal did not reopen session in minimal mode: {e}\nscreen:\n{}",

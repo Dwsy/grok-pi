@@ -24,13 +24,6 @@ pub mod keys {
     pub const ESC: &[u8] = b"\x1b";
 }
 
-#[derive(Debug)]
-pub(crate) enum PtyRead {
-    Chunk(Vec<u8>),
-    Timeout,
-    Closed,
-}
-
 /// Low-level PTY controller: spawns a child process inside a PTY and provides
 /// methods to inject input, resize, and drain output.
 pub struct PtyController {
@@ -151,28 +144,18 @@ impl PtyController {
         }
     }
 
-    /// Receive one chunk, distinguishing timeout from reader EOF.
+    /// Receive a single chunk from the reader channel, blocking up to `timeout`.
     ///
-    /// Processing each chunk inline preserves inter-chunk timing.
-    pub(crate) fn recv_chunk(&self, timeout: Duration) -> PtyRead {
-        match self.reader_rx.recv_timeout(timeout) {
-            Ok(chunk) => PtyRead::Chunk(chunk),
-            Err(mpsc::RecvTimeoutError::Timeout) => PtyRead::Timeout,
-            Err(mpsc::RecvTimeoutError::Disconnected) => PtyRead::Closed,
-        }
+    /// Returns `None` on timeout or channel disconnect (child exited).
+    /// Use this instead of [`drain_output`] when timing accuracy matters —
+    /// processing each chunk inline preserves inter-chunk timing.
+    pub fn recv_chunk(&self, timeout: Duration) -> Option<Vec<u8>> {
+        self.reader_rx.recv_timeout(timeout).ok()
     }
 
     /// Check whether the child process is still running.
     pub fn is_running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
-    }
-
-    /// Poll child status once, preserving process-query errors.
-    pub(crate) fn try_exit_code(&mut self) -> Result<Option<u32>> {
-        self.child
-            .try_wait()
-            .map(|status| status.map(|status| status.exit_code()))
-            .context("failed to query PTY child status")
     }
 
     /// Wait up to `timeout` for the child to exit, returning its exit code

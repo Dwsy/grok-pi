@@ -548,53 +548,6 @@ fn set_timestamps_emits_persist_setting_with_correct_payload() {
     assert_eq!(app.current_ui.show_timestamps, Some(false));
 }
 #[test]
-fn set_timeline_emits_persist_setting_with_correct_payload() {
-    use crate::settings::SettingValue;
-    let mut app = test_app_with_agent();
-    let default_on = app.current_ui.show_timeline_enabled();
-    let effects = dispatch(Action::SetTimeline(!default_on), &mut app);
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::PersistSetting {
-            key,
-            value,
-            rollback_value,
-        } => {
-            assert_eq!(*key, "show_timeline");
-            assert_eq!(value, &SettingValue::Bool(!default_on));
-            assert_eq!(rollback_value, &SettingValue::Bool(default_on));
-        }
-        other => panic!("expected PersistSetting, got {other:?}"),
-    }
-    assert_eq!(app.current_ui.show_timeline, Some(!default_on));
-    assert_eq!(
-        crate::appearance::cache::load_show_timeline(),
-        !default_on,
-        "set_timeline must update the appearance cache"
-    );
-    assert_eq!(
-        app.appearance.show_timeline, !default_on,
-        "set_timeline must update the live appearance config"
-    );
-}
-#[test]
-fn set_timeline_toggles_displayed_state_when_current_ui_diverges() {
-    let mut app = test_app_with_agent();
-    app.appearance.show_timeline = true;
-    crate::appearance::cache::set_show_timeline(true);
-    app.current_ui.show_timeline = None;
-    assert!(
-        !app.current_ui.show_timeline_enabled(),
-        "current_ui resolves to the OFF default (the divergence)"
-    );
-    let new = !crate::appearance::cache::load_show_timeline();
-    assert!(!new, "toggle target is OFF");
-    let effects = dispatch(Action::SetTimeline(new), &mut app);
-    assert_eq!(effects.len(), 1, "toggle must persist, not silently no-op");
-    assert!(!app.appearance.show_timeline, "the rail is now hidden");
-    assert_eq!(app.current_ui.show_timeline, Some(false));
-}
-#[test]
 fn set_simple_mode_emits_persist_setting_with_correct_payload() {
     use crate::settings::SettingValue;
     let mut app = test_app_with_agent();
@@ -1187,10 +1140,6 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "show_timestamps" => {
             let _ = dispatch(Action::SetTimestamps(false), app);
         }
-        "show_timeline" => {
-            let away = !app.current_ui.show_timeline_enabled();
-            let _ = dispatch(Action::SetTimeline(away), app);
-        }
         "simple_mode" => {
             let _ = dispatch(Action::SetSimpleMode(false), app);
         }
@@ -1318,9 +1267,6 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
         "hunk_tracker_mode" => {
             let _ = dispatch(Action::SetHunkTrackerMode("all_dirty".to_string()), app);
-        }
-        "screen_mode" => {
-            let _ = dispatch(Action::SetScreenMode("minimal".to_string()), app);
         }
         "voice_capture_mode" => {
             let _ = dispatch(Action::SetVoiceCaptureMode("toggle".to_string()), app);

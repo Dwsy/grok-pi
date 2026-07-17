@@ -3,6 +3,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/codegen/pi-grok-adapter",
     "crates/build/xai-proto-build",
     "crates/codegen/ptyctl",
     "crates/codegen/ptyctl-cli",

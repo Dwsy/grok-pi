@@ -2014,7 +2014,13 @@ fn slash_compact_with_context_enqueues_command() {
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::Compact { .. }));
+    assert!(matches!(
+        &effects[0],
+        Effect::Compact {
+            custom_instructions: Some(instructions),
+            ..
+        } if instructions == "focus on auth"
+    ));
 }
 
 #[test]

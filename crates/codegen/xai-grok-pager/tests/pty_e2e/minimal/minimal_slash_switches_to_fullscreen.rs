@@ -47,7 +47,6 @@ async fn minimal_slash_switches_to_fullscreen() {
         harness.update(Duration::from_millis(100));
         let screen = harness.screen_contents();
         let left_minimal = !screen.contains(MINIMAL_IDLE_SENTINEL)
-            && !screen.contains(MINIMAL_SWITCH_BACK_IDLE_SENTINEL)
             && !screen.contains("Reopen this session in fullscreen mode");
         let history_present = screen.contains(&sentinel) || harness.full_text().contains(&sentinel);
         if left_minimal && history_present {
@@ -68,19 +67,22 @@ async fn minimal_slash_switches_to_fullscreen() {
         harness.screen_contents()
     );
 
-    // Slash-command mode switches are session-scoped: `/fullscreen` relaunch
-    // must not write `[ui] screen_mode` (manual config only).
+    // Sticky screen mode: the relaunch argv carries `--fullscreen`, which the
+    // relaunched process persists to `[ui] screen_mode` (fire-and-forget at
+    // startup — poll while pumping the PTY). The minimal direction is covered
+    // by `minimal_sticky_screen_mode_persists`.
     let config_path = content.home().join(".grok").join("config.toml");
-    // Brief settle so a fire-and-forget write would have landed if still present.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let body = std::fs::read_to_string(&config_path).unwrap_or_default();
+        if body.contains("screen_mode = \"fullscreen\"") {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("/fullscreen never persisted [ui] screen_mode; config.toml:\n{body}");
+        }
         harness.update(Duration::from_millis(100));
     }
-    let body = std::fs::read_to_string(&config_path).unwrap_or_default();
-    assert!(
-        !body.contains("screen_mode"),
-        "/fullscreen must not persist [ui] screen_mode; config.toml:\n{body}"
-    );
 
     harness.quit().expect("clean quit");
 }

@@ -157,30 +157,6 @@ impl JsonlStorageAdapter {
         }
         session_dirs
     }
-    fn list_sessions_sync(&self, cwd: Option<&str>) -> io::Result<Vec<Summary>> {
-        let session_dirs = self.scan_session_dirs(cwd);
-        let mut summaries = Vec::new();
-        for session_dir in session_dirs {
-            let summary_path = session_dir.join("summary.json");
-            match std::fs::read(&summary_path) {
-                Ok(bytes) => {
-                    if let Ok(summary) = serde_json::from_slice::<Summary>(&bytes)
-                        && !summary.is_hidden()
-                    {
-                        summaries.push(summary);
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-        summaries.sort_by_cached_key(|s| {
-            (
-                std::cmp::Reverse(s.last_active_at.unwrap_or(s.updated_at)),
-                s.info.id.0.to_string(),
-            )
-        });
-        Ok(summaries)
-    }
     /// List the N most recently modified session summaries across all
     /// workspaces.
     ///
@@ -1195,11 +1171,28 @@ impl StorageAdapter for JsonlStorageAdapter {
         Ok(summary)
     }
     async fn list_sessions(&self, cwd: Option<&str>) -> io::Result<Vec<Summary>> {
-        let adapter = self.clone();
-        let cwd = cwd.map(str::to_owned);
-        tokio::task::spawn_blocking(move || adapter.list_sessions_sync(cwd.as_deref()))
-            .await
-            .map_err(io::Error::other)?
+        let session_dirs = self.scan_session_dirs(cwd);
+        let mut summaries = Vec::new();
+        for session_dir in session_dirs {
+            let summary_path = session_dir.join("summary.json");
+            match std::fs::read(&summary_path) {
+                Ok(bytes) => {
+                    if let Ok(summary) = serde_json::from_slice::<Summary>(&bytes)
+                        && !summary.is_hidden()
+                    {
+                        summaries.push(summary);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        summaries.sort_by_cached_key(|s| {
+            (
+                std::cmp::Reverse(s.last_active_at.unwrap_or(s.updated_at)),
+                s.info.id.0.to_string(),
+            )
+        });
+        Ok(summaries)
     }
     async fn delete_session(&self, info: &Info) -> io::Result<()> {
         let dir = self.session_dir(info);

@@ -28,7 +28,7 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -240,51 +240,6 @@ impl SettingsModalState {
     /// Filtered row indices in render order.
     pub fn filtered_indices(&self) -> &[usize] {
         &self.filtered_cache
-    }
-
-    /// Rebuild rows from current process gates (voice / kitty / minimal).
-    /// Keeps focus on the same key when possible; exits sub-panes if the key vanished.
-    pub fn rebuild_rows(&mut self) {
-        let prev_key = self.focused_setting().map(|(k, _)| k);
-        let subpane_key = match &self.mode {
-            SettingsModalMode::PickingEnum { key, .. }
-            | SettingsModalMode::PickingGroup { key, .. }
-            | SettingsModalMode::EditingValue { key, .. } => Some(*key),
-            SettingsModalMode::Browse | SettingsModalMode::FilterFocused => None,
-        };
-
-        self.rows = build_rows(&self.registry);
-        self.invalidate_filter();
-
-        if let Some(key) = subpane_key {
-            let still_visible = self
-                .rows
-                .iter()
-                .any(|r| matches!(r, RowEntry::Setting { key: k, .. } if *k == key));
-            if !still_visible {
-                self.mode = SettingsModalMode::Browse;
-                self.settings_breadcrumb_rect = None;
-                self.picker_choice_rects.clear();
-            }
-        }
-
-        if let Some(key) = prev_key {
-            if let Some(idx) = self
-                .rows
-                .iter()
-                .position(|r| matches!(r, RowEntry::Setting { key: k, .. } if *k == key))
-            {
-                self.selected = idx;
-            } else {
-                self.selected = self
-                    .rows
-                    .iter()
-                    .position(|r| matches!(r, RowEntry::Setting { .. }))
-                    .unwrap_or(0);
-            }
-        } else {
-            self.clamp_selected_to_visible();
-        }
     }
 
     /// Recompute `filtered_cache` from the current `query`.
@@ -628,17 +583,11 @@ fn compute_filtered(rows: &[RowEntry], registry: &SettingsRegistry, query: &str)
     result
 }
 
-/// Row visibility: voice rows need the voice gate; capture needs key releases;
-/// `hidden_in_minimal` rows are dropped in minimal mode. Pure for unit tests.
-fn setting_row_visible(
-    meta: &SettingMeta,
-    kitty_releases: bool,
-    minimal: bool,
-    voice_mode: bool,
-) -> bool {
-    if !voice_mode && matches!(meta.key, "voice_capture_mode" | "voice_stt_language") {
-        return false;
-    }
+/// Per-mode / per-terminal row visibility. `voice_capture_mode` is hidden
+/// without key-release reporting (capture is always toggle there, so there's
+/// no choice). Pure (`kitty_releases` / `minimal` passed in) so it's testable
+/// without process globals.
+fn setting_row_visible(meta: &SettingMeta, kitty_releases: bool, minimal: bool) -> bool {
     if meta.key == "voice_capture_mode" && !kitty_releases {
         return false;
     }
@@ -651,7 +600,6 @@ fn setting_row_visible(
 fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
     let kitty_releases = crate::app::kitty_flags_pushed();
     let minimal = crate::app::minimal_mode_active();
-    let voice_mode = crate::app::voice_mode_enabled();
     // Keys that belong to a group sub-sheet are rendered only inside that
     // sheet, never as their own top-level rows.
     let group_children: std::collections::HashSet<SettingKey> = registry
@@ -671,7 +619,7 @@ fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
             if meta.category != *cat {
                 continue;
             }
-            if !setting_row_visible(meta, kitty_releases, minimal, voice_mode) {
+            if !setting_row_visible(meta, kitty_releases, minimal) {
                 continue;
             }
             if group_children.contains(meta.key) {
@@ -695,7 +643,6 @@ fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
     match key {
         "compact_mode" => Some(Action::SetCompactMode(new)),
         "show_timestamps" => Some(Action::SetTimestamps(new)),
-        "show_timeline" => Some(Action::SetTimeline(new)),
         "simple_mode" => Some(Action::SetSimpleMode(new)),
         "contextual_hints.undo" => Some(Action::SetContextualHintUndo(new)),
         "contextual_hints.plan_mode" => Some(Action::SetContextualHintPlanMode(new)),
@@ -779,7 +726,6 @@ fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> Option<Actio
             _ => None,
         },
         "hunk_tracker_mode" => Some(Action::SetHunkTrackerMode(choice.to_string())),
-        "screen_mode" => Some(Action::SetScreenMode(choice.to_string())),
         "voice_capture_mode" => Some(Action::SetVoiceCaptureMode(choice.to_string())),
         "voice_stt_language" => Some(Action::SetVoiceSttLanguage(choice.to_string())),
         "render_mermaid" => {
@@ -1919,6 +1865,9 @@ fn render_picking_enum(buf: &mut Buffer, area: Rect, state: &SettingsModalState,
     let mut picker_choice_rects: Vec<Rect> = vec![Rect::default(); choices.len()];
 
     // ── Choice rows ───────────────────────────────────────────────
+    let bg_focused = theme.bg_visual;
+    let bg_unfocused = theme.bg_base;
+    let bg_hovered = theme.bg_hover;
     let fg_primary = theme.text_primary;
     let fg_gray = theme.gray;
     let fg_accent = theme.accent_user;
@@ -1934,7 +1883,13 @@ fn render_picking_enum(buf: &mut Buffer, area: Rect, state: &SettingsModalState,
         let is_focused = choice_i == choices_idx;
 
         let is_hovered = !is_focused && state.hover_row == Some(choice_i);
-        let bg = settings_list_row_bg(theme, is_focused, is_hovered);
+        let bg = if is_focused {
+            bg_focused
+        } else if is_hovered {
+            bg_hovered
+        } else {
+            bg_unfocused
+        };
 
         let display_style = if is_focused {
             Style::default()
@@ -2183,7 +2138,13 @@ fn render_picking_group(
         };
         let is_focused = i == child_idx;
         let is_hovered = !is_focused && state.hover_row == Some(i);
-        let bg = settings_list_row_bg(theme, is_focused, is_hovered);
+        let bg = if is_focused {
+            theme.bg_visual
+        } else if is_hovered {
+            theme.bg_hover
+        } else {
+            theme.bg_base
+        };
         let row_rect = Rect {
             x: area.x,
             y,
@@ -3193,26 +3154,6 @@ fn row_layout(
         RowLayout::TwoLineWithLabelTruncation
     }
 }
-
-/// Terminal-native themes collapse selection tokens to `Reset`; use ANSI
-/// `DarkGray` (not silver `Gray`, which washes out default fg on dark profiles).
-fn settings_list_row_bg(theme: &Theme, is_selected: bool, is_hovered: bool) -> Color {
-    if crate::theme::cache::terminal_native_locked() || matches!(theme.bg_visual, Color::Reset) {
-        return if is_selected || is_hovered {
-            Color::DarkGray
-        } else {
-            Color::Reset
-        };
-    }
-    if is_selected {
-        theme.bg_visual
-    } else if is_hovered {
-        theme.bg_hover
-    } else {
-        theme.bg_base
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_setting_row(
     buf: &mut Buffer,
@@ -3225,13 +3166,18 @@ fn render_setting_row(
     is_expanded: bool,
     is_hovered: bool,
 ) -> Rect {
-    let bg = settings_list_row_bg(theme, is_selected, is_hovered);
+    let bg = if is_selected {
+        theme.bg_visual
+    } else if is_hovered {
+        theme.bg_hover
+    } else {
+        theme.bg_base
+    };
+    // Paint the row bg across the full area (1 or 2 lines).
     buf.set_style(area, Style::default().bg(bg));
 
-    let mut label_style = Style::default().fg(theme.text_primary).bg(bg);
-    if is_selected {
-        label_style = label_style.add_modifier(Modifier::BOLD);
-    }
+    let label_style = Style::default().fg(theme.text_primary).bg(bg);
+    // Bool(false) renders muted; all other values use accent.
     let value_style = Style::default().fg(theme.accent_user).bg(bg);
     let chevron_style = Style::default().fg(theme.gray).bg(bg);
     let restart_style = Style::default()
@@ -3546,7 +3492,11 @@ fn render_setting_row_no_value(
     is_selected: bool,
     theme: &Theme,
 ) {
-    let bg = settings_list_row_bg(theme, is_selected, false);
+    let bg = if is_selected {
+        theme.bg_visual
+    } else {
+        theme.bg_base
+    };
     buf.set_style(area, Style::default().bg(bg));
     let label_style = Style::default()
         .fg(theme.accent_error)
@@ -3581,12 +3531,15 @@ fn render_setting_group_row(
     is_expanded: bool,
     theme: &Theme,
 ) -> Rect {
-    let bg = settings_list_row_bg(theme, is_selected, is_hovered);
+    let bg = if is_selected {
+        theme.bg_visual
+    } else if is_hovered {
+        theme.bg_hover
+    } else {
+        theme.bg_base
+    };
     buf.set_style(area, Style::default().bg(bg));
-    let mut label_style = Style::default().fg(theme.text_primary).bg(bg);
-    if is_selected {
-        label_style = label_style.add_modifier(Modifier::BOLD);
-    }
+    let label_style = Style::default().fg(theme.text_primary).bg(bg);
     let chevron_style = Style::default().fg(theme.gray).bg(bg);
 
     let chevron_str = format!(" {}", crate::glyphs::chevron());
@@ -3626,10 +3579,14 @@ fn render_setting_group_row(
     }
 }
 
-/// Browse footer is fixed (same wrap height on every focused row kind).
+/// Build the footer shortcut row. Enter label varies by focused row kind.
 fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'static>> {
     match state.mode {
         SettingsModalMode::Browse => {
+            let enter_label = match state.focused_setting() {
+                Some((_, meta)) if matches!(meta.kind, SettingKind::Bool { .. }) => "Enter toggle",
+                _ => "Enter edit",
+            };
             let mut shortcuts = vec![
                 Shortcut {
                     label: "\u{2191}/\u{2193}/j/k nav",
@@ -3642,7 +3599,12 @@ fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'static>> {
                     id: 0,
                 },
                 Shortcut {
-                    label: "Space/Enter",
+                    label: "Space toggle",
+                    clickable: false,
+                    id: 0,
+                },
+                Shortcut {
+                    label: enter_label,
                     clickable: false,
                     id: 0,
                 },
@@ -4578,16 +4540,30 @@ fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyO
             }
             SettingsKeyOutcome::Unchanged
         }
-        KeyCode::Char(' ') | KeyCode::Enter => {
+        KeyCode::Char(' ') => {
+            if let Some(action) = state.toggle_focused_bool() {
+                SettingsKeyOutcome::Action(action)
+            } else {
+                SettingsKeyOutcome::Unchanged
+            }
+        }
+        KeyCode::Enter => {
+            // Group row → open its sub-sheet of child toggles.
             if state.try_enter_picking_group() {
                 return SettingsKeyOutcome::Changed;
             }
+            // For Bool, Enter behaves like Space (the keyboard
+            // map gives both keys the toggle semantics).
             if let Some(action) = state.toggle_focused_bool() {
                 return SettingsKeyOutcome::Action(action);
             }
+            // Enum row → enter PickingEnum mode. The picker's chooser
+            // sub-pane takes over rendering and key routing from here.
             if state.try_enter_picking_enum() {
                 return SettingsKeyOutcome::Changed;
             }
+            // String / Int row → enter EditingValue mode. The
+            // inline editor takes over rendering and key routing.
             if state.try_enter_editing_value() {
                 return SettingsKeyOutcome::Changed;
             }
@@ -5318,56 +5294,9 @@ mod tests {
         let reg = SettingsRegistry::defaults();
         let voice = meta_for(&reg, "voice_capture_mode");
         let vim = meta_for(&reg, "vim_mode");
-        // voice_mode = true; kitty_releases varies.
-        assert!(!setting_row_visible(voice, false, false, true));
-        assert!(setting_row_visible(voice, true, false, true));
-        assert!(setting_row_visible(vim, false, false, true));
-    }
-
-    #[test]
-    fn setting_row_visible_hides_voice_rows_when_voice_mode_off() {
-        let reg = SettingsRegistry::defaults();
-        let capture = meta_for(&reg, "voice_capture_mode");
-        let language = meta_for(&reg, "voice_stt_language");
-        let vim = meta_for(&reg, "vim_mode");
-        // Gate off: both voice rows gone even with kitty releases + full TUI.
-        assert!(!setting_row_visible(capture, true, false, false));
-        assert!(!setting_row_visible(language, true, false, false));
-        // Non-voice rows unaffected.
-        assert!(setting_row_visible(vim, true, false, false));
-        // Gate on: both visible (kitty releases for capture).
-        assert!(setting_row_visible(capture, true, false, true));
-        assert!(setting_row_visible(language, true, false, true));
-    }
-
-    #[test]
-    fn rebuild_rows_drops_voice_settings_when_gate_turns_off() {
-        let prev = crate::app::voice_mode_enabled();
-        crate::app::set_voice_mode_enabled_for_test(true);
-        let mut state = make_state();
-        let has_voice_lang = |s: &SettingsModalState| {
-            s.rows.iter().any(|r| {
-                matches!(
-                    r,
-                    RowEntry::Setting {
-                        key: "voice_stt_language",
-                        ..
-                    }
-                )
-            })
-        };
-        assert!(
-            has_voice_lang(&state),
-            "voice_stt_language should be listed with gate on"
-        );
-
-        crate::app::set_voice_mode_enabled_for_test(false);
-        state.rebuild_rows();
-        assert!(
-            !has_voice_lang(&state),
-            "rebuild after gate off must hide voice_stt_language"
-        );
-        crate::app::set_voice_mode_enabled_for_test(prev);
+        assert!(!setting_row_visible(voice, false, false));
+        assert!(setting_row_visible(voice, true, false));
+        assert!(setting_row_visible(vim, false, false));
     }
 
     #[test]
@@ -5381,21 +5310,10 @@ mod tests {
         ] {
             let meta = meta_for(&reg, key);
             assert!(meta.hidden_in_minimal, "{key} must declare the flag");
-            assert!(
-                !setting_row_visible(meta, true, true, true),
-                "{key} in minimal"
-            );
-            assert!(
-                setting_row_visible(meta, true, false, true),
-                "{key} in full TUI"
-            );
+            assert!(!setting_row_visible(meta, true, true), "{key} in minimal");
+            assert!(setting_row_visible(meta, true, false), "{key} in full TUI");
         }
-        assert!(setting_row_visible(
-            meta_for(&reg, "vim_mode"),
-            true,
-            true,
-            true
-        ));
+        assert!(setting_row_visible(meta_for(&reg, "vim_mode"), true, true));
     }
 
     /// `action_for_bool` mirrors `current_value_for`: every registered
@@ -5745,11 +5663,7 @@ mod tests {
             vec![
                 // Booleans.
                 "compact_mode",
-                // SHELL-owned default screen mode (Appearance; after compact).
-                "screen_mode",
                 "show_timestamps",
-                // Timeline sidebar (Appearance, declared after timestamps).
-                "show_timeline",
                 "simple_mode",
                 // PAGER-owned vim_mode (Appearance,
                 // paired with simple_mode).
@@ -5787,7 +5701,10 @@ mod tests {
                 // SHELL-owned prompt_suggestions (Editor; tab autocomplete
                 // ghost text, live cache).
                 "prompt_suggestions",
-                // voice_capture_mode + voice_stt_language hidden when gate is off.
+                // voice_capture_mode (Editor) is absent here: `setting_row_visible`
+                // hides it without key releases, and tests run with Kitty unset.
+                // SHELL-owned voice_stt_language (Editor, always visible).
+                "voice_stt_language",
                 // SHELL-owned permission_mode (Agent category).
                 "permission_mode",
                 // SHELL-owned remember_tool_approvals (Agent category,
@@ -5885,50 +5802,6 @@ mod tests {
             SettingsKeyOutcome::Action(Action::SetCompactMode(true)) => {}
             other => panic!("expected SetCompactMode(true), got {other:?}"),
         }
-    }
-
-    #[test]
-    fn space_on_enum_row_opens_picker() {
-        let mut s = make_state();
-        let idx = s
-            .rows
-            .iter()
-            .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "screen_mode"))
-            .expect("screen_mode setting row");
-        s.selected = idx;
-        let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
-        let outcome = handle_settings_key(&mut s, &space);
-        assert!(
-            matches!(outcome, SettingsKeyOutcome::Changed),
-            "Space on enum must open picker, got {outcome:?}"
-        );
-        assert!(
-            matches!(s.mode, SettingsModalMode::PickingEnum { .. }),
-            "expected PickingEnum after Space on screen_mode, got {:?}",
-            s.mode
-        );
-    }
-
-    #[test]
-    fn browse_footer_shortcuts_stable_across_bool_and_enum_focus() {
-        let mut s = make_state();
-        let bool_labels: Vec<&str> = build_shortcuts(&s).iter().map(|sc| sc.label).collect();
-        assert!(
-            bool_labels.contains(&"Space/Enter"),
-            "Browse footer must advertise Space/Enter, got {bool_labels:?}"
-        );
-
-        let idx = s
-            .rows
-            .iter()
-            .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "screen_mode"))
-            .expect("screen_mode setting row");
-        s.selected = idx;
-        let enum_labels: Vec<&str> = build_shortcuts(&s).iter().map(|sc| sc.label).collect();
-        assert_eq!(
-            bool_labels, enum_labels,
-            "Browse footer must not change when focus moves Bool → Enum"
-        );
     }
 
     #[test]
@@ -6122,27 +5995,6 @@ mod tests {
 
     // ---------- mouse hover highlight ----------
 
-    #[test]
-    fn settings_list_row_bg_terminal_native_elevates_selection() {
-        let theme = Theme::terminal_default();
-        assert!(matches!(theme.bg_visual, Color::Reset));
-        assert_eq!(settings_list_row_bg(&theme, true, false), Color::DarkGray);
-        assert_eq!(settings_list_row_bg(&theme, false, true), Color::DarkGray);
-        assert_eq!(settings_list_row_bg(&theme, false, false), Color::Reset);
-        assert_eq!(settings_list_row_bg(&theme, true, true), Color::DarkGray);
-    }
-
-    #[test]
-    fn settings_list_row_bg_rgb_theme_uses_theme_tokens() {
-        let theme = Theme::current();
-        if matches!(theme.bg_visual, Color::Reset) {
-            return;
-        }
-        assert_eq!(settings_list_row_bg(&theme, true, false), theme.bg_visual);
-        assert_eq!(settings_list_row_bg(&theme, false, true), theme.bg_hover);
-        assert_eq!(settings_list_row_bg(&theme, false, false), theme.bg_base);
-    }
-
     /// `MouseEventKind::Moved` over a setting row's hit-rect sets
     /// `state.hover_row` to that row's index and reports `Changed`
     /// so the next render paints the highlight. Mirrors the
@@ -6308,8 +6160,8 @@ mod tests {
             .expect("rendered cell must exist");
         assert_eq!(
             cell.style().bg,
-            Some(settings_list_row_bg(&theme, false, true)),
-            "hover row must paint with settings list hover bg, got {:?}",
+            Some(theme.bg_hover),
+            "hover row must paint with `bg_hover`, got {:?}",
             cell.style().bg,
         );
     }
@@ -6375,11 +6227,11 @@ mod tests {
             .expect("choice 1 cell must exist");
         assert_eq!(
             cell1.style().bg,
-            Some(settings_list_row_bg(&theme, false, true)),
-            "hovered choice must paint list hover bg, got {:?}",
+            Some(theme.bg_hover),
+            "hovered choice must paint bg_hover, got {:?}",
             cell1.style().bg,
         );
-        // Focused choice (index 0) keeps selection bg — selection wins
+        // Focused choice (index 0) keeps bg_visual — selection wins
         // over hover. Verifies the `is_focused` branch precedence.
         let rect0 = new_rects[0];
         let cell0 = buf2
@@ -6387,8 +6239,8 @@ mod tests {
             .expect("choice 0 cell must exist");
         assert_eq!(
             cell0.style().bg,
-            Some(settings_list_row_bg(&theme, true, false)),
-            "focused choice must keep selection bg even when hover is elsewhere",
+            Some(theme.bg_visual),
+            "focused choice must keep bg_visual even when hover is elsewhere",
         );
     }
 
@@ -7822,13 +7674,13 @@ mod tests {
         };
         assert_eq!(
             bg_at(4),
-            Some(settings_list_row_bg(&theme, true, false)),
-            "focused row must have selection background"
+            Some(theme.bg_visual),
+            "focused row must have bg_visual background"
         );
         assert_eq!(
             bg_at(3),
-            Some(settings_list_row_bg(&theme, false, false)),
-            "unfocused row must have idle background"
+            Some(theme.bg_base),
+            "unfocused row must have bg_base background"
         );
 
         // Display text on focused row carries BOLD modifier

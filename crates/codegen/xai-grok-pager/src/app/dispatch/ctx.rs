@@ -164,17 +164,6 @@ pub(super) fn surface_yolo_launch_block_notice(app: &mut AppView, target: AgentI
             ));
         agent.show_toast(warning);
     }
-    surface_screen_mode_switch_hint(app, target);
-}
-
-/// Surface a one-shot switch-back toast after a screen-mode relaunch (fullscreen only).
-pub(super) fn surface_screen_mode_switch_hint(app: &mut AppView, target: AgentId) {
-    if let Some(hint) = app.screen_mode_switch_hint.take()
-        && !app.screen_mode.is_minimal()
-        && let Some(agent) = app.agents.get_mut(&target)
-    {
-        agent.show_toast(hint);
-    }
 }
 
 /// Switch the active agent — the primary funnel for assigning `ActiveView::Agent`

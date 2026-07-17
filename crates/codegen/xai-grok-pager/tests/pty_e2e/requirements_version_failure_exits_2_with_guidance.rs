@@ -6,7 +6,7 @@ use super::common::*;
 /// terminal): an invalid `fail_closed` version_override must abort startup with the update/admin guidance and
 /// exit 2 — distinct from the gate's exit 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn requirements_version_failure_exits_2_with_guidance() {
     let home = tempfile::tempdir().expect("tempdir");
     let home_path = home.path();

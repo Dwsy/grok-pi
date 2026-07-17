@@ -136,7 +136,6 @@ impl UserPromptBlock {
         let token_end = first_line
             .find(char::is_whitespace)
             .unwrap_or(first_line.len());
-        #[allow(clippy::single_range_in_vec_init)] // field is multi-range capable
         let skill_token_ranges = if token_end > 0 {
             vec![0..token_end]
         } else {

@@ -46,9 +46,7 @@ pub(super) fn dispatch_permission_select(
         option_id.0.as_ref() == xai_grok_workspace::permission::ENABLE_ALWAYS_APPROVE_OPTION_ID;
 
     // Remember the user's choice (by option kind) so the next prompt's cursor
-    // sticks to it. Allow-flavored choices only — a rejection must not steer a
-    // later prompt's cursor onto a reject row. Also skip the two options that
-    // aren't per-prompt choices:
+    // sticks to it. Skip the two options that aren't per-prompt choices:
     //  - the global always-approve (YOLO) option flips global auto-approve, so
     //    there will be no subsequent prompt to land on;
     //  - "allow all edits during this session" is edit-scoped (kind
@@ -62,10 +60,6 @@ pub(super) fn dispatch_permission_select(
             .iter()
             .find(|o| o.option_id == option_id)
             .map(|o| o.kind)
-        && matches!(
-            kind,
-            acp::PermissionOptionKind::AllowOnce | acp::PermissionOptionKind::AllowAlways
-        )
     {
         crate::appearance::permission_cursor::set_last_used_permission(
             crate::appearance::permission_cursor::DefaultSelectedPermission::from_kind(&kind),

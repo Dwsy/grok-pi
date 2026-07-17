@@ -10,7 +10,7 @@ use super::scroll::*;
 /// non-decreasing (never a regression to an earlier marker = no direction
 /// flip, no offset jitter) and must settle back at the bottom clamp.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 async fn drag_autoscroll_no_bounce_pty() {
     let (mut harness, _content, baseline_topmost) = spawn_bottom_pinned_marker_scrollback(60).await;
 

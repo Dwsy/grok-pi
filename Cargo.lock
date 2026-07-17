@@ -7471,6 +7471,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-grok-adapter"
+version = "0.4.0"
+dependencies = [
+ "agent-client-protocol",
+ "anyhow",
+ "async-trait",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "xai-acp-lib",
+]
+
+[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13367,6 +13383,7 @@ dependencies = [
  "dunce",
  "libc",
  "obfstr",
+ "pi-grok-adapter",
  "rustls",
  "semver",
  "serde_json",

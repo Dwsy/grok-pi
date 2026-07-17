@@ -8,7 +8,6 @@ use documented::{Documented, DocumentedFields};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, RawString};
-use xai_grok_shared::ui_config::UiConfig;
 
 // ============================================================================
 // Runtime Config (used by render code)
@@ -33,8 +32,6 @@ pub struct AppearanceConfig {
     pub turn_status: TurnStatusConfig,
     /// Show timestamps on user/agent messages. Toggled via `/timestamps`.
     pub show_timestamps: bool,
-    /// Timeline sidebar (per-turn tick rail). Toggled via `/timeline`.
-    pub show_timeline: bool,
     /// Whether hooks & plugins UI is disabled (hides /hooks, /plugins commands
     /// and scrollback annotations). `false` by default (plugins enabled).
     pub disable_plugins: bool,
@@ -1427,8 +1424,6 @@ impl From<RawAppearanceConfig> for AppearanceConfig {
             },
             turn_status: TurnStatusConfig::default(),
             show_timestamps: true, // runtime-only, loaded from config.toml via persist
-            // Single source: UiConfig::SHOW_TIMELINE_DEFAULT (loaded from config.toml via persist).
-            show_timeline: UiConfig::SHOW_TIMELINE_DEFAULT,
             disable_plugins: raw.disable_plugins,
             show_plan_chip: raw.show_plan_chip,
             alt_screen: raw.terminal.alt_screen.into(),

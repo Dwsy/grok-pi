@@ -337,19 +337,6 @@ impl AgentView {
                     self.apply_scrollbar_click(mouse.row);
                     return InputOutcome::Changed;
                 }
-                if let Some(rail) = self.timeline_rail.as_ref()
-                    && rail.rect.contains((mouse.column, mouse.row).into())
-                {
-                    let target = rail
-                        .hit(mouse.column, mouse.row)
-                        .and_then(|hit| crate::views::timeline::chevron_target(rail, hit));
-                    if let Some(turn_idx) = target {
-                        self.set_active_pane(AgentPane::Scrollback, false);
-                        self.scrollback.jump_to_turn(turn_idx);
-                        return InputOutcome::Changed;
-                    }
-                    return InputOutcome::Unchanged;
-                }
                 if self.hit_sb_copy.contains(mouse.column, mouse.row) {
                     return InputOutcome::Action(Action::CopyBlockContent);
                 }
@@ -895,15 +882,7 @@ impl AgentView {
                     || self.block_drag_selection.is_some()
                     || self.deferred_text_press.is_some();
                 let hit = self.pane_areas.hit_test(mouse.column, mouse.row);
-                let on_rail = self
-                    .timeline_rail
-                    .as_ref()
-                    .is_some_and(|r| r.rect.contains((mouse.column, mouse.row).into()));
-                let new_timeline_hover = self
-                    .timeline_rail
-                    .as_ref()
-                    .and_then(|r| r.hit(mouse.column, mouse.row));
-                let new_hover = if on_rail || suppress_scrollback_hover {
+                let new_hover = if suppress_scrollback_hover {
                     None
                 } else {
                     hit.and_then(|pane| match pane {
@@ -947,11 +926,6 @@ impl AgentView {
                 }
                 self.hovered_entry = new_hover;
                 self.hovered_prompt = new_prompt_hover;
-                if new_timeline_hover != self.timeline_hover {
-                    self.timeline_hover = new_timeline_hover;
-                    self.sync_timeline_hover_preview();
-                    changed = true;
-                }
                 changed |= self
                     .set_hovered_follow_up_chip(self.follow_up_chip_at(mouse.column, mouse.row));
                 changed |= self.hit_badge.update_hover(mouse.column, mouse.row);

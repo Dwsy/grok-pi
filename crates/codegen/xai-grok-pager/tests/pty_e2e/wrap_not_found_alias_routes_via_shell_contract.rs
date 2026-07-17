@@ -13,7 +13,7 @@ use super::common::*;
 /// real shell is covered by `joined_line_roundtrips_words_through_real_sh` in
 /// `wrap_cmd_tests`.
 #[test]
-#[ignore = "PTY e2e; run the owning pty_e2e_* Cargo test with --ignored (see Cargo.toml)"]
+#[ignore = "PTY e2e; run with cargo test -p xai-grok-pager --test pty_e2e -- --ignored"]
 #[cfg(unix)]
 fn wrap_not_found_alias_routes_via_shell_contract() {
     let (_dir, shell) = fake_argv_echo_shell();
