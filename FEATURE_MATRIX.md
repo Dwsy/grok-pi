@@ -10,8 +10,9 @@
 | Fullscreen / alternate screen | 原生 | Grok screen mode；启动时选择 |
 | Minimal / scrollback-native | 原生 | `xai-grok-pager-minimal`；启动时选择 |
 | Welcome / minimal logo | 原生+适配 | 默认进 Welcome（与 stock `grok` 一致）；`ExternalUiProfile.logo` 注入 π block art（行宽 pad 防居中错位）；仅 `grok-pi -c/--continue` 跳过 Welcome 直接 Resume |
-| Welcome 菜单（Pi） | 原生+适配 | Resume/Ctrl+S ≡ `/resume`（Pi catalog）；隐藏 New worktree；Changelog 打开 `github.com/Dwsy/grok-pi` 的 `CHANGELOG.MD` |
-| 更新检查/安装 | 适配 | 源：① GitHub releases JSON ② npm 镜像 JSON。路径：`grok-pi update` / `update --check` / Welcome **Ctrl+U** 退出后跑 install.sh（失败再 npm -g）；`GROK_PI_NO_AUTO_UPDATE=1` 关闭后台检查 |
+| Welcome 菜单（Pi） | 原生+适配 | Resume/Ctrl+S ≡ `/resume`（Pi catalog）；隐藏 New worktree；Changelog 打开 `https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD` |
+| Welcome session 预热（Pi） | 适配 | 进入 Welcome 即后台 `new_session`；首字输入 attach 预热 agent，避免冷启动 “Starting session…” |
+| 更新检查/安装 | 适配 | 源：① GitHub `Dwsy/grok-pi` releases JSON ② scoped npm `@dwsy/grok-pi`（**不用**无 scope 的 `grok-pi`，那是别人的 1.0.x 包）。路径：`grok-pi update` / `--check` / Welcome **Ctrl+U**；`GROK_PI_NO_AUTO_UPDATE=1` 关后台检查 |
 | Agent Dashboard | 原生+适配 | 原生 `/dashboard` · Ctrl+\\ · 列表/peek/dispatch；idle 行经 `pi/session/list` → `pi/ui/session_catalog` 投影到 dormant roster；不接 Grok leader FleetView |
 | Prompt editing | 原生 | PromptWidget |
 | Multiline / Vim mode | 原生 | Grok slash/settings |
@@ -28,8 +29,8 @@
 | Pi 功能 | 状态 | 映射 |
 |---|---|---|
 | Prompt | 适配 | ACP prompt → Pi `prompt` |
-| Mid-turn send now | 适配 | Grok `sendNow` → Pi `steer` |
-| Follow-up queue | 适配 | 默认 active-turn prompt → Pi `follow_up` |
+| Mid-turn send now | 适配 | Grok `sendNow` → Pi `steer`；队列行 send-now → `x.ai/queue/interject` → steer |
+| Follow-up queue | 适配 | 默认 active-turn prompt → Pi `followUp`（`sendNow`/`followUp:false` 才走 steer） |
 | Abort | 适配 | ACP cancel → Pi `abort`；Bash 时用 `abort_bash` |
 | Text stream | 适配 | `message_update` → AgentMessageChunk |
 | Thinking/reasoning stream | 适配 | `message_update` → AgentThoughtChunk |
@@ -37,7 +38,7 @@
 | Prompt completion | 适配 | 以 Pi `agent_settled` 为完成屏障，不错误使用 `agent_end` |
 | Retry | 适配 | Grok native sticky status/toast |
 | Compaction | 适配 | `/compact [instructions]` → Pi `compact` |
-| Queue count | 适配 | Pi `queue_update` → Grok status；Grok `/queue` 管理前端提交队列 |
+| Queue pane / count | 适配 | Pi `queue_update` 全文数组 → `x.ai/queue/changed`（稳定 id + 出队）+ status；`/queue` 面板镜像 Pi steering/follow-up。Pi RPC 无 clear/remove/edit，对应操作 rebroadcast + toast |
 | Context bar used tokens | 适配 | Pi `contextUsage` / message usage → ACP `_meta.totalTokens` → 右上角 bar |
 | Context click / `/context` | 适配 | Grok `x.ai/session/info` → Pi `get_session_stats` + `get_messages` 估算 breakdown → 原生 `ContextInfoBlock` |
 

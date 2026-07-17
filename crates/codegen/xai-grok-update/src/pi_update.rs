@@ -2,7 +2,11 @@
 //!
 //! Source order (first success wins):
 //! 1. GitHub Releases JSON for `Dwsy/grok-pi`
-//! 2. npm registry JSON via npmmirror, then registry.npmjs.org
+//! 2. Scoped npm package `@dwsy/grok-pi` via npmmirror, then registry.npmjs.org
+//!
+//! **Do not** use the unscoped npm name `grok-pi` — that package is owned by
+//! an unrelated project (currently published as 1.0.x) and would false-trigger
+//! "update available".
 //!
 //! Intentionally independent of stock Grok installers (`@xai-official/grok`,
 //! x.ai CLI channel pointers).
@@ -19,13 +23,15 @@ use crate::version::get_installed_grok_version;
 pub const PI_GH_RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/Dwsy/grok-pi/releases/latest";
 
-/// npm package name used as the secondary version source.
-pub const PI_NPM_PACKAGE: &str = "grok-pi";
+/// Scoped npm package for the secondary version source / install fallback.
+/// Unscoped `grok-pi` is a different package on the public registry.
+pub const PI_NPM_PACKAGE: &str = "@dwsy/grok-pi";
 
 /// Prefer Chinese mirror, then the public npm registry.
+/// Paths use the registry encoding for scoped names (`@scope%2Fname`).
 pub const PI_NPM_LATEST_URLS: &[&str] = &[
-    "https://registry.npmmirror.com/grok-pi/latest",
-    "https://registry.npmjs.org/grok-pi/latest",
+    "https://registry.npmmirror.com/@dwsy/grok-pi/latest",
+    "https://registry.npmjs.org/@dwsy%2fgrok-pi/latest",
 ];
 
 /// Fetch the latest `grok-pi` version string (no leading `v`).
