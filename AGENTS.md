@@ -5,7 +5,7 @@
 `grok-build-main/` is the project root and the **only** Git working tree.
 
 ```text
-origin   https://github.com/Dwsy/pi-grok-build.git
+origin   https://github.com/Dwsy/grok-pi.git
 upstream https://github.com/xai-org/grok-build.git
 base     c68e39f60462f28d9be5e683d9cbe2c57b1a5027
 ```

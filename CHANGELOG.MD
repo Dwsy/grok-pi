@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Native Welcome screen with Pi π block logo (default start; `-c/--continue` resumes)
 - Agent Dashboard adaptation: `/dashboard` · Ctrl+\ · Pi session catalog → dormant roster
 - Update check & install:
-  - Sources: GitHub `Dwsy/pi-grok-build` releases JSON → npm mirrors (`npmmirror` / `registry.npmjs.org`)
+  - Sources: GitHub `Dwsy/grok-pi` releases JSON → npm mirrors (`npmmirror` / `registry.npmjs.org`)
   - CLI: `grok-pi update`, `grok-pi update --check`, `grok-pi update --to 0.0.2`
   - Welcome **Ctrl+U** runs the same installer after quit-for-update
 - Welcome **Changelog** opens this file on GitHub

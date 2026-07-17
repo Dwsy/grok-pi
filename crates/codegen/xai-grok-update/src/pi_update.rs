@@ -1,7 +1,7 @@
 //! `grok-pi` update discovery.
 //!
 //! Source order (first success wins):
-//! 1. GitHub Releases JSON for `Dwsy/pi-grok-build`
+//! 1. GitHub Releases JSON for `Dwsy/grok-pi`
 //! 2. npm registry JSON via npmmirror, then registry.npmjs.org
 //!
 //! Intentionally independent of stock Grok installers (`@xai-official/grok`,
@@ -17,7 +17,7 @@ use crate::version::get_installed_grok_version;
 
 /// GitHub Releases "latest" API for this project's published binaries.
 pub const PI_GH_RELEASES_LATEST_URL: &str =
-    "https://api.github.com/repos/Dwsy/pi-grok-build/releases/latest";
+    "https://api.github.com/repos/Dwsy/grok-pi/releases/latest";
 
 /// npm package name used as the secondary version source.
 pub const PI_NPM_PACKAGE: &str = "grok-pi";
@@ -276,7 +276,7 @@ async fn install_pi_from_github(version: &str) -> Result<()> {
 async fn install_pi_unix_sh(tag: &str) -> Result<()> {
     // The installer script is identical across tags; pin the binary via env.
     let script_url =
-        "https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh";
+        "https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh";
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c").arg(format!(
         "curl -fsSL {script_url} | GROK_PI_VERSION={tag} sh"
@@ -297,7 +297,7 @@ async fn install_pi_unix_sh(tag: &str) -> Result<()> {
 #[cfg(windows)]
 async fn install_pi_windows_ps1(tag: &str) -> Result<()> {
     let script = format!(
-        "$env:GROK_PI_VERSION='{tag}'; irm https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.ps1 | iex"
+        "$env:GROK_PI_VERSION='{tag}'; irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex"
     );
     let mut cmd = tokio::process::Command::new("powershell");
     cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]);

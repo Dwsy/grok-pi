@@ -534,7 +534,7 @@ pub async fn run_external(config: ExternalRunConfig) -> anyhow::Result<()> {
             Err(e) => {
                 eprintln!("Update failed: {e:#}");
                 eprintln!(
-                    "Manual install:\n  curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh"
+                    "Manual install:\n  curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh"
                 );
             }
         }

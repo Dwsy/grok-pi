@@ -46,24 +46,24 @@ For field-level coverage and intentional omissions, see the [feature matrix](FEA
 Every Git tag matching `v*` publishes platform binaries plus installers. The Unix installer detects macOS ARM64 or Linux x64, downloads the matching latest release, and installs `grok-pi` to `~/.local/bin` by default:
 
 ```bash
-curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh
 ```
 
 On Windows x64:
 
 ```powershell
-irm https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.ps1 | iex
+irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex
 ```
 
 Pin a release or change the install directory with env vars on the same line:
 
 ```bash
-curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/download/v0.0.1/install.sh | GROK_PI_VERSION=v0.0.1 sh
-GROK_PI_INSTALL_DIR=/opt/grok-pi curl -fsSL https://github.com/Dwsy/pi-grok-build/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Dwsy/grok-pi/releases/download/v0.0.1/install.sh | GROK_PI_VERSION=v0.0.1 sh
+GROK_PI_INSTALL_DIR=/opt/grok-pi curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh
 ```
 
 ```powershell
-$env:GROK_PI_VERSION='v0.0.1'; irm https://github.com/Dwsy/pi-grok-build/releases/download/v0.0.1/install.ps1 | iex
+$env:GROK_PI_VERSION='v0.0.1'; irm https://github.com/Dwsy/grok-pi/releases/download/v0.0.1/install.ps1 | iex
 ```
 
 The installer reports any required `PATH` update.

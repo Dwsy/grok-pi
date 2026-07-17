@@ -287,7 +287,7 @@ async fn run(mut args: Args) -> Result<()> {
             }),
             // Grok worktree product flow is not wired for Pi yet.
             hide_new_worktree: true,
-            changelog_url: Some("https://github.com/Dwsy/pi-grok-build/blob/main/CHANGELOG.MD"),
+            changelog_url: Some("https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD"),
         },
     );
 
