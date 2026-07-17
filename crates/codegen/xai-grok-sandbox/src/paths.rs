@@ -4,9 +4,7 @@
 //! ecosystem (package-manager / toolchain) writable paths into helpers
 //! consumed by [`super::profiles`].
 
-#[cfg(all(feature = "enforce", unix))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ── Grok state directory ────────────────────────────────────────────────────
 
@@ -51,7 +49,6 @@ pub(crate) const DEVICE_DIRS: &[&str] = &[
 /// `/private/var/folders/` (the real `TMPDIR` / `NSTemporaryDirectory()`).
 /// git, compilers, and other tools write temp files to `$TMPDIR` which
 /// resolves to `/private/var/folders/xx/.../T/` on macOS.
-#[cfg(all(feature = "enforce", unix))]
 pub(crate) fn temp_writable_paths() -> Vec<PathBuf> {
     let mut paths = vec![PathBuf::from("/tmp"), PathBuf::from("/var/tmp")];
 
@@ -81,7 +78,6 @@ pub(crate) fn temp_writable_paths() -> Vec<PathBuf> {
 
 /// Writable directory paths for profiles that allow workspace writes (workspace, devbox, strict).
 /// Device files are handled separately via `allow_file` in `to_capability_set_with_config`.
-#[cfg(all(feature = "enforce", unix))]
 pub(crate) fn essential_writable_paths(workspace: &Path) -> Vec<PathBuf> {
     let mut paths = vec![workspace.to_path_buf(), grok_home()];
     paths.extend(temp_writable_paths());
@@ -90,7 +86,6 @@ pub(crate) fn essential_writable_paths(workspace: &Path) -> Vec<PathBuf> {
 
 /// Writable directory paths for the read-only profile (minimal: just ~/.grok + temp).
 /// Device files are handled separately via `allow_file` in `to_capability_set_with_config`.
-#[cfg(all(feature = "enforce", unix))]
 pub(crate) fn essential_writable_paths_minimal() -> Vec<PathBuf> {
     let mut paths = vec![grok_home()];
     paths.extend(temp_writable_paths());

@@ -345,7 +345,16 @@ mod tests {
         let mut expected: serde_json::Value =
             serde_json::from_str(tool_meta_json_schema_str()).expect("checked-in schema parses");
         if let Some(values) = expected["definitions"]["ToolNamespace"]["enum"].as_array_mut() {
-            values.retain(|v| v != "cursor");
+            use std::collections::HashSet;
+            use strum::IntoEnumIterator;
+            let compiled: HashSet<String> = ToolNamespace::iter()
+                .filter_map(|ns| {
+                    serde_json::to_value(ns)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                })
+                .collect();
+            values.retain(|v| matches!(v.as_str(), Some(s) if compiled.contains(s)));
         }
         let expected = format!("{}\n", serde_json::to_string_pretty(&expected).unwrap());
         assert_eq!(

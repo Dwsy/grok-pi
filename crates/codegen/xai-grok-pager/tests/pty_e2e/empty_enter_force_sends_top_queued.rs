@@ -10,13 +10,18 @@ use super::common::*;
 #[ignore]
 async fn empty_enter_force_sends_top_queued() {
     let content = ContentController::start().await.expect("start content");
-    // Gate turn 1's terminal event so the queue + empty-Enter provably land
-    // mid-turn regardless of suite load.
-    content.hold_agent_completions();
-    content.set_turns([
-        slow_turn_text("TURNONE"),
-        "TURNTWO reply to the promoted follow-up.".to_owned(),
-    ]);
+    let mut turn_one = content.expect_response_blocked(
+        "running turn before send-now",
+        InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+        ScriptedResponse::sse(chat_completions_message_events(&slow_turn_text("TURNONE"))),
+    );
+    let mut turn_two = content.expect_response(
+        "promoted queued follow-up",
+        InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+        ScriptedResponse::sse(chat_completions_message_events(
+            "TURNTWO reply to the promoted follow-up.",
+        )),
+    );
 
     let binary = pager_binary().expect("resolve pager binary");
     let mut harness =
@@ -32,6 +37,9 @@ async fn empty_enter_force_sends_top_queued() {
     harness
         .wait_for_text("TURNONE", Duration::from_secs(30))
         .expect("turn 1 streaming");
+    tokio::time::timeout(Duration::from_secs(10), turn_one.wait_blocked())
+        .await
+        .expect("turn 1 reached the completion barrier");
 
     harness
         .inject_keys(b"please also check the logs\r")
@@ -44,7 +52,7 @@ async fn empty_enter_force_sends_top_queued() {
     // shell cancels turn 1 (the abort beats the held completion) and promotes
     // the row to run as turn 2.
     harness.inject_keys(b"\r").expect("empty Enter send-now");
-    content.release_agent_completions();
+    turn_one.release();
     // The promoted row renders as a standard "❯ " prompt block via the
     // turn-start adoption (the arrow prefix distinguishes the committed block
     // from the prefix-less queue row).
@@ -58,6 +66,9 @@ async fn empty_enter_force_sends_top_queued() {
     harness
         .wait_for_text("TURNTWO", Duration::from_secs(40))
         .expect("promoted turn reply");
+    tokio::time::timeout(Duration::from_secs(10), turn_two.wait_satisfied())
+        .await
+        .expect("promoted turn expectation satisfied");
 
     // The send-now cancel is silent: no cancelled marker between the partial
     // turn-1 output and the promoted prompt.

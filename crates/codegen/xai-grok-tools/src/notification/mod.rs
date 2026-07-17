@@ -1,5 +1,12 @@
+pub mod handle;
 pub mod types;
 
+pub use handle::AcknowledgedToolNotification;
+pub use handle::DurableNotificationTargets;
+pub use handle::NotificationAcknowledgementBatch;
+pub use handle::NotificationAcknowledgementError;
+pub use handle::PerCallNotificationSink;
+pub use handle::ToolNotificationHandle;
 pub use types::ALL_NOTIFICATION_TAGS;
 pub use types::BashExecutionBackgrounded;
 pub use types::BashExecutionComplete;
@@ -15,13 +22,11 @@ pub use types::LspServerReady;
 pub use types::LspServerRetrying;
 pub use types::LspServerStarting;
 pub use types::MonitorEvent;
-pub use types::PerCallNotificationSink;
 pub use types::PlanModeEntered;
 pub use types::PlanModeExited;
 pub use types::ScheduledTaskCreated;
 pub use types::ScheduledTaskFired;
 pub use types::ScheduledTaskRemoved;
 pub use types::ToolNotification;
-pub use types::ToolNotificationHandle;
 pub use types::UserQuestionAsked;
 pub use types::notification_schema_catalog;

@@ -1058,3 +1058,135 @@ fn unknown_non_restricted_command_still_passes_through() {
         "no upsell for genuinely unknown commands"
     );
 }
+
+// ── Browser-unavailable URL fallback ────────────────────────────────
+
+/// When the OS browser opener cannot run (simulated via a broken
+/// `GROK_TEST_OPEN_URL_FILE` seam), `Action::OpenUrl` for a billing CTA
+/// must push a scrollback system message that includes the full URL —
+/// the headless-VM fix for silent Upgrade / Buy-more-credits no-ops.
+#[serial_test::serial(GROK_TEST_OPEN_URL_FILE)]
+#[test]
+fn open_url_shows_manual_url_when_browser_unavailable() {
+    // Point the test seam at a path whose parent dir does not exist so the
+    // write fails and `open_url` returns false (BrowserUnavailable).
+    let bad = std::env::temp_dir().join(format!(
+        "grok-open-url-missing-{}/out.txt",
+        std::process::id()
+    ));
+    // SAFETY: serialized via `serial_test` so no other test races the env var.
+    unsafe { std::env::set_var("GROK_TEST_OPEN_URL_FILE", &bad) };
+
+    let mut app = test_app_with_agent();
+    let before = agent_scrollback_len(&app);
+    let url = UPSELL_URL_UPGRADE;
+    let effects = dispatch(Action::OpenUrl(url.to_string()), &mut app);
+    assert!(effects.is_empty());
+
+    assert_eq!(
+        agent_scrollback_len(&app),
+        before + 1,
+        "must push a system message with the URL"
+    );
+    let text = last_system_text(&app, AgentId(0));
+    assert!(
+        text.contains("Could not open a browser"),
+        "fallback copy missing: {text}"
+    );
+    assert!(
+        text.contains(url),
+        "full billing URL must be visible for copy: {text}"
+    );
+    let toast = app.agents[&AgentId(0)]
+        .toast
+        .as_ref()
+        .map(|(m, _)| m.as_str());
+    assert_eq!(toast, Some("Browser unavailable - URL shown above"));
+
+    // SAFETY: serialized via `serial_test`; restore the env for other tests.
+    unsafe { std::env::remove_var("GROK_TEST_OPEN_URL_FILE") };
+}
+
+/// Successful open (test seam write OK) must not spam a fallback system message.
+#[serial_test::serial(GROK_TEST_OPEN_URL_FILE)]
+#[test]
+fn open_url_does_not_show_fallback_when_opener_succeeds() {
+    let url_file =
+        std::env::temp_dir().join(format!("grok-open-url-ok-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&url_file);
+    // SAFETY: serialized via `serial_test`.
+    unsafe { std::env::set_var("GROK_TEST_OPEN_URL_FILE", &url_file) };
+
+    let mut app = test_app_with_agent();
+    let before = agent_scrollback_len(&app);
+    let url = UPSELL_URL_PAYG;
+    let _ = dispatch(Action::OpenUrl(url.to_string()), &mut app);
+
+    assert_eq!(
+        agent_scrollback_len(&app),
+        before,
+        "successful open must not push a fallback system message"
+    );
+    let recorded = std::fs::read_to_string(&url_file).unwrap_or_default();
+    assert!(
+        recorded.lines().any(|l| l == url),
+        "opener seam must record the URL; got {recorded:?}"
+    );
+
+    // SAFETY: serialized via `serial_test`.
+    unsafe { std::env::remove_var("GROK_TEST_OPEN_URL_FILE") };
+    let _ = std::fs::remove_file(&url_file);
+}
+
+/// Credit-limit upsell Q&A submit routes through OpenUrl; when the browser
+/// is unavailable the full option URL must land in scrollback.
+#[serial_test::serial(GROK_TEST_OPEN_URL_FILE)]
+#[test]
+fn credit_limit_upsell_submit_shows_url_when_browser_unavailable() {
+    use crate::app::agent_view::translate_local_submit_for_test;
+    use crate::app::app_view::InputOutcome;
+    use crate::views::question_view::{LocalQuestionKind, QuestionSelection};
+
+    let bad = std::env::temp_dir().join(format!(
+        "grok-open-url-upsell-missing-{}/out.txt",
+        std::process::id()
+    ));
+    // SAFETY: serialized via `serial_test`.
+    unsafe { std::env::set_var("GROK_TEST_OPEN_URL_FILE", &bad) };
+
+    let mut app = test_app_with_agent();
+    open_upsell_qa(&mut app, CreditLimitUpsellMode::UnifiedCredits);
+    let mut qv = app
+        .agents
+        .get_mut(&AgentId(0))
+        .unwrap()
+        .question_view
+        .take()
+        .expect("expected credit-limit upsell modal");
+    // Select option 1 = "Buy more credits" (credits / usage URL).
+    qv.selections[0] = QuestionSelection::Single(Some(1));
+    let kind = LocalQuestionKind::CreditLimitUpsell {
+        choices: vec![
+            xai_grok_telemetry::events::CreditLimitChoice::UpgradeTier,
+            xai_grok_telemetry::events::CreditLimitChoice::PurchaseCredits,
+        ],
+    };
+    let InputOutcome::Action(Action::OpenUrl(url)) =
+        translate_local_submit_for_test(&qv, kind, false)
+    else {
+        panic!("expected OpenUrl from upsell submit");
+    };
+    assert_eq!(url, UPSELL_URL_PAYG);
+
+    let before = agent_scrollback_len(&app);
+    let _ = dispatch(Action::OpenUrl(url.clone()), &mut app);
+    let text = last_system_text(&app, AgentId(0));
+    assert_eq!(agent_scrollback_len(&app), before + 1);
+    assert!(
+        text.contains(&url),
+        "upsell URL missing from fallback: {text}"
+    );
+
+    // SAFETY: serialized via `serial_test`.
+    unsafe { std::env::remove_var("GROK_TEST_OPEN_URL_FILE") };
+}

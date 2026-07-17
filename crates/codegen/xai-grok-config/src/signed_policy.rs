@@ -8,10 +8,15 @@
 //! Inert until a public key is provisioned: with no embedded keys the cache
 //! marker stays the (best-effort) authority.
 use base64::Engine;
-pub use prod_mc_cli_chat_proxy_types::{SignatureEnvelope, SignedPayload, now_unix};
+pub use prod_mc_cli_chat_proxy_types::{
+    MANAGED_IDENTITY_TYP, MANAGED_POLICY_TYP, ManagedIdentityClaim, SignatureEnvelope,
+    SignedPayload, now_unix,
+};
 /// Compiled-in trusted Ed25519 public keys, `(key_id, raw 32 bytes)`; more than one
 /// entry only during a rotation. Empty ships dark (see [`verification_active`]).
 /// Compile-time, not an env flag: the local attacker controls their env.
+/// Provisioning order: keyed clients reject `typ`-less envelopes, so the
+/// typ-emitting server must be fully rolled out before any client embeds a key.
 pub const EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS: &[(&str, &[u8])] = &[];
 const _: () = {
     let keys = EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS;
@@ -57,6 +62,9 @@ fn with_embedded_keys<R>(f: impl FnOnce(&[(&str, &[u8])]) -> R) -> R {
 }
 /// Sidecar persisted next to the policy so the load-time gate can re-verify it offline.
 pub const SIGNATURE_SIDECAR_FILE: &str = "managed_config.sig.json";
+/// The is-managed claim's own sidecar (see
+/// [`prod_mc_cli_chat_proxy_types::ManagedIdentityClaim`]).
+pub const MANAGED_IDENTITY_SIDECAR_FILE: &str = "managed_identity.sig.json";
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SigError {
     #[error("signature is not valid base64")]
@@ -65,6 +73,8 @@ pub enum SigError {
     SignatureMismatch,
     #[error("signed payload is not valid JSON")]
     BadPayload,
+    #[error("signed payload carries the wrong message type")]
+    WrongType,
     #[error("signed payload names a key_id outside the trusted set")]
     UnknownKeyId,
     #[error("signed policy is bound to a different principal")]
@@ -92,7 +102,8 @@ pub fn embedded_key_id_trusted(key_id: &str) -> bool {
 /// Verify `signature_b64` over `signed_payload` against `trusted_keys`, returning the
 /// parsed payload. The verifying key is selected by the SIGNED payload's `key_id` —
 /// safe to read pre-verification because selection can only land within the trusted
-/// set (a forged id either misses or picks a key the signature won't match). Pure:
+/// set (a forged id either misses or picks a key the signature won't match). Requires
+/// the [`MANAGED_POLICY_TYP`] tag (a claim must never verify as a policy). Pure:
 /// callers supply the keys so tests can use throwaway keypairs.
 pub fn verify_signed_payload(
     signed_payload: &str,
@@ -101,17 +112,43 @@ pub fn verify_signed_payload(
 ) -> Result<SignedPayload, SigError> {
     let payload: SignedPayload =
         serde_json::from_str(signed_payload).map_err(|_| SigError::BadPayload)?;
+    verify_signature_with_keys(signed_payload, signature_b64, trusted_keys, &payload.key_id)?;
+    if payload.typ != MANAGED_POLICY_TYP {
+        return Err(SigError::WrongType);
+    }
+    Ok(payload)
+}
+/// [`verify_signed_payload`]'s mirror for claims (requires [`MANAGED_IDENTITY_TYP`]).
+pub fn verify_managed_identity_claim(
+    signed_payload: &str,
+    signature_b64: &str,
+    trusted_keys: &[(&str, &[u8])],
+) -> Result<ManagedIdentityClaim, SigError> {
+    let claim: ManagedIdentityClaim =
+        serde_json::from_str(signed_payload).map_err(|_| SigError::BadPayload)?;
+    verify_signature_with_keys(signed_payload, signature_b64, trusted_keys, &claim.key_id)?;
+    if claim.typ != MANAGED_IDENTITY_TYP {
+        return Err(SigError::WrongType);
+    }
+    Ok(claim)
+}
+/// Shared Ed25519 check: select the trusted key named by the signed bytes' `key_id`, verify.
+fn verify_signature_with_keys(
+    signed_payload: &str,
+    signature_b64: &str,
+    trusted_keys: &[(&str, &[u8])],
+    key_id: &str,
+) -> Result<(), SigError> {
     let (_, public_key) = trusted_keys
         .iter()
-        .find(|(id, _)| *id == payload.key_id)
+        .find(|(id, _)| *id == key_id)
         .ok_or(SigError::UnknownKeyId)?;
     let sig = base64::engine::general_purpose::STANDARD
         .decode(signature_b64.trim())
         .map_err(|_| SigError::BadSignatureEncoding)?;
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key)
         .verify(signed_payload.as_bytes(), &sig)
-        .map_err(|_| SigError::SignatureMismatch)?;
-    Ok(payload)
+        .map_err(|_| SigError::SignatureMismatch)
 }
 /// Fetch-time identity binding for a VERIFIED payload, expiry enforced: a
 /// deployment-signed payload is trusted on signature alone; a team-signed payload
@@ -158,6 +195,26 @@ pub fn verify_fetched(
     now_unix: u64,
 ) -> Result<SignedPayload, SigError> {
     with_embedded_keys(|keys| verify_fetched_with_keys(sidecar, keys, active_team_id, now_unix))
+}
+/// Fetch-time claim verification (signature + expiry; binding is the caller's rule).
+pub fn verify_fetched_claim(
+    sidecar: &SignatureEnvelope,
+    now_unix: u64,
+) -> Result<ManagedIdentityClaim, SigError> {
+    with_embedded_keys(|keys| verify_fetched_claim_with_keys(sidecar, keys, now_unix))
+}
+/// Key-injected core of [`verify_fetched_claim`] so tests can supply throwaway keys.
+fn verify_fetched_claim_with_keys(
+    sidecar: &SignatureEnvelope,
+    trusted_keys: &[(&str, &[u8])],
+    now_unix: u64,
+) -> Result<ManagedIdentityClaim, SigError> {
+    let claim =
+        verify_managed_identity_claim(&sidecar.signed_payload, &sidecar.signature, trusted_keys)?;
+    if now_unix > claim.expires_at {
+        return Err(SigError::Expired);
+    }
+    Ok(claim)
 }
 /// Key-injected core of [`verify_fetched`] so tests can supply throwaway keypairs.
 fn verify_fetched_with_keys(
@@ -233,11 +290,13 @@ enum SidecarRead {
     Unreadable,
 }
 fn read_sidecar(home: &std::path::Path) -> SidecarRead {
-    let path = sidecar_path(home);
-    if non_regular_file_at(&path) {
+    read_envelope_at(&sidecar_path(home))
+}
+fn read_envelope_at(path: &std::path::Path) -> SidecarRead {
+    if non_regular_file_at(path) {
         return SidecarRead::Absent;
     }
-    let json = match std::fs::read_to_string(&path) {
+    let json = match std::fs::read_to_string(path) {
         Ok(json) => json,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return SidecarRead::Absent,
         Err(_) => return SidecarRead::Unreadable,
@@ -251,9 +310,60 @@ fn read_sidecar(home: &std::path::Path) -> SidecarRead {
 /// Written 0600 on unix: for a deployment-key principal the signed payload embeds
 /// the key, so the sidecar is a second at-rest copy of a bearer credential.
 pub fn write_sidecar(home: &std::path::Path, sidecar: &SignatureEnvelope) -> std::io::Result<()> {
+    write_envelope_at(&sidecar_path(home), sidecar)
+}
+pub(crate) fn managed_identity_sidecar_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(MANAGED_IDENTITY_SIDECAR_FILE)
+}
+/// [`write_sidecar`] for the claim (0600 for uniformity; the claim has no secret).
+pub fn write_managed_identity_sidecar(
+    home: &std::path::Path,
+    sidecar: &SignatureEnvelope,
+) -> std::io::Result<()> {
+    write_envelope_at(&managed_identity_sidecar_path(home), sidecar)
+}
+fn write_envelope_at(path: &std::path::Path, sidecar: &SignatureEnvelope) -> std::io::Result<()> {
     let json = serde_json::to_string(sidecar)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    crate::fs_atomic::write_atomically(&sidecar_path(home), &json, Some(0o600))
+    crate::fs_atomic::write_atomically(path, &json, Some(0o600))
+}
+/// Whether an authentic claim IMPOSES fail-closed enforcement: verified, bound to
+/// the KNOWN `expected_principal`, in-date vs the caller-clamped `now_unix`, and
+/// `fail_closed`. Anything else imposes nothing: permissive (must not override a
+/// now-fail_closed marker), unknown principal (a planted claim must not brick a
+/// signed-out victim), foreign, expired, forged, or absent.
+pub fn managed_identity_claim_imposes(
+    home: &std::path::Path,
+    expected_principal: Option<&str>,
+    now_unix: u64,
+) -> bool {
+    if !verification_active() {
+        return false;
+    }
+    with_embedded_keys(|keys| {
+        managed_identity_claim_imposes_with_keys(home, keys, expected_principal, now_unix)
+    })
+}
+/// Key-injected core of [`managed_identity_claim_imposes`] so tests can supply throwaway keys.
+fn managed_identity_claim_imposes_with_keys(
+    home: &std::path::Path,
+    trusted_keys: &[(&str, &[u8])],
+    expected_principal: Option<&str>,
+    now_unix: u64,
+) -> bool {
+    let Some(expected) = expected_principal else {
+        return false;
+    };
+    let SidecarRead::Present(sidecar) = read_envelope_at(&managed_identity_sidecar_path(home))
+    else {
+        return false;
+    };
+    let Ok(claim) =
+        verify_managed_identity_claim(&sidecar.signed_payload, &sidecar.signature, trusted_keys)
+    else {
+        return false;
+    };
+    claim.principal == expected && now_unix <= claim.expires_at && claim.fail_closed
 }
 /// True when signature verification is active AND a cloud-cache policy on disk is
 /// NOT covered by a valid, in-date, identity-bound, content-matching signature.
@@ -367,6 +477,8 @@ pub enum SignedVerdict {
     /// The sidecar exists but a transient IO error (EACCES-style, never plain absence
     /// or a squatting non-file) blocked the read. Not tamper evidence: the gate falls
     /// back to the marker decision, and the refetch trigger fires to rewrite it.
+    /// The claim is deliberately NOT consulted here: a genuine blip must not
+    /// refuse, and a chmod-capable attacker could delete the claim anyway.
     SidecarUnreadable,
     /// Authentic sidecar; the policy is valid for this principal (or never opted into
     /// fail-closed enforcement).

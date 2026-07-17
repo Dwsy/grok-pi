@@ -64,6 +64,8 @@ pub enum ContextualTipKind {
     SmallScreen,
     /// Double-click fold/nav path → tip to enable Word select in settings.
     WordSelect,
+    /// SSH session without `grok wrap` → tip to wrap the ssh command locally.
+    SshWrap,
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -1303,10 +1305,15 @@ pub struct ClipboardCopy {
     pub data_control: bool,
     pub tmux_ok: bool,
     pub osc52_ok: bool,
-    /// `native_ok || tmux_ok || osc52_ok` where tmux/osc52 are real leg outcomes.
+    /// Evidence classification: `confirmed` | `unverified` | `failed`.
+    pub delivery: &'static str,
+    /// An explicit `grok wrap` OSC 52 sink was active.
+    pub osc52_sink: bool,
+    /// The process was inside a container without a display server.
+    pub container_no_display: bool,
+    /// Historical boolean projection: true unless `delivery == failed`.
     pub reported_success: bool,
-    /// UX toast branch (route-shaped, not leg-shaped): `copied` | `copied_tmux` |
-    /// `copied_osc_remote` | `copied_osc_container` | `failed`.
+    /// Exact UX toast branch selected by the environment policy.
     pub toast_kind: &'static str,
     pub duration_ms: u64,
 }
@@ -1813,6 +1820,64 @@ telemetry_event!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn terminal_telemetry_fixture() -> TerminalTelemetry {
+        TerminalTelemetry {
+            brand: "Unknown".into(),
+            multiplexer: "none".into(),
+            is_ssh: true,
+            is_byobu: false,
+            term_var: "xterm-256color".into(),
+            tmux_version: "".into(),
+            xtversion: "".into(),
+            host_os: "linux".into(),
+            display_server: "unknown".into(),
+            modifier_cmd_fate: "unknown".into(),
+            modifier_opt_fate: "unknown".into(),
+            enter_modifier_fate: "unknown".into(),
+            hyperlink_osc8: "unknown".into(),
+            hyperlink_skip_reason: "none".into(),
+            clipboard_route: "native+osc52".into(),
+            clipboard_native_tool: "arboard".into(),
+            clipboard_data_control: "n/a".into(),
+        }
+    }
+
+    #[test]
+    fn clipboard_copy_serialization_preserves_boolean_and_adds_delivery_evidence() {
+        for delivery in ["confirmed", "unverified", "failed"] {
+            let value = serde_json::to_value(ClipboardCopy {
+                terminal: terminal_telemetry_fixture(),
+                source: "copy_text",
+                text_len: 12,
+                route_native: true,
+                route_tmux: false,
+                route_osc52: true,
+                route_label: "native+osc52".into(),
+                cli_tools_tried: String::new(),
+                cli_ok_tools: String::new(),
+                cli_ok: false,
+                arboard_ok: false,
+                data_control: false,
+                tmux_ok: false,
+                osc52_ok: true,
+                delivery,
+                osc52_sink: false,
+                container_no_display: false,
+                reported_success: delivery != "failed",
+                toast_kind: "unverified_osc_remote",
+                duration_ms: 1,
+            })
+            .unwrap();
+            assert_eq!(value["delivery"], serde_json::json!(delivery));
+            assert_eq!(
+                value["reported_success"],
+                serde_json::Value::Bool(delivery != "failed")
+            );
+            assert_eq!(value["osc52_sink"], serde_json::json!(false));
+            assert_eq!(value["container_no_display"], serde_json::json!(false));
+        }
+    }
 
     #[test]
     fn manual_auth_name_and_shape() {

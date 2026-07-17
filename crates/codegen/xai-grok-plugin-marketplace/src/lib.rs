@@ -16,7 +16,8 @@ pub mod scanner;
 pub mod types;
 
 pub use config::{
-    load_extra_sources_from_settings, load_extra_sources_from_settings_in, load_sources,
+    env_require_sha, load_extra_sources_from_settings, load_extra_sources_from_settings_in,
+    load_require_sha, load_sources,
 };
 pub use error::MarketplaceError;
 pub use scanner::scan_marketplace;

@@ -556,6 +556,12 @@ grok -p "..." --no-auto-update
 | Non-TTY stderr (auto-detected)  | Automatic |
 | `[cli] auto_update = false`     | Persistent|
 
+`GROK_DISABLE_AUTOUPDATER` set to a falsy value (`0`, `false`, `off`, `no`, or empty, any
+case) counts as not set. The agent SDKs
+inject `GROK_DISABLE_AUTOUPDATER=1` for the non-leader agents they spawn (a falsy value in
+the SDK's isolation env keeps updates on), and the stdio agent skips its background update
+unless it runs from the managed install (`$GROK_HOME/bin/grok`).
+
 Update messages go to **stderr**. Stdout stays clean for `--output-format json`. See also [Environment Variables for Headless](#environment-variables-for-headless).
 
 ---

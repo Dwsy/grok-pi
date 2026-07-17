@@ -432,19 +432,18 @@ pub(crate) async fn spawn_session_actor(
         chat_state_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
-    if !initial_prompt_texts.is_empty()
+    if (!initial_prompt_texts.is_empty()
         || initial_total_tokens > 0
-        || initial_last_compaction.is_some()
+        || initial_last_compaction.is_some())
+        && let Some(mut snap) = chat_state_handle.snapshot().await
     {
-        if let Some(mut snap) = chat_state_handle.snapshot().await {
-            snap.prompt_index = initial_prompt_texts.len();
-            snap.prompt_texts = initial_prompt_texts;
-            if initial_total_tokens > 0 {
-                snap.total_tokens = initial_total_tokens;
-            }
-            snap.last_compaction_prompt_index = initial_last_compaction;
-            chat_state_handle.restore_snapshot(snap);
+        snap.prompt_index = initial_prompt_texts.len();
+        snap.prompt_texts = initial_prompt_texts;
+        if initial_total_tokens > 0 {
+            snap.total_tokens = initial_total_tokens;
         }
+        snap.last_compaction_prompt_index = initial_last_compaction;
+        chat_state_handle.restore_snapshot(snap);
     }
     chat_state_handle.update_credentials(credentials);
     let state = TokioMutex::new(State {
@@ -546,41 +545,19 @@ pub(crate) async fn spawn_session_actor(
             grep_ugrep,
         }
     };
-    let persistent_local_shell = crate::util::config::resolve_persistent_local_shell(
-        remote_settings
-            .as_ref()
-            .and_then(|r| r.persistent_local_shell),
-    );
-    let terminal_backend_kind = select_terminal_backend_kind(
-        startup_hints.is_subagent,
-        parent_terminal_backend.is_some(),
-        client_terminal_capable,
-        tool_context.gateway.is_some(),
-        persistent_local_shell,
-    );
     let terminal_backend: std::sync::Arc<dyn xai_grok_tools::computer::types::TerminalBackend> =
-        match terminal_backend_kind {
-            TerminalBackendKind::ReuseParent => parent_terminal_backend
-                .expect("ReuseParent is only selected when a parent backend is present"),
-            TerminalBackendKind::AcpClient => {
-                std::sync::Arc::new(crate::terminal::AcpTerminalAdapter::new(
-                    tool_context.gateway.clone().unwrap(),
-                    tool_context.session_id.clone().unwrap(),
-                ))
-                    as std::sync::Arc<dyn xai_grok_tools::computer::types::TerminalBackend>
-            }
-            TerminalBackendKind::LocalPersistent => std::sync::Arc::new(
-                LocalTerminalBackend::new_local_with_persistent_shell(resolve_search_shadows()),
-            ),
-            TerminalBackendKind::LocalNonPersistent => {
-                std::sync::Arc::new(LocalTerminalBackend::new_local(resolve_search_shadows()))
-            }
+        if let Some(parent_tb) = parent_terminal_backend.filter(|_| startup_hints.is_subagent) {
+            parent_tb
+        } else if client_terminal_capable && tool_context.gateway.is_some() {
+            std::sync::Arc::new(crate::terminal::AcpTerminalAdapter::new(
+                tool_context.gateway.clone().unwrap(),
+                tool_context.session_id.clone().unwrap(),
+            )) as std::sync::Arc<dyn xai_grok_tools::computer::types::TerminalBackend>
+        } else {
+            let backend: std::sync::Arc<dyn xai_grok_tools::computer::types::TerminalBackend> =
+                std::sync::Arc::new(LocalTerminalBackend::new_local(resolve_search_shadows()));
+            backend
         };
-    if terminal_backend_kind == TerminalBackendKind::LocalPersistent {
-        terminal_backend
-            .warm_persistent_shell(tool_context.cwd.as_path())
-            .await;
-    }
     let fs_backend: std::sync::Arc<dyn xai_grok_tools::computer::types::AsyncFileSystem> =
         if client_fs_capable && tool_context.gateway.is_some() {
             std::sync::Arc::new(xai_grok_workspace::file_system::AcpFsAdapter::new(
@@ -713,6 +690,11 @@ pub(crate) async fn spawn_session_actor(
         } else {
             None
         };
+        let embed_credentials = crate::auth::credential_provider::embedding_session_credentials(
+            &embed_base_url,
+            auth_manager.as_ref(),
+            api_key_provider.clone(),
+        );
         let params = crate::session::memory::MemoryBackendParams {
             session_id: session_info.id.to_string(),
             embed_config: memory_config.as_ref().map(|mc| mc.embedding.clone()),
@@ -724,16 +706,7 @@ pub(crate) async fn spawn_session_actor(
             watcher,
             stale_claim_secs: watcher_config.stale_claim_secs,
             search_source: "tool",
-            api_key_provider: api_key_provider.clone(),
-            auth_credentials: auth_manager.as_ref().map(|am| {
-                std::sync::Arc::new(
-                    crate::auth::credential_provider::ShellAuthCredentialProvider::new(
-                        am.clone(),
-                        None,
-                        None,
-                    ),
-                ) as std::sync::Arc<dyn xai_grok_auth::AuthCredentialProvider>
-            }),
+            embedding_credentials: embed_credentials,
         };
         let backend = crate::session::memory::MemoryBackendImpl::from_session_params(
             storage.clone(),
@@ -2042,80 +2015,5 @@ impl crate::session::mcp_restart::RestartActions for SessionRestartActions {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .end_restart(server);
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TerminalBackendKind {
-    ReuseParent,
-    AcpClient,
-    LocalPersistent,
-    LocalNonPersistent,
-}
-fn select_terminal_backend_kind(
-    is_subagent: bool,
-    has_parent_backend: bool,
-    client_terminal_capable: bool,
-    has_gateway: bool,
-    local_persistent: bool,
-) -> TerminalBackendKind {
-    if is_subagent && has_parent_backend {
-        TerminalBackendKind::ReuseParent
-    } else if client_terminal_capable && has_gateway {
-        TerminalBackendKind::AcpClient
-    } else if local_persistent {
-        TerminalBackendKind::LocalPersistent
-    } else {
-        TerminalBackendKind::LocalNonPersistent
-    }
-}
-#[cfg(test)]
-mod terminal_backend_select_tests {
-    use super::{TerminalBackendKind, select_terminal_backend_kind};
-    #[test]
-    fn subagent_with_parent_reuses_parent() {
-        assert_eq!(
-            select_terminal_backend_kind(true, true, true, true, true),
-            TerminalBackendKind::ReuseParent
-        );
-    }
-    #[test]
-    fn subagent_without_parent_falls_through() {
-        assert_eq!(
-            select_terminal_backend_kind(true, false, true, true, true),
-            TerminalBackendKind::AcpClient
-        );
-        assert_eq!(
-            select_terminal_backend_kind(true, false, false, true, true),
-            TerminalBackendKind::LocalPersistent
-        );
-    }
-    #[test]
-    fn non_subagent_never_reuses_parent() {
-        assert_eq!(
-            select_terminal_backend_kind(false, true, false, false, true),
-            TerminalBackendKind::LocalPersistent
-        );
-    }
-    #[test]
-    fn client_terminal_uses_acp_only_with_gateway() {
-        assert_eq!(
-            select_terminal_backend_kind(false, false, true, true, true),
-            TerminalBackendKind::AcpClient
-        );
-        assert_eq!(
-            select_terminal_backend_kind(false, false, true, false, true),
-            TerminalBackendKind::LocalPersistent
-        );
-    }
-    #[test]
-    fn local_session_persistent_flag_selects_backend() {
-        assert_eq!(
-            select_terminal_backend_kind(false, false, false, false, true),
-            TerminalBackendKind::LocalPersistent
-        );
-        assert_eq!(
-            select_terminal_backend_kind(false, false, false, false, false),
-            TerminalBackendKind::LocalNonPersistent
-        );
     }
 }

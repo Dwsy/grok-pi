@@ -21,6 +21,9 @@ pub struct HookMatcher {
 #[derive(Debug, Clone)]
 enum MatcherKind {
     All,
+    /// Matches no tool names. Used when a configured matcher fails to compile
+    /// after deserialization — fail closed rather than widen to match-all.
+    Never,
     Exact(Vec<String>),
     Regex(Regex),
 }
@@ -39,9 +42,18 @@ impl HookMatcher {
         Ok(Self { kind })
     }
 
+    /// Matcher that never matches. Prefer this over `None` on a [`HookSpec`] when a
+    /// pattern was configured but could not be compiled (fail-closed).
+    pub(crate) fn never() -> Self {
+        Self {
+            kind: MatcherKind::Never,
+        }
+    }
+
     pub fn is_match(&self, tool_name: &str) -> bool {
         match &self.kind {
             MatcherKind::All => true,
+            MatcherKind::Never => false,
             MatcherKind::Exact(names) => names.iter().any(|n| n == tool_name),
             MatcherKind::Regex(regex) => {
                 regex.is_match(tool_name)
@@ -132,6 +144,15 @@ mod tests {
     #[test]
     fn invalid_regex_errors() {
         assert!(HookMatcher::new("[invalid").is_err());
+    }
+
+    #[test]
+    fn never_matches_nothing() {
+        let m = HookMatcher::never();
+        assert!(!m.is_match("read_file"));
+        assert!(!m.is_match("run_terminal_command"));
+        assert!(!m.is_match(""));
+        assert!(!m.is_match("*"));
     }
 
     #[test]

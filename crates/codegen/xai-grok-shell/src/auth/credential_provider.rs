@@ -87,6 +87,24 @@ impl AuthCredentialProvider for ShellAuthCredentialProvider {
         self.static_credentials.deployment_key.is_none()
     }
 }
+/// Resolves the embedding credentials for `embed_base_url`, attaching the xAI
+/// session credential only to xAI-operated endpoints over `https`.
+pub(crate) fn embedding_session_credentials(
+    embed_base_url: &str,
+    auth_manager: Option<&Arc<AuthManager>>,
+    api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
+) -> xai_grok_memory::EndpointScopedCredentials {
+    let auth_credentials = auth_manager.map(|am| {
+        Arc::new(ShellAuthCredentialProvider::new(am.clone(), None, None))
+            as Arc<dyn AuthCredentialProvider>
+    });
+    xai_grok_memory::EndpointScopedCredentials::for_endpoint(
+        embed_base_url,
+        crate::util::is_xai_api_bearer_url,
+        auth_credentials,
+        api_key_provider,
+    )
+}
 /// Build a `StorageClient` for proxy uploads (including the high-volume
 /// `batch_upload` used for repo context / `repo_changes_dedup`).
 ///
@@ -567,6 +585,31 @@ mod tests {
             Some("fresh"),
             "snapshot must reflect refreshed token for subsequent apply() calls"
         );
+    }
+    #[test]
+    fn embedding_session_credentials_scopes_to_first_party() {
+        let _guard = EarlyInvalidationGuard::pin_to_default();
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = make_manager(
+            &dir,
+            Some(make_auth("xai-session-token", ChronoDuration::hours(1))),
+        );
+        let api_key_provider: xai_grok_tools::types::SharedApiKeyProvider =
+            Arc::new(crate::auth::manager::SharedAuthKeyProvider(mgr.clone()));
+        for denied in ["https://byok.attacker.example/v1", "http://api.x.ai/v1"] {
+            let resolved =
+                embedding_session_credentials(denied, Some(&mgr), Some(api_key_provider.clone()));
+            assert!(
+                resolved.is_empty(),
+                "session credentials must not reach {denied}"
+            );
+        }
+        let resolved = embedding_session_credentials(
+            "https://api.x.ai/v1",
+            Some(&mgr),
+            Some(api_key_provider),
+        );
+        assert!(!resolved.is_empty());
     }
     /// Deployment-key path has no recovery (operator owns the bearer).
     #[tokio::test]

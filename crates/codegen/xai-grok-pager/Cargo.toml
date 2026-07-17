@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager"
-version = "0.1.220-alpha.4"
+version = "0.2.102"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -161,7 +161,7 @@ windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
 # Enable the render crate's test-only helpers for the pager's test build.
-xai-grok-pager-render = { path = "../xai-grok-pager-render", features = [] }
+xai-grok-pager-render = { path = "../xai-grok-pager-render", features = ["test-support"] }
 pretty_assertions = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
@@ -243,6 +243,7 @@ default = ["jemalloc", "sandbox-enforce"]
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",
+    "test-support",
     ]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary
@@ -252,3 +253,7 @@ default-bazel = [
 jemalloc = []
 sandbox-enforce = ["xai-grok-sandbox/enforce"]
 release-dist = []
+# Exposes test-only view-model constructors/setters (e.g. `test_agent_view`,
+# `AgentSession::set_yolo_mode_for_test`) to sibling crates' test builds — used
+# by `xai-grok-pager-minimal`'s unit tests. Never enabled in production builds.
+test-support = ["xai-grok-pager-render/test-support"]

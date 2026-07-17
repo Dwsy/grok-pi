@@ -225,6 +225,11 @@ pub(crate) fn command_write_paths_in_tree(root: Node<'_>, src: &str) -> Vec<Stri
     out
 }
 
+/// Safe write sinks that do not touch a real file. Exact match.
+pub(crate) fn is_safe_write_sink(path: &str) -> bool {
+    matches!(path, "/dev/null" | "/dev/stdout" | "/dev/stderr")
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum ShellFileMode {
     Read,
@@ -432,28 +437,32 @@ pub(crate) fn shell_redirect_targets(
 }
 
 fn shell_redirect_one(node: Node<'_>, src: &str) -> Option<(Option<String>, ShellFileMode, bool)> {
-    let mut mode = None;
+    let mut redirect = None;
     for i in 0..node.child_count() {
         let kind = node.child(i)?.kind();
         // `<<`/`<<<` read from inline text, not a file.
         if kind.contains("<<") {
             return None;
         }
-        if kind.contains('>') {
-            mode = Some(ShellFileMode::Write);
-            break;
-        }
-        if kind.contains('<') {
-            mode = Some(ShellFileMode::Read);
+        if kind.contains('>') || kind.contains('<') {
+            redirect = Some(kind);
             break;
         }
     }
-    let mode = mode?;
+    let redirect = redirect?;
+    let mode = if redirect.contains('>') {
+        ShellFileMode::Write
+    } else {
+        ShellFileMode::Read
+    };
+    let duplicates_fd = matches!(redirect, ">&" | "<&");
     let dest = node.child_by_field_name("destination")?;
     match shell_node_arg(dest, src)? {
         ArgText::Literal(s) => {
-            // Skip fd duplications (`>&1`) and empty targets.
-            if s.is_empty() || s.starts_with('&') || s.bytes().all(|b| b.is_ascii_digit()) {
+            if s.is_empty()
+                || s.starts_with('&')
+                || (duplicates_fd && (s == "-" || s.bytes().all(|b| b.is_ascii_digit())))
+            {
                 None
             } else {
                 let ambiguous = shell_arg_is_ambiguous(&s);
@@ -1483,6 +1492,18 @@ mod tests {
                 "write redirect must be denied: {cmd}"
             );
         }
+    }
+
+    #[test]
+    fn adversarial_fd_duplication_and_numeric_filenames() {
+        let parsed = |cmd: &str| {
+            let tree = try_parse_shell(cmd).expect("shell parses");
+            command_write_paths_in_tree(tree.root_node(), cmd)
+        };
+        assert!(parsed("cat payload 2>&1").is_empty());
+        assert!(parsed("cat payload 1>&-").is_empty());
+        assert!(parsed("cat payload 0<&3").is_empty());
+        assert_eq!(parsed("cat payload > 3"), vec!["3"]);
     }
 
     /// An outer reader fed a substitution can't pin its operand (Ask); an inner

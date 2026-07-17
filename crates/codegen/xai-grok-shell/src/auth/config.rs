@@ -22,6 +22,8 @@ fn default_oauth2_scopes() -> Vec<String> {
         "api:access".into(),
         "conversations:read".into(),
         "conversations:write".into(),
+        "workspaces:read".into(),
+        "workspaces:write".into(),
     ]
 }
 fn default_team_oauth2_scopes() -> Vec<String> {
@@ -33,6 +35,8 @@ fn default_team_oauth2_scopes() -> Vec<String> {
         "team:read".into(),
         "conversations:read".into(),
         "conversations:write".into(),
+        "workspaces:read".into(),
+        "workspaces:write".into(),
     ]
 }
 /// Pin automatic auth to one method (`[auth] preferred_method` in config.toml).
@@ -381,7 +385,7 @@ mod tests {
         assert_eq!(PROD_ACCOUNTS_APP_ORIGINS, &["https://accounts.x.ai"]);
         assert_eq!(allowed_accounts_app_origins(), PROD_ACCOUNTS_APP_ORIGINS);
     }
-    /// FROZEN client contract: the 8 scopes the xAI OAuth2 client requests.
+    /// FROZEN client contract: the 10 scopes the xAI OAuth2 client requests.
     /// The server must keep accepting all of them; existing tokens carry
     /// exactly this set. Frozen OAuth client scope contract.
     #[test]
@@ -399,6 +403,8 @@ mod tests {
                 "api:access",
                 "conversations:read",
                 "conversations:write",
+                "workspaces:read",
+                "workspaces:write",
             ]
         );
     }

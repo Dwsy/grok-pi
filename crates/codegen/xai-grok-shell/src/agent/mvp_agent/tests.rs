@@ -2872,6 +2872,55 @@ fn chat_session_spawn_options_matches_thin_profile() {
         "K10 thin profile must use PersistenceHandle::noop()"
     );
 }
+/// `remove_session` releases the workspace binding and drains the
+/// per-session side maps. Test agents default to `workspace_ops = None`,
+/// so no other test reaches the release.
+#[tokio::test]
+async fn remove_session_releases_workspace_binding_and_side_maps() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("test-session-workspace-release");
+    let ops = xai_grok_workspace::WorkspaceOps::for_test();
+    let toolset =
+        std::sync::Arc::new(xai_grok_tools::registry::types::FinalizedToolset::empty_for_test());
+    let toolset_weak = std::sync::Arc::downgrade(&toolset);
+    ops.bind_local_session(
+        sid.0.as_ref(),
+        std::env::temp_dir(),
+        xai_hunk_tracker::HunkTrackerHandle::noop(),
+        toolset,
+        None,
+    )
+    .expect("bind_local_session must succeed");
+    assert!(toolset_weak.upgrade().is_some());
+    *agent.workspace_ops.borrow_mut() = Some(ops);
+    agent.model_unavailable_sessions.borrow_mut().insert(
+        sid.0.to_string(),
+        acp::ModelId::new(std::sync::Arc::from("gone-model")),
+    );
+    agent
+        .session_turn_numbers
+        .borrow_mut()
+        .insert(sid.clone(), 3);
+    let (_permission_tx, permission_rx) =
+        tokio::sync::mpsc::unbounded_channel::<xai_grok_workspace::permission::PermissionEvent>();
+    agent
+        .permission_event_receivers
+        .borrow_mut()
+        .insert(sid.clone(), permission_rx);
+    agent.remove_session(&sid);
+    assert!(
+        toolset_weak.upgrade().is_none(),
+        "the workspace binding must release the toolset"
+    );
+    assert!(
+        !agent
+            .model_unavailable_sessions
+            .borrow()
+            .contains_key(sid.0.as_ref())
+    );
+    assert!(!agent.session_turn_numbers.borrow().contains_key(&sid));
+    assert!(!agent.permission_event_receivers.borrow().contains_key(&sid));
+}
 /// Without a bridge, `ext_method` falls through to the unchanged local
 /// dispatch (`rewind::handle`), which reports the missing session — proving
 /// the routing hook is skipped in local mode.
@@ -2914,6 +2963,58 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
         assert!(
             saw_local_cancel,
             "local-mode cancel dispatches the local SessionCommand::Cancel with no bridge attached"
+        );
+    });
+}
+/// Regression (post-cancel slot hang, first bad release 0.2.101; see
+/// `dispatch_locks`). SDK e2e shape:
+/// `test_cancel_ends_in_flight_turn_and_frees_slot` (grok-agent-sdk).
+#[test]
+fn cancel_never_overtakes_in_flight_prompt_intake() {
+    use crate::session::SessionCommand;
+    use acp::Agent as _;
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-cancel-intake-race");
+        let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        let order: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (intake_parked_tx, intake_parked_rx) = tokio::sync::oneshot::channel::<()>();
+        let driver_order = order.clone();
+        tokio::task::spawn_local(async move {
+            let mut intake_parked_tx = Some(intake_parked_tx);
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    SessionCommand::GetCurrentPromptMode { .. } => {
+                        if let Some(tx) = intake_parked_tx.take() {
+                            let _ = tx.send(());
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    }
+                    SessionCommand::Prompt { .. } => driver_order.borrow_mut().push("prompt"),
+                    SessionCommand::Cancel { .. } => driver_order.borrow_mut().push("cancel"),
+                    _ => {}
+                }
+            }
+        });
+        let prompt_fut = agent.prompt(acp::PromptRequest::new(
+            sid.clone(),
+            vec![acp::ContentBlock::from("hi")],
+        ));
+        let cancel_fut = async {
+            intake_parked_rx
+                .await
+                .expect("prompt intake reaches the fake actor");
+            let _ = agent
+                .cancel(acp::CancelNotification::new(sid.clone()))
+                .await;
+        };
+        let _ = futures::join!(prompt_fut, cancel_fut);
+        assert_eq!(
+            order.borrow().as_slice(),
+            ["prompt", "cancel"],
+            "cancel must land on the actor mailbox after the prompt it targets"
         );
     });
 }

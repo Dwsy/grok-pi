@@ -62,7 +62,9 @@ pub fn install_from_marketplace(
         subdir: None,
     };
 
-    match git_install::install_from_source(&source, registry) {
+    // Local copy from the synced source checkout: the pin gate governs remote
+    // fetches only (see install_from_remote_url's security doc).
+    match git_install::install_from_source(&source, registry, false) {
         Ok(result) => {
             let repo_key = result.repo_key.clone();
             let installed_path = registry.install_dir().join(&repo_key);
@@ -93,7 +95,7 @@ pub fn install_from_marketplace(
             registry.remove(&key);
             registry.save()?;
             // Retry — registry no longer has the key.
-            match git_install::install_from_source(&source, registry) {
+            match git_install::install_from_source(&source, registry, false) {
                 Ok(result) => {
                     let repo_key = result.repo_key.clone();
                     let installed_path = registry.install_dir().join(&repo_key);
@@ -119,6 +121,19 @@ pub fn install_from_marketplace(
 ///
 /// Clones the plugin repo and installs it via the standard git install
 /// pipeline; pins to `git_sha` if set, otherwise uses `git_ref` or HEAD.
+///
+/// # Security
+///
+/// Marketplace plugins are **not cryptographically signed**. A remote install
+/// without `git_sha` tracks a mutable ref (branch/tag/HEAD) and can be
+/// substituted by anyone who can push that ref. Prefer publishing `sha` in
+/// `plugin-index.json` and installing with that pin.
+///
+/// `require_sha` (from [`crate::config::load_require_sha`]) fails such installs
+/// closed. It covers every path that fetches plugin code from a remote git URL
+/// (marketplace `remote_url` entries, direct installs, git updates). It does
+/// NOT cover plugins vendored inside a marketplace source itself — those come
+/// from the synced source checkout, whose branch is not yet pinnable.
 pub fn install_from_remote_url(
     url: &str,
     git_ref: Option<&str>,
@@ -127,6 +142,7 @@ pub fn install_from_remote_url(
     plugin_name: &str,
     provenance: MarketplaceProvenance,
     registry: &mut InstallRegistry,
+    require_sha: bool,
 ) -> Result<MarketplaceInstallResult, InstallError> {
     let subdir = subdir
         .map(|s| {
@@ -137,6 +153,8 @@ pub fn install_from_remote_url(
                 })
         })
         .transpose()?;
+    // No-fetch short-circuit before the pin gate: re-install of an already-present
+    // plugin must not refuse just because the catalog entry is unpinned.
     if let Some((existing_key, _)) = find_installed_marketplace_plugin(
         registry,
         &provenance.source_url_or_path,
@@ -153,7 +171,14 @@ pub fn install_from_remote_url(
         subdir,
     };
 
-    match git_install::install_from_source(&source, registry) {
+    // Single pin gate lives in install_from_source; pass plugin_name so refusals
+    // name the catalog entry rather than the bare URL.
+    match git_install::install_from_source_with_label(
+        &source,
+        registry,
+        require_sha,
+        Some(plugin_name),
+    ) {
         Ok(result) => {
             let repo_key = result.repo_key.clone();
             let installed_path = registry.install_dir().join(&repo_key);
@@ -176,7 +201,12 @@ pub fn install_from_remote_url(
             let _ = std::fs::remove_file(&old_path);
             registry.remove(&key);
             registry.save()?;
-            match git_install::install_from_source(&source, registry) {
+            match git_install::install_from_source_with_label(
+                &source,
+                registry,
+                require_sha,
+                Some(plugin_name),
+            ) {
                 Ok(result) => {
                     let repo_key = result.repo_key.clone();
                     let installed_path = registry.install_dir().join(&repo_key);
@@ -203,6 +233,7 @@ pub fn update_from_marketplace_entry_transactional(
     entry: &MarketplaceEntry,
     mut provenance: MarketplaceProvenance,
     registry: &mut InstallRegistry,
+    require_sha: bool,
 ) -> Result<MarketplaceUpdateResult, InstallError> {
     let plugin_relative_path =
         MarketplaceRelativePath::parse(&entry.relative_path).map_err(|e| {
@@ -272,12 +303,11 @@ pub fn update_from_marketplace_entry_transactional(
     remove_path_if_exists(&backup_path)?;
 
     let stage_result = if let Some(url) = entry.remote_url.as_deref() {
-        clone_repo_to_path(
-            url,
-            entry.remote_ref.as_deref(),
-            entry.remote_sha.as_deref(),
-            &staging_path,
-        )
+        // Catalog pins published as `ref` still need hoisting for the verified clone path.
+        let (git_ref, git_sha) =
+            git_install::hoist_pin_slots(entry.remote_ref.as_deref(), entry.remote_sha.as_deref());
+        git_install::ensure_pinned(require_sha, git_sha, &entry.name, url)?;
+        clone_repo_to_path(url, git_ref, git_sha, &staging_path)
     } else {
         let source_path = plugin_relative_path
             .join_under(marketplace_root)
@@ -793,6 +823,144 @@ mod tests {
     static TEST_HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    #[test]
+    fn require_sha_rejects_unpinned_remote_install() {
+        with_test_registry(|registry| {
+            let err = install_from_remote_url(
+                "https://example.com/plugin.git",
+                Some("main"),
+                None, // no sha
+                None,
+                "plugins/demo",
+                MarketplaceProvenance {
+                    source_url_or_path: "https://example.com/market.git".into(),
+                    source_display_name: "test".into(),
+                    plugin_subdir: "plugins/demo".into(),
+                },
+                registry,
+                true, // require_sha
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, InstallError::UnpinnedRemoteRefused { .. }),
+                "expected the typed refusal, got: {err}"
+            );
+
+            let err = install_from_remote_url(
+                "https://example.com/plugin.git",
+                None,
+                Some("main"),
+                None,
+                "plugins/demo",
+                MarketplaceProvenance {
+                    source_url_or_path: "https://example.com/market.git".into(),
+                    source_display_name: "test".into(),
+                    plugin_subdir: "plugins/demo".into(),
+                },
+                registry,
+                true,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, InstallError::UnpinnedRemoteRefused { .. }),
+                "a non-hex 'pin' must be refused up front, got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn require_sha_already_installed_skips_pin_gate() {
+        if !git_available() {
+            eprintln!("skipping: `git` binary not available in test sandbox");
+            return;
+        }
+        with_test_registry(|registry| {
+            let repo = tempfile::tempdir().unwrap();
+            run_git(repo.path(), &["init", "--initial-branch=main", "--quiet"]);
+            write_root_plugin(repo.path(), "acme", "1.0.0");
+            run_git(repo.path(), &["add", "-A"]);
+            run_git(repo.path(), &["commit", "-m", "v1", "--quiet"]);
+
+            let url = format!("file://{}", repo.path().display());
+            let provenance = MarketplaceProvenance {
+                source_url_or_path: "https://example.com/marketplace.git".into(),
+                source_display_name: "Test".into(),
+                plugin_subdir: "acme".into(),
+            };
+
+            // Unpinned first install (policy off) so the registry is populated.
+            match install_from_remote_url(
+                &url,
+                Some("main"),
+                None,
+                None,
+                "acme",
+                provenance.clone(),
+                registry,
+                false,
+            )
+            .unwrap()
+            {
+                MarketplaceInstallResult::Installed { .. } => {}
+                MarketplaceInstallResult::AlreadyInstalled { repo_key } => {
+                    panic!("expected fresh Installed, got AlreadyInstalled {repo_key}")
+                }
+            }
+
+            // No-fetch re-install under require_sha must not refuse unpinned catalog entries.
+            match install_from_remote_url(
+                &url,
+                Some("main"),
+                None,
+                None,
+                "acme",
+                provenance,
+                registry,
+                true,
+            )
+            .unwrap()
+            {
+                MarketplaceInstallResult::AlreadyInstalled { .. } => {}
+                MarketplaceInstallResult::Installed { repo_key } => {
+                    panic!("expected AlreadyInstalled, got Installed {repo_key}")
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn require_sha_rejects_unpinned_remote_update() {
+        with_test_registry(|registry| {
+            let marketplace = tempfile::tempdir().unwrap();
+            write_plugin(marketplace.path(), "demo", "1.0.0", "old");
+            let repo_key = install_test_plugin(registry, marketplace.path(), "demo");
+            let mut entry = crate::scan_marketplace(marketplace.path())
+                .entries
+                .into_iter()
+                .find(|p| p.relative_path == "plugins/demo")
+                .unwrap();
+            entry.remote_url = Some("https://example.com/plugin.git".into());
+            entry.remote_sha = None;
+
+            let err = update_from_marketplace_entry_transactional(
+                marketplace.path(),
+                &entry,
+                provenance(marketplace.path(), "plugins/demo"),
+                registry,
+                true, // require_sha
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, InstallError::UnpinnedRemoteRefused { .. }),
+                "expected the typed refusal, got: {err}"
+            );
+            assert!(
+                registry.install_dir().join(&repo_key).exists(),
+                "a refused update must leave the existing install in place"
+            );
+        });
+    }
+
     fn with_test_registry<T>(f: impl FnOnce(&mut InstallRegistry) -> T) -> T {
         let _guard = TEST_LOCK.lock().unwrap();
         let home = TEST_HOME.get_or_init(|| tempfile::tempdir().unwrap());
@@ -893,6 +1061,7 @@ mod tests {
                 &entry,
                 provenance(marketplace.path(), "plugins/demo"),
                 registry,
+                false, // require_sha off: pin policy has its own tests
             )
             .unwrap();
 
@@ -933,6 +1102,7 @@ mod tests {
                 &entry,
                 provenance(marketplace.path(), "plugins/demo"),
                 registry,
+                false, // require_sha off: pin policy has its own tests
             )
             .unwrap();
 
@@ -963,6 +1133,7 @@ mod tests {
                 &entry,
                 provenance(marketplace.path(), "plugins/demo"),
                 registry,
+                false, // require_sha off: pin policy has its own tests
             );
             unsafe { std::env::remove_var("XAI_GROK_TEST_FAIL_REGISTRY_SAVE_AFTER_SERIALIZE") };
 
@@ -1015,6 +1186,7 @@ mod tests {
                 &entry,
                 provenance(marketplace.path(), "plugins/demo"),
                 registry,
+                false, // require_sha off: pin policy has its own tests
             );
 
             assert!(matches!(result, Err(InstallError::InstallFailed { .. })));
@@ -1049,6 +1221,7 @@ mod tests {
                 "acme",
                 provenance,
                 registry,
+                false, // require_sha off: pin policy has its own tests
             );
             assert!(matches!(result, Err(InstallError::InstallFailed { .. })));
         });
@@ -1135,6 +1308,7 @@ mod tests {
                 "acme",
                 provenance.clone(),
                 registry,
+                false, // require_sha off: pin policy has its own tests
             )
             .unwrap()
             {
@@ -1177,6 +1351,7 @@ mod tests {
                 &entry,
                 provenance,
                 registry,
+                false, // require_sha off: pin policy has its own tests
             )
             .unwrap();
 
@@ -1240,6 +1415,7 @@ mod tests {
                     &entry,
                     provenance.clone(),
                     registry,
+                    false, // require_sha off: pin policy has its own tests
                 );
                 assert!(
                     matches!(result, Err(InstallError::InstallFailed { .. })),
@@ -1291,6 +1467,7 @@ mod tests {
                 "acme",
                 provenance.clone(),
                 registry,
+                false, // require_sha off: pin policy has its own tests
             )
             .unwrap()
             {
@@ -1308,6 +1485,7 @@ mod tests {
                 "acme",
                 provenance,
                 registry,
+                false, // require_sha off: pin policy has its own tests
             )
             .unwrap()
             {

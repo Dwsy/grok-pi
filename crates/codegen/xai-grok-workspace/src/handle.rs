@@ -702,10 +702,11 @@ impl WorkspaceHandle {
             TrackingMode::AllDirty,
             hunk_cancel.clone(),
         );
-        let result = self.create_session_with_tracker_and_viewer_ctx(
+        let result = self.create_session_with_tracker_inner(
             session_id,
             session_cwd,
             hunk_tracker,
+            Some(hunk_cancel.clone()),
             tool_config,
             capability,
             viewer_ctx,
@@ -738,12 +739,39 @@ impl WorkspaceHandle {
         )
     }
     /// Variant of [`create_session_with_tracker`](Self::create_session_with_tracker)
-    /// that carries a session-bind viewer context.
+    /// that carries a session-bind viewer context. The tracker is externally
+    /// owned, so the session stores no cancel token for it.
     pub fn create_session_with_tracker_and_viewer_ctx(
         &self,
         session_id: impl Into<String>,
         cwd: std::path::PathBuf,
         hunk_tracker: HunkTrackerHandle,
+        tool_config: Option<xai_grok_tools::registry::types::ToolServerConfig>,
+        capability: CapabilityMode,
+        viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+        system_notifications: bool,
+    ) -> WorkspaceResult<Arc<WorkspaceSession>> {
+        self.create_session_with_tracker_inner(
+            session_id,
+            cwd,
+            hunk_tracker,
+            None,
+            tool_config,
+            capability,
+            viewer_ctx,
+            system_notifications,
+        )
+    }
+    /// Shared creation body. `hunk_tracker_cancel` is `Some` only for
+    /// workspace-spawned trackers, whose actor lifetime the session then
+    /// owns; externally owned trackers pass `None`.
+    #[allow(clippy::too_many_arguments)]
+    fn create_session_with_tracker_inner(
+        &self,
+        session_id: impl Into<String>,
+        cwd: std::path::PathBuf,
+        hunk_tracker: HunkTrackerHandle,
+        hunk_tracker_cancel: Option<tokio_util::sync::CancellationToken>,
         tool_config: Option<xai_grok_tools::registry::types::ToolServerConfig>,
         capability: CapabilityMode,
         viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
@@ -797,6 +825,7 @@ impl WorkspaceHandle {
             toolset,
             terminal_backend,
             hunk_tracker,
+            hunk_tracker_cancel,
             viewer_ctx,
             system_notifications,
             system_notify_channel,
@@ -2739,7 +2768,7 @@ impl WorkspaceHandle {
             cwd.clone(),
             hunk_event_tx,
             TrackingMode::AllDirty,
-            hunk_cancel,
+            hunk_cancel.clone(),
         );
         let session = Arc::new(WorkspaceSession::new(
             config.agent_id.clone(),
@@ -2752,6 +2781,7 @@ impl WorkspaceHandle {
             toolset,
             terminal_backend,
             hunk_tracker,
+            Some(hunk_cancel),
             inherited_viewer_ctx,
             false,
             None,
@@ -2759,9 +2789,11 @@ impl WorkspaceHandle {
         {
             let mut sessions = self.shared.sessions.write();
             if self.shared.activity_tracker.is_draining() {
+                session.cancel_hunk_tracker();
                 return Err(WorkspaceError::ShuttingDown);
             }
             if sessions.contains_key(&config.agent_id) {
+                session.cancel_hunk_tracker();
                 return Err(WorkspaceError::SessionAlreadyExists(config.agent_id));
             }
             sessions.insert(config.agent_id.clone(), session.clone());
@@ -2785,6 +2817,7 @@ impl WorkspaceHandle {
         drop(sessions);
         session.abort_system_notify_forwarder();
         session.shutdown_terminal_backend();
+        session.cancel_hunk_tracker();
         self.shared.tool_defs_last_emit.remove(session_id);
         Ok(())
     }
@@ -3722,7 +3755,6 @@ pub async fn connect_local_workspace(
     status_config: crate::status_config::StatusConfig,
     upload_queue_enabled: bool,
     project_lsp_trusted: bool,
-    ready_file: Option<std::path::PathBuf>,
     diag: Option<DiagHandle>,
     require_explicit_toolset: bool,
     confine_fs_to_workspace_root: bool,
@@ -3752,7 +3784,6 @@ pub async fn connect_local_workspace(
         server_id,
         alpha_test_key,
         allow_insecure_ws,
-        ready_file,
         diag,
     };
     let tool_config = xai_grok_agent::workspace_grok_build_toolset();
@@ -3836,10 +3867,10 @@ pub async fn connect_local_workspace(
 /// 2. `<grok_home>/workspace`, where `<grok_home>` honours `$GROK_HOME` and
 ///    otherwise falls back to `~/.grok` (see [`xai_grok_config::grok_home`]).
 pub fn resolve_workspace_home() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("GROK_WORKSPACE_HOME") {
-        if !p.trim().is_empty() {
-            return std::path::PathBuf::from(p);
-        }
+    if let Ok(p) = std::env::var("GROK_WORKSPACE_HOME")
+        && !p.trim().is_empty()
+    {
+        return std::path::PathBuf::from(p);
     }
     xai_grok_config::grok_home().join("workspace")
 }
@@ -4300,7 +4331,7 @@ impl WorkspaceHandle {
         )
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl WorkspaceHandle {
     fn test_config(
         root_cwd: std::path::PathBuf,
@@ -5727,6 +5758,98 @@ pub(crate) mod tests {
         handle.drop_session("doomed", "doomed").expect("drop");
         assert_backend_stops(&retained_backend).await;
         drop(retained_toolset);
+    }
+    async fn assert_hunk_tracker_stops(tracker: &xai_hunk_tracker::HunkTrackerHandle) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !tracker.is_closed() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hunk-tracker actor must stop within the deadline despite live \
+                 handle clones"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+    /// `drop_session` cancels the workspace-spawned hunk-tracker actor even
+    /// while a leaked `HunkTrackerHandle` clone keeps its command channel
+    /// open. Rationale on `cancel_hunk_tracker`.
+    #[tokio::test]
+    async fn drop_session_cancels_workspace_spawned_hunk_tracker() {
+        let handle = make_handle();
+        let session = handle
+            .create_session_with_config("doomed-ht", None, None, CapabilityMode::All, None, false)
+            .expect("create session");
+        let leaked_tracker = session.hunk_tracker().clone();
+        assert!(
+            !leaked_tracker.is_closed(),
+            "precondition: the actor is alive while the session exists"
+        );
+        drop(session);
+        handle.drop_session("doomed-ht", "doomed-ht").expect("drop");
+        assert_hunk_tracker_stops(&leaked_tracker).await;
+    }
+    /// Same guarantee for the fork spawn site.
+    #[tokio::test]
+    async fn drop_session_cancels_forked_session_hunk_tracker() {
+        let handle = make_handle();
+        let child = handle
+            .fork_session(fork_cfg_with(
+                "child-ht",
+                CapabilityMode::ReadWrite,
+                None,
+                Some("main"),
+            ))
+            .await
+            .expect("fork should succeed");
+        let leaked_tracker = child.hunk_tracker().clone();
+        assert!(
+            !leaked_tracker.is_closed(),
+            "precondition: the actor is alive while the session exists"
+        );
+        drop(child);
+        handle.drop_session("child-ht", "child-ht").expect("drop");
+        assert_hunk_tracker_stops(&leaked_tracker).await;
+    }
+    /// The inverse guarantee: a tracker bound via `create_session_with_tracker`
+    /// is externally owned, so `drop_session` must NOT cancel it. The agent
+    /// shares such trackers with the workspace session.
+    #[tokio::test]
+    async fn drop_session_leaves_externally_owned_hunk_tracker_alive() {
+        let handle = make_handle();
+        let cwd = handle.shared.root_cwd.clone();
+        let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let owner_cancel = tokio_util::sync::CancellationToken::new();
+        let tracker = HunkTrackerActor::spawn(
+            "external-ht".to_string(),
+            cwd.clone(),
+            hunk_event_tx,
+            TrackingMode::AllDirty,
+            owner_cancel.clone(),
+        );
+        let session = handle
+            .create_session_with_tracker(
+                "external-ht",
+                cwd,
+                tracker.clone(),
+                None,
+                CapabilityMode::All,
+            )
+            .expect("create session");
+        assert!(
+            !tracker.is_closed(),
+            "precondition: the actor is alive while the session exists"
+        );
+        drop(session);
+        handle
+            .drop_session("external-ht", "external-ht")
+            .expect("drop");
+        let _ = tracker.get_all_hunks().await;
+        assert!(
+            !tracker.is_closed(),
+            "drop_session must not cancel an externally owned hunk tracker"
+        );
+        owner_cancel.cancel();
+        assert_hunk_tracker_stops(&tracker).await;
     }
     /// Isolation matrix #5: a workspace process restart loses tasks (they are
     /// process state — physics), and what's pinned here is the recovery UX:
@@ -7506,7 +7629,6 @@ pub(crate) mod tests {
             server_id: Some("server-1".to_string()),
             alpha_test_key: None,
             allow_insecure_ws: true,
-            ready_file: None,
             diag: None,
         };
         let config = WorkspaceConfig::new_for_proxy(

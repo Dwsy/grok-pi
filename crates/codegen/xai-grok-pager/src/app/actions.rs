@@ -63,6 +63,8 @@ pub enum Action {
     CheckSubscription,
     /// Open an arbitrary URL in the system browser (with scheme validation).
     OpenUrl(String),
+    /// Open a semantic scrollback link.
+    OpenLink(crate::render::osc8::LinkTarget),
     /// Open grok.com managed connectors, appending session teamId when set.
     OpenManagedConnectors,
     /// Cycle to the next visible link (or highlight the first if none selected).
@@ -345,6 +347,10 @@ pub enum Action {
     McpAuthTrigger {
         server_name: String,
     },
+    McpSetupSubmit {
+        server_name: String,
+        values: std::collections::HashMap<String, String>,
+    },
     /// Reload skills list from the modal.
     ReloadSkills,
     /// Refresh MCP server list from the modal.
@@ -521,6 +527,7 @@ pub enum Action {
     SetContextualHintSendNow(bool),
     SetContextualHintSmallScreen(bool),
     SetContextualHintWordSelect(bool),
+    SetContextualHintSshWrap(bool),
     /// Commit the active theme (canonical name, e.g. `"groknight"`, `"auto"`).
     SetTheme(String),
     /// Commit the theme used when the OS is in dark mode. Only updates
@@ -1674,6 +1681,12 @@ pub enum Effect {
         session_id: acp::SessionId,
         server_name: String,
     },
+    McpSetupSubmit {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        server_name: String,
+        values: std::collections::HashMap<String, String>,
+    },
     /// Fetch hooks list from the shell (x.ai/hooks/list).
     FetchHooksList {
         agent_id: AgentId,
@@ -1875,6 +1888,11 @@ pub enum Effect {
     },
     /// Log out via `x.ai/auth/logout` (shell clears auth.json + in-memory state).
     Logout,
+    /// Cancel an in-flight interactive auth on the shell (`x.ai/auth/cancel`).
+    /// Used when the user abandons mid-session `/login` so the device-code
+    /// poll stops instead of running until the code expires. `request_seq`
+    /// scopes the cancel so a delayed RPC cannot tear down a successor login.
+    CancelAuth { request_seq: u64 },
     /// Re-check subscription status via `x.ai/auth/check_subscription`.
     /// `verify` scopes the result to a deferred-gate verification (see
     /// [`crate::app::subscription`]); `None` for generic checks.
@@ -2043,6 +2061,11 @@ pub enum SubagentKillOutcome {
     /// The cancel RPC failed; the subagent may still be running, so leave the
     /// row alone rather than show a false terminal state.
     RpcFailed,
+}
+#[derive(Debug)]
+pub enum McpAuthTriggerOutcome {
+    Authenticated,
+    SetupRequired(crate::views::mcps_modal::McpSetupConfig),
 }
 /// Result from a completed async [`Effect`].
 ///
@@ -2329,6 +2352,11 @@ pub enum TaskResult {
     McpAuthTriggerDone {
         agent_id: AgentId,
         server_name: String,
+        result: Result<McpAuthTriggerOutcome, String>,
+    },
+    McpSetupSubmitDone {
+        agent_id: AgentId,
+        server_name: String,
         result: Result<(), String>,
     },
     /// Hooks list fetched from shell.
@@ -2558,6 +2586,8 @@ pub enum TaskResult {
     },
     /// Shell acknowledged logout (auth cleared).
     LogoutComplete,
+    /// Best-effort `x.ai/auth/cancel` finished (no UI update; state already left Authenticating).
+    AuthCancelComplete,
     /// Shell responded to `x.ai/auth/check_subscription`. `verify` echoes
     /// the generation from `Effect::CheckSubscription` for deferred-gate
     /// verifications.

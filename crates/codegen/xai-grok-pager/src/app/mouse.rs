@@ -357,7 +357,7 @@ impl AgentView {
                         && let Some(link) = self.visible_link_map.link_at(mouse.column, mouse.row)
                     {
                         self.pending_link_click = app_should_open_link_on_click(link)
-                            .then(|| (mouse.column, mouse.row, link.url.to_string()));
+                            .then(|| (mouse.column, mouse.row, link.target.clone()));
                         self.pending_scrollback_click = None;
                         return InputOutcome::Changed;
                     }
@@ -412,11 +412,9 @@ impl AgentView {
                         }
                         if let Some(id) = self.queue.send_now_click(mouse.column, mouse.row)
                             && self.session.state.is_turn_running()
+                            && let InputOutcome::Action(action) = self.force_interject_queue_row(id)
                         {
-                            if let InputOutcome::Action(action) = self.force_interject_queue_row(id)
-                            {
-                                return InputOutcome::Action(action);
-                            }
+                            return InputOutcome::Action(action);
                         }
                         self.set_active_pane(AgentPane::Queue, false);
                         self.queue.handle_mouse(
@@ -605,7 +603,7 @@ impl AgentView {
                                 self.visible_link_map.link_at(mouse.column, mouse.row)
                         {
                             self.pending_link_click = app_should_open_link_on_click(link)
-                                .then(|| (mouse.column, mouse.row, link.url.to_string()));
+                                .then(|| (mouse.column, mouse.row, link.target.clone()));
                             self.pending_scrollback_click = None;
                             return InputOutcome::Changed;
                         }
@@ -684,11 +682,11 @@ impl AgentView {
                 }
                 let had_pending_text_drag = self.pending_text_drag.take().is_some();
                 let _had_pending_block_drag = self.pending_block_drag.take().is_some();
-                if let Some((lc, lr, url)) = self.pending_link_click.take()
+                if let Some((lc, lr, target)) = self.pending_link_click.take()
                     && mouse.column == lc
                     && mouse.row == lr
                 {
-                    return InputOutcome::Action(Action::OpenUrl(url));
+                    return InputOutcome::Action(Action::OpenLink(target));
                 }
                 if self.active_pane == AgentPane::Scrollback {
                     if let Some((click_col, click_row)) = self.pending_scrollback_click.take() {
@@ -780,10 +778,7 @@ impl AgentView {
                                         surface: xai_grok_telemetry::events::CreditLimitUpsellSurface::InlineCard,
                                         choice,
                                     });
-                                    crate::app::link_opener::open_url_if_safe(
-                                        &url,
-                                        crate::terminal::hyperlinks::SchemeFilter::Standard,
-                                    );
+                                    self.open_url_or_show(&url);
                                     self.last_click = None;
                                     return InputOutcome::Changed;
                                 }

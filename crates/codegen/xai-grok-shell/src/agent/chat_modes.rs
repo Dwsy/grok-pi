@@ -21,16 +21,7 @@ pub const GROK_CHAT_MODE_ENV: &str = "GROK_CHAT_MODE";
 /// True when the process is a gateway light-frontend (`--chat`) agent.
 /// Hard-off in release builds so it can't be enabled via env.
 pub fn process_chat_mode_enabled() -> bool {
-    if true {
-        return false;
-    }
-    match std::env::var(GROK_CHAT_MODE_ENV) {
-        Ok(v) => {
-            let v = v.trim();
-            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-        }
-        Err(_) => false,
-    }
+    false
 }
 #[derive(Clone)]
 struct CachedModes {

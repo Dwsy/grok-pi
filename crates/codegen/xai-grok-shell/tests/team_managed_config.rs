@@ -60,6 +60,7 @@ fn reset(home: &std::path::Path) {
         "auth.json",
         "managed_config.toml",
         "requirements.toml",
+        "managed_config.sig.json",
         "managed_config_cache.json",
         "managed_config.lock",
     ] {
@@ -95,6 +96,35 @@ fn read_request_auth(stream: &mut std::net::TcpStream) -> Option<String> {
 fn spawn_mock(body: String) -> (String, Arc<Mutex<Vec<String>>>) {
     let (url, _count, auths) = spawn_mock_seq(vec![(200, body)]);
     (url, auths)
+}
+
+/// Like [`spawn_mock_seq`] but sleeps `delay` before each response (for mid-fetch races).
+fn spawn_mock_delayed(body: String, delay: std::time::Duration) -> MockHandle {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    let counter = count.clone();
+    let auths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_auths = auths.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            if let Some(auth) = read_request_auth(&mut stream) {
+                seen_auths.lock().unwrap().push(auth);
+            }
+            {
+                *counter.lock().unwrap() += 1;
+            }
+            std::thread::sleep(delay);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{addr}/v1/deployment-config"), count, auths)
 }
 
 /// `(url, request_count, authorization_headers_in_order)`.
@@ -332,6 +362,81 @@ async fn team_sync_writes_files() {
     );
 }
 
+/// A directory squatting at the MARKER path must not permanently disarm the staleness
+/// detector: the atomic marker write would fail onto it on every sync, forever. The
+/// locked apply clears the squat (same rule as the sidecar) and records the sync.
+#[tokio::test]
+#[serial]
+async fn marker_dir_squat_is_cleared_and_marker_written() {
+    let home = test_home().clone();
+    reset(&home);
+
+    let (url, _auths) = spawn_mock(team_config_body());
+    write_config(&home, &url);
+    write_team_auth(&home, "team-007");
+
+    // Dir-squat the marker (with a child, like a real squat).
+    let marker_path = home.join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE);
+    std::fs::create_dir(&marker_path).unwrap();
+    std::fs::write(marker_path.join("junk"), "x").unwrap();
+
+    let wrote = xai_grok_shell::managed_config::sync()
+        .await
+        .expect("sync should succeed");
+    assert!(
+        wrote,
+        "the policy files are written despite the marker squat"
+    );
+
+    assert!(
+        marker_path.is_file(),
+        "the apply must replace the squatting directory with the marker FILE"
+    );
+    let marker = std::fs::read_to_string(&marker_path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&marker).unwrap();
+    assert_eq!(
+        v["principal"].as_str(),
+        Some("team-007"),
+        "the recorded marker must describe this sync: {marker}"
+    );
+}
+
+/// A whitespace-padded `team_id` in `auth.json` is one identity end-to-end: the serving
+/// identity and the recorded marker are trimmed, and re-syncing with the padded id is the
+/// same tenant (no eviction, no confirmed switch).
+#[tokio::test]
+#[serial]
+async fn padded_team_id_is_one_identity() {
+    let home = test_home().clone();
+    reset(&home);
+
+    let (url, _auths) = spawn_mock(team_config_body());
+    write_config(&home, &url);
+    write_team_auth(&home, "  team-007  ");
+
+    assert_eq!(
+        xai_grok_shell::managed_config::current_serving_identity(),
+        team_identity("team-007"),
+        "the serving identity must be the trimmed team id"
+    );
+    xai_grok_shell::managed_config::sync()
+        .await
+        .expect("sync should succeed");
+    let marker =
+        std::fs::read_to_string(home.join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&marker).unwrap();
+    assert_eq!(
+        v["principal"].as_str(),
+        Some("team-007"),
+        "the marker stores the trimmed identity: {marker}"
+    );
+    assert_eq!(
+        xai_grok_config::confirmed_team_switch("team-007"),
+        None,
+        "padding is not a tenant switch"
+    );
+}
+
 /// Switching the active team must not keep enforcing the prior team's policy: after B syncs,
 /// A's artifacts are evicted and the marker records B served nothing. Fail-open.
 #[tokio::test]
@@ -340,7 +445,9 @@ async fn team_switch_evicts_prior_teams_policy() {
     let home = test_home().clone();
     reset(&home);
 
-    // Team A serves both managed_config and requirements.
+    // Team A serves both managed_config and requirements. A leftover sidecar (from an
+    // earlier signing build; verification is inactive here) must also be evicted, or a
+    // later signing build would read A's foreign-bound sidecar against B's identity.
     let (url_a, _auths_a) = spawn_mock(team_config_body());
     write_config(&home, &url_a);
     write_team_auth(&home, "team-a");
@@ -349,6 +456,7 @@ async fn team_switch_evicts_prior_teams_policy() {
         .expect("team A sync should succeed");
     assert!(home.join("requirements.toml").exists());
     assert!(home.join("managed_config.toml").exists());
+    std::fs::write(home.join("managed_config.sig.json"), "{}").unwrap();
 
     // Switch to team B, whose server returns a row (team_id) but no artifacts.
     let body_b = serde_json::json!({
@@ -375,6 +483,10 @@ async fn team_switch_evicts_prior_teams_policy() {
     assert!(
         !home.join("managed_config.toml").exists(),
         "team A's managed_config must be evicted on the switch to team B"
+    );
+    assert!(
+        !home.join("managed_config.sig.json").exists(),
+        "team A's stale sidecar must be evicted on the switch to team B"
     );
 
     // The marker is now team B's and must not claim B served A's artifacts.
@@ -974,18 +1086,15 @@ async fn identity_change_permits_offline_team_switch_and_purges_prior_team() {
         xai_grok_shell::managed_config::managed_policy_gate().is_ok(),
         "a legitimate offline team switch must not fail closed"
     );
-    assert!(
-        !home.join("requirements.toml").exists(),
-        "team A's enforced requirements must be purged on the switch"
-    );
-    assert!(
-        !home.join("managed_config.toml").exists(),
-        "team A's managed_config must be purged on the switch"
-    );
-    assert!(
-        !home.join("managed_config_cache.json").exists(),
-        "team A's sync marker must be purged on the switch"
-    );
+    for f in xai_grok_shell::managed_config::MANAGED_ARTIFACT_FILES
+        .into_iter()
+        .chain([xai_grok_config::MANAGED_CONFIG_CACHE_FILE])
+    {
+        assert!(
+            !home.join(f).exists(),
+            "team A's {f} must be purged on the switch"
+        );
+    }
 }
 
 /// The gate purge takes the managed-config lock best-effort and SKIPS on contention (the holder
@@ -1055,6 +1164,66 @@ async fn gate_purge_skips_while_lock_contended() {
     );
 }
 
+/// A TRANSIENT lock holder must not turn an offline team switch into a skipped purge:
+/// the purge retries the lock once after 100ms (`PURGE_LOCK_RETRY_DELAY`), so a holder
+/// that releases within that window (~20ms here) is absorbed and the SAME gate call
+/// purges team A on the second attempt.
+#[tokio::test]
+#[serial]
+async fn gate_purge_retries_past_a_transient_lock_holder() {
+    let home = test_home().clone();
+    reset(&home);
+
+    let body = serde_json::json!({
+        "deployment_id": serde_json::Value::Null,
+        "team_id": "team-a",
+        "managed_config": TEAM_MANAGED,
+        "requirements": format!("fail_closed = true\n{TEAM_REQUIREMENTS}"),
+    })
+    .to_string();
+    let (url, _auths) = spawn_mock(body);
+    write_config(&home, &url);
+    write_team_auth(&home, "team-a");
+    xai_grok_shell::managed_config::sync()
+        .await
+        .expect("team A sync should succeed");
+    assert!(home.join("requirements.toml").exists());
+
+    write_team_auth(&home, "team-b");
+
+    // Acquire the flock BEFORE the gate call, then hand it to a helper that releases
+    // it ~20ms in — inside the purge's retry window.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join("managed_config.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(lock); // releases the flock
+    });
+
+    assert!(
+        xai_grok_shell::managed_config::managed_policy_gate().is_ok(),
+        "a pure identity mismatch never refuses, purged or not"
+    );
+    holder.join().unwrap();
+
+    assert!(
+        !home.join("requirements.toml").exists(),
+        "one gate call must absorb the transient holder via the retry and purge team A"
+    );
+    assert!(
+        !home
+            .join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+            .exists(),
+        "team A's marker goes with the retried purge"
+    );
+}
+
 /// A blank `team_id` in `auth.json` (a parse blip / malformed write) is "unknown", not a
 /// distinct identity: the gate must NOT fail closed and the purge must NOT shed team A's
 /// policy. Guards the blank→None map in `active_team_id_any_expiry` and the detector's
@@ -1094,6 +1263,13 @@ async fn blank_team_id_neither_fails_closed_nor_purges() {
     assert!(
         home.join("managed_config_cache.json").exists(),
         "the team A marker must be retained on a blank team_id"
+    );
+    assert!(
+        matches!(
+            xai_grok_shell::managed_config::current_serving_identity(),
+            ServingIdentity::None
+        ),
+        "a blank team_id must resolve to no identity, not Team(\"\") (spurious refetch input)"
     );
 }
 
@@ -1394,8 +1570,9 @@ async fn lock_contention_does_not_fall_through_to_team() {
     assert_eq!(*count.lock().unwrap(), 1);
 }
 
-/// `grok setup` with config served but the lock held by another writer reports
-/// Installed (the holder is persisting it), not NothingConfigured.
+/// `grok setup` with config served but the lock held by another writer reports the
+/// skip: not Installed (THIS run persisted nothing) and not NothingConfigured (the
+/// server does have config).
 #[tokio::test]
 #[serial]
 async fn setup_lock_skip_is_not_reported_as_no_config() {
@@ -1421,9 +1598,10 @@ async fn setup_lock_skip_is_not_reported_as_no_config() {
     assert!(
         matches!(
             outcome,
-            xai_grok_shell::managed_config::SetupOutcome::Installed
+            xai_grok_shell::managed_config::SetupOutcome::Skipped
         ),
-        "served config with the lock held must not report NothingConfigured"
+        "a lock skip persisted nothing: it must report Skipped, not Installed or \
+         NothingConfigured, got {outcome:?}"
     );
 }
 
@@ -1846,5 +2024,227 @@ async fn deploy_key_machine_never_gate_purges_on_team_switch() {
     assert!(
         home.join("managed_config_cache.json").exists(),
         "the sync marker must survive too — the key, not the team, owns this machine's policy"
+    );
+}
+
+/// For every on-disk state a crashed purge can leave (each proper prefix of the removal
+/// order), the marker is still present, the detector still fires for the new team, and a
+/// later purge converges. The order itself is pinned by `marker_is_not_a_managed_artifact`
+/// plus the fault-injection unit test.
+#[tokio::test]
+#[serial]
+async fn purge_crash_prefixes_stay_armed_and_converge() {
+    let home = test_home().clone();
+    let artifacts = xai_grok_shell::managed_config::MANAGED_ARTIFACT_FILES;
+    // 0..=len: every proper prefix of the 4-step removal order, up to and including
+    // "all artifacts removed, marker still present" (a crash right before the marker step).
+    for prefix_len in 0..=artifacts.len() {
+        reset(&home);
+        let body = serde_json::json!({
+            "deployment_id": serde_json::Value::Null,
+            "team_id": "team-a",
+            "managed_config": TEAM_MANAGED,
+            "requirements": format!("fail_closed = true\n{TEAM_REQUIREMENTS}"),
+        })
+        .to_string();
+        let (url, _auths) = spawn_mock(body);
+        write_config(&home, &url);
+        write_team_auth(&home, "team-a");
+        xai_grok_shell::managed_config::sync()
+            .await
+            .expect("team-a sync should succeed");
+
+        // Simulate a purge crashed after removing only this prefix.
+        for name in &artifacts[..prefix_len] {
+            let _ = std::fs::remove_file(home.join(name));
+        }
+        assert!(
+            home.join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+                .exists(),
+            "marker must outlive every artifact prefix (prefix_len={prefix_len})"
+        );
+
+        // Team B arrives offline: the detector must still confirm and the purge converge.
+        write_team_auth(&home, "team-b");
+        assert_eq!(
+            xai_grok_config::confirmed_team_switch("team-b").as_deref(),
+            Some("team-a"),
+            "detector must stay armed after a crash prefix (prefix_len={prefix_len})"
+        );
+        assert!(
+            xai_grok_shell::managed_config::managed_policy_gate().is_ok(),
+            "offline switch over a crash prefix must not refuse (prefix_len={prefix_len})"
+        );
+        for name in artifacts {
+            assert!(
+                !home.join(name).exists(),
+                "{name} must be purged (prefix_len={prefix_len})"
+            );
+        }
+        assert!(
+            !home
+                .join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+                .exists(),
+            "the converged purge drops the marker last (prefix_len={prefix_len})"
+        );
+    }
+}
+
+/// Marker written under the apply lock by the holder only: lock-contended apply records nothing.
+#[tokio::test]
+#[serial]
+async fn contended_sync_writes_no_marker() {
+    let home = test_home().clone();
+    reset(&home);
+
+    let body = serde_json::json!({
+        "deployment_id": serde_json::Value::Null,
+        "team_id": "team-a",
+        "managed_config": TEAM_MANAGED,
+        "requirements": TEAM_REQUIREMENTS,
+    })
+    .to_string();
+    let (url, auths) = spawn_mock(body);
+    write_config(&home, &url);
+    write_team_auth(&home, "team-a");
+
+    // Hold the managed-config flock across the sync: apply skips, so nothing is persisted.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join("managed_config.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let synced = xai_grok_shell::managed_config::sync()
+        .await
+        .expect("sync should succeed (skip, not error)");
+    assert!(!synced, "a lock-contended apply must not report a write");
+    lock.unlock().unwrap();
+
+    // Positive control: the FETCH happened (only the apply was skipped), so the
+    // no-marker assertions below can't pass vacuously on a sync that never ran.
+    assert!(
+        !auths.lock().unwrap().is_empty(),
+        "the fetch must have reached the server"
+    );
+    assert!(
+        !home
+            .join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+            .exists(),
+        "a contended sync must not write a marker for files it never persisted"
+    );
+    assert!(!home.join("requirements.toml").exists());
+}
+
+/// Credential vanished mid-fetch → apply Skipped, no marker (sibling of contention skip).
+#[tokio::test]
+#[serial]
+async fn credential_gone_mid_fetch_writes_no_marker() {
+    let home = test_home().clone();
+    reset(&home);
+
+    let body = serde_json::json!({
+        "deployment_id": "dep-1",
+        "managed_config": TEAM_MANAGED,
+        "requirements": TEAM_REQUIREMENTS,
+    })
+    .to_string();
+    // Delay the response so we can clear the deployment key after the fetch starts
+    // but before apply runs.
+    let (url, count, auths) = spawn_mock_delayed(body, std::time::Duration::from_millis(200));
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[endpoints]\nmanaged_config_url = \"{url}\"\ndeployment_key = \"KEY-GOING-AWAY\"\n"
+        ),
+    )
+    .unwrap();
+
+    let home_for_clear = home.clone();
+    let clearer = std::thread::spawn(move || {
+        // Wait until the mock has accepted a request, then drop the key.
+        for _ in 0..50 {
+            if *count.lock().unwrap() > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::write(
+            home_for_clear.join("config.toml"),
+            format!("[endpoints]\nmanaged_config_url = \"{url}\"\n"),
+        )
+        .unwrap();
+    });
+
+    let synced = xai_grok_shell::managed_config::sync()
+        .await
+        .expect("sync should succeed (skip, not error)");
+    clearer.join().unwrap();
+
+    assert!(!synced, "credential-gone apply must not report a write");
+    assert!(
+        !auths.lock().unwrap().is_empty(),
+        "the fetch must have reached the server"
+    );
+    assert!(
+        !home
+            .join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+            .exists(),
+        "credential-gone must not write a marker for an unapplied body"
+    );
+    assert!(!home.join("requirements.toml").exists());
+}
+
+/// A dk-synced marker means the KEY owns this machine's policy: with the key line gone
+/// from config.toml (the shape of a transient read failure) and a team user signed in,
+/// the gate must NOT purge. Pins the marker-scoped exemption — one keyed on live config
+/// resolution would purge here.
+#[tokio::test]
+#[serial]
+async fn dk_synced_marker_survives_config_blip_with_team_signed_in() {
+    let home = test_home().clone();
+    reset(&home);
+
+    let body = serde_json::json!({
+        "deployment_id": "deploy-A",
+        "managed_config": TEAM_MANAGED,
+        "requirements": format!("fail_closed = true\n{TEAM_REQUIREMENTS}"),
+    })
+    .to_string();
+    let (url, _auths) = spawn_mock(body);
+    std::fs::write(
+        home.join("config.toml"),
+        format!("[endpoints]\nmanaged_config_url = \"{url}\"\ndeployment_key = \"KEY-AAA\"\n"),
+    )
+    .unwrap();
+    xai_grok_shell::managed_config::sync()
+        .await
+        .expect("deploy-key sync should succeed");
+    assert!(home.join("requirements.toml").exists());
+
+    // The blip: the key line is gone (same shape as a transient config read failure),
+    // while a team user is also signed in. Identity resolves Team("team-b"), which
+    // differs from the marker principal ("deploy-A") — but the marker is key-scoped.
+    write_config(&home, &url);
+    write_team_auth(&home, "team-b");
+    assert_eq!(
+        xai_grok_config::confirmed_team_switch("team-b"),
+        None,
+        "a key-scoped marker must never confirm a team switch"
+    );
+    assert!(
+        xai_grok_shell::managed_config::managed_policy_gate().is_ok(),
+        "the blip must not refuse: the key-scoped marker still matches the on-disk policy"
+    );
+    assert!(
+        home.join("requirements.toml").exists(),
+        "the machine's enforced policy must survive the blip"
+    );
+    assert!(
+        home.join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+            .exists(),
+        "the dk marker must survive the blip"
     );
 }

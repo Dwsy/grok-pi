@@ -426,10 +426,10 @@ impl AgentView {
     /// load's batch/replay bookkeeping — and defer its results. The window's
     /// pending re-init completion later no-ops (generation gone).
     pub(crate) fn abort_session_reload(&mut self) {
-        if let Some(reload) = self.session_reload.take() {
-            if self.apply_reload_outcome(reload, false) {
-                crate::memory_release::release_retained_memory_with("reload-abort");
-            }
+        if let Some(reload) = self.session_reload.take()
+            && self.apply_reload_outcome(reload, false)
+        {
+            crate::memory_release::release_retained_memory_with("reload-abort");
         }
     }
     /// Finalize the reload window opened for `generation`.

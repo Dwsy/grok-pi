@@ -282,6 +282,8 @@ pub struct TerminalContext {
     pub tmux_meta: TmuxClientMeta,
     /// Whether the session is inside a remote SSH connection.
     pub is_ssh: bool,
+    /// Positive evidence that SSH is hosted by the official VS Code remote server.
+    pub is_official_vscode_remote: bool,
     /// The raw `TERM` environment variable (e.g. `xterm-256color`, `screen`).
     pub term_var: Option<String>,
     /// The tmux server version (e.g. `"tmux 3.4"`), populated only when
@@ -666,6 +668,16 @@ fn env_get<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
     env.get(key).map(|v| v.as_str()).filter(|v| !v.is_empty())
 }
 
+fn is_official_vscode_remote_askpass(path: &str) -> bool {
+    std::path::Path::new(path).components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(name)
+                if name == ".vscode-server" || name == ".vscode-server-insiders"
+        )
+    })
+}
+
 /// Detect the terminal brand from an injected environment map.
 ///
 /// This is the pure equivalent of the original `detect_terminal_info`.
@@ -935,6 +947,8 @@ pub fn build_terminal_context_from_env(env: &HashMap<String, String>) -> Termina
     let is_ssh = env_get(env, "SSH_CONNECTION").is_some()
         || env_get(env, "SSH_TTY").is_some()
         || env_get(env, "SSH_CLIENT").is_some();
+    let is_official_vscode_remote = is_ssh
+        && env_get(env, "VSCODE_GIT_ASKPASS_MAIN").is_some_and(is_official_vscode_remote_askpass);
     let term_var = env_get(env, "TERM").map(|s| s.to_owned());
     let vte_version = env_get(env, "VTE_VERSION").map(|s| s.to_owned());
     // SSH strips TERM_PROGRAM_VERSION; iTerm2 LC_TERMINAL_VERSION survives.
@@ -950,6 +964,7 @@ pub fn build_terminal_context_from_env(env: &HashMap<String, String>) -> Termina
         embedded_editor,
         tmux_meta,
         is_ssh,
+        is_official_vscode_remote,
         term_var,
         tmux_version: None,
         vte_version,

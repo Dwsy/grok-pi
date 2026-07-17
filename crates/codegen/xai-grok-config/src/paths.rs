@@ -59,8 +59,13 @@ pub fn user_grok_home() -> Option<PathBuf> {
 
 /// Canonical grok application path: `$GROK_HOME/bin/grok` (Unix) or `grok.exe` (Windows).
 pub fn grok_application() -> PathBuf {
+    grok_application_in(&grok_home())
+}
+
+/// [`grok_application`] under an explicit home instead of `$GROK_HOME`.
+pub fn grok_application_in(home: &std::path::Path) -> PathBuf {
     let name = if cfg!(windows) { "grok.exe" } else { "grok" };
-    grok_home().join("bin").join(name)
+    home.join("bin").join(name)
 }
 
 /// System-wide config directory: `/etc/grok/` on Unix, `None` on Windows.

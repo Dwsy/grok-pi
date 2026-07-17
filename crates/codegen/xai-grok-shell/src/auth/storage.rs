@@ -52,6 +52,16 @@ pub fn read_auth_json(auth_file: &Path) -> std::io::Result<AuthStore> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
 
+    // Tighten world-readable copies (hand-restored, umask edge cases, etc.).
+    // Best-effort: a chmod failure must not block login/read paths.
+    if let Err(e) = crate::util::secure_file::ensure_owner_only_permissions(auth_file) {
+        tracing::warn!(
+            path = %auth_file.display(),
+            error = %e,
+            "auth: failed to enforce owner-only permissions on auth.json"
+        );
+    }
+
     // Empty files are valid (recover from prior crash/partial write).
     let trimmed = contents.trim();
     if trimmed.is_empty() {
@@ -114,6 +124,8 @@ pub(crate) fn backup_corrupt_auth_file(path: &Path) -> Option<PathBuf> {
 
     match std::fs::rename(path, &backup) {
         Ok(()) => {
+            // Corrupt backups still hold token material — keep them owner-only.
+            let _ = crate::util::secure_file::ensure_owner_only_permissions(&backup);
             tracing::warn!(
                 original = %path.display(),
                 backup = %backup.display(),
@@ -246,9 +258,17 @@ fn write_store_to(path: &Path, auth_store: &AuthStore) -> std::io::Result<()> {
         .into_inner()
         .map_err(|e| e.into_error())?
         .sync_all()?;
-    #[cfg(windows)]
-    {
-        crate::util::secure_file::set_windows_secure_permissions(path)?;
+    // `open_secure_file` mode bits apply only on create; tighten existing paths.
+    // Best-effort after durable content: a chmod-only failure must not look
+    // like a failed write. The in-place fallback restores the prior snapshot
+    // on any `write_store_to` Err, which would discard freshly written tokens.
+    // Load path re-tightens on next read.
+    if let Err(e) = crate::util::secure_file::ensure_owner_only_permissions(path) {
+        tracing::warn!(
+            error = %e,
+            path = %path.display(),
+            "auth: failed to ensure owner-only permissions after write"
+        );
     }
     Ok(())
 }
@@ -263,6 +283,15 @@ fn write_auth_json_atomic(auth_file: &Path, auth_store: &AuthStore) -> std::io::
         let _ = std::fs::remove_file(auth_file);
     }
     std::fs::rename(&tmp, auth_file)?;
+    // Re-assert on the final path (covers rename edge cases / FS quirks).
+    // Best-effort: rename already published the new tokens.
+    if let Err(e) = crate::util::secure_file::ensure_owner_only_permissions(auth_file) {
+        tracing::warn!(
+            error = %e,
+            path = %auth_file.display(),
+            "auth: failed to ensure owner-only permissions after rename"
+        );
+    }
     Ok(())
 }
 
@@ -317,10 +346,7 @@ fn restore_prior_bytes(auth_file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = open_secure_file(auth_file)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    #[cfg(windows)]
-    {
-        crate::util::secure_file::set_windows_secure_permissions(auth_file)?;
-    }
+    crate::util::secure_file::ensure_owner_only_permissions(auth_file)?;
     Ok(())
 }
 
@@ -431,6 +457,46 @@ mod write_fallback_tests {
         write_auth_json_in_place(&path, &sample_store()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "in-place write must stay 0o600");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_tightens_preexisting_world_readable_auth_json() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let mut loose = std::fs::metadata(&path).unwrap().permissions();
+        loose.set_mode(0o644);
+        std::fs::set_permissions(&path, loose).unwrap();
+
+        write_auth_json(&path, &sample_store()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "rewrite must tighten preexisting open perms"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_tightens_world_readable_auth_json() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        write_auth_json(&path, &sample_store()).unwrap();
+        let mut loose = std::fs::metadata(&path).unwrap().permissions();
+        loose.set_mode(0o644);
+        std::fs::set_permissions(&path, loose).unwrap();
+
+        let _ = read_auth_json(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "load must tighten open auth.json perms"
+        );
     }
 
     /// A `StorageFull` (ENOSPC) failure on the atomic path must fall back to

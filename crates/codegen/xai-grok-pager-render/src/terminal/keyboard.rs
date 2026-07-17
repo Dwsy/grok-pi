@@ -49,7 +49,7 @@ impl ModifierDelivery {
     /// Construct a delivery from explicit fates. `#[non_exhaustive]` blocks
     /// struct-literal construction from other crates, so downstream test
     /// builds use this constructor.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_for_test(cmd: ModifierFate, opt: ModifierFate) -> Self {
         Self { cmd, opt }
     }

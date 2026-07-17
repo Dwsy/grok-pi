@@ -87,6 +87,9 @@ pub fn load_from_disk() -> std::io::Result<toml::Value> {
 /// Managed config filename, shared by the loaders in this module.
 pub const MANAGED_CONFIG_FILENAME: &str = "managed_config.toml";
 
+/// Requirements (cloud-cache) filename — the sibling server-synced artifact.
+pub const REQUIREMENTS_FILENAME: &str = "requirements.toml";
+
 pub fn load_managed_config() -> std::io::Result<toml::Value> {
     load_user_config_layer(user_grok_home().as_deref(), MANAGED_CONFIG_FILENAME)
 }

@@ -916,9 +916,8 @@ impl EditToolCallBlock {
         Line::from(spans)
     }
 
-    /// Absolute `file://` for OSC8 regardless of painted path surface.
-    fn path_link_url(&self, cwd: Option<&Path>) -> Option<Arc<str>> {
-        crate::render::osc8::tool_path_file_url(&self.path, cwd)
+    fn path_link_target(&self, cwd: Option<&Path>) -> Option<crate::render::osc8::LinkTarget> {
+        crate::render::osc8::tool_path_file_target(&self.path, cwd)
     }
 
     /// Render this block's hunks for its current highlight phase — the single
@@ -1130,7 +1129,7 @@ impl EditToolCallBlock {
             edit_cfg.effective_line_summary(crate::appearance::cache::load_collapsed_edit_blocks());
 
         let cwd = ctx.cwd.as_deref();
-        let link_url = self.path_link_url(cwd);
+        let link_target = self.path_link_target(cwd);
 
         match ctx.mode {
             DisplayMode::Collapsed => {
@@ -1157,7 +1156,7 @@ impl EditToolCallBlock {
                         selection_range: Some(TOOL_HEADER_RANGE),
                         // Copy the painted path span (basename when collapsed).
                         content: line,
-                        link_url,
+                        link_target,
                         ..Default::default()
                     }],
                 })
@@ -1210,7 +1209,7 @@ impl EditToolCallBlock {
                         selection_text: line.selection_text,
                         joiner: line.joiner,
                         content: line.content,
-                        link_url: if has_path { link_url.clone() } else { None },
+                        link_target: if has_path { link_target.clone() } else { None },
                         ..Default::default()
                     });
                 }
@@ -1634,13 +1633,23 @@ mod tests {
     }
 
     #[test]
-    fn header_link_url_is_absolute_file_url_for_all_surfaces() {
+    fn header_link_target_is_absolute_file_for_all_surfaces() {
         let abs = "/Users/me/project/src/foo.rs";
         let cwd = Path::new("/Users/me/project");
         let block = EditToolCallBlock::new(abs, vec![]);
-        let url = block.path_link_url(Some(cwd)).expect("file url");
-        assert!(url.starts_with("file://"), "got {url}");
-        assert!(url.contains("foo.rs"), "got {url}");
+        let target = block.path_link_target(Some(cwd)).expect("file target");
+        assert_eq!(
+            target,
+            crate::render::osc8::LinkTarget::File(Arc::from(Path::new(abs)))
+        );
+        assert_eq!(
+            crate::render::osc8::resolve_link_target(&target)
+                .unwrap()
+                .osc8_url
+                .unwrap()
+                .as_ref(),
+            "file:///Users/me/project/src/foo.rs"
+        );
 
         let mut ctx = test_ctx();
         ctx.cwd = Some(cwd.to_path_buf());
@@ -1650,7 +1659,7 @@ mod tests {
             collapsed.lines[0].content.spans[1].content.as_ref(),
             "foo.rs"
         );
-        assert_eq!(collapsed.lines[0].link_url.as_deref(), Some(url.as_ref()));
+        assert_eq!(collapsed.lines[0].link_target.as_ref(), Some(&target));
 
         ctx.mode = DisplayMode::Expanded;
         let expanded = block.output(&ctx);
@@ -1658,7 +1667,7 @@ mod tests {
             expanded.lines[0].content.spans[1].content.as_ref(),
             "src/foo.rs"
         );
-        assert_eq!(expanded.lines[0].link_url.as_deref(), Some(url.as_ref()));
+        assert_eq!(expanded.lines[0].link_target.as_ref(), Some(&target));
     }
 
     #[test]

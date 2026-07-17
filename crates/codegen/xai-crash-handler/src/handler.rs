@@ -451,14 +451,22 @@ mod imp {
             Ok(p) => p,
             Err(_) => return false,
         };
+        // Owner-only: crash blobs hold stack IPs / fault addresses.
         let fd = unsafe {
             libc::open(
                 c_path.as_ptr(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
-                0o644,
+                0o600,
             )
         };
         if fd < 0 {
+            return false;
+        }
+        // open's mode is create-only; tighten upgrades of older 0644 blobs.
+        if unsafe { libc::fchmod(fd, 0o600) } != 0 {
+            unsafe {
+                libc::close(fd);
+            }
             return false;
         }
         CRASH_FD.store(fd, Ordering::Relaxed);
@@ -919,5 +927,56 @@ mod tests {
             handler_after, handler_before,
             "full install should replace the minimal handler"
         );
+    }
+
+    #[test]
+    fn install_creates_owner_only_crash_blob() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = SIGNAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "xai-crash-handler-test-0600-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create crash dir");
+
+        assert!(super::install(&dir, "test-version"));
+        let path = dir.join("last-crash.bin");
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "new last-crash.bin must be owner-only");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_tightens_preexisting_0644_crash_blob() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = SIGNAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "xai-crash-handler-test-tighten-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create crash dir");
+
+        let path = dir.join("last-crash.bin");
+        std::fs::write(&path, b"old").expect("seed");
+        let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path, perms).expect("set 0644");
+        assert_eq!(
+            std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777,
+            0o644
+        );
+
+        assert!(super::install(&dir, "test-version"));
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "install must fchmod preexisting 0644 blobs to owner-only"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

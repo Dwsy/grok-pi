@@ -5,9 +5,8 @@
 //! tool blocks. Used by the mouse handler for click-to-open.
 
 use ratatui::layout::Rect;
-use std::sync::Arc;
 
-use crate::render::osc8::LinkOverlay;
+use crate::render::osc8::{LinkOverlay, LinkTarget};
 
 /// A clickable link region on screen.
 ///
@@ -16,7 +15,7 @@ use crate::render::osc8::LinkOverlay;
 #[derive(Debug, Clone)]
 pub struct VisibleLink {
     pub rects: Vec<Rect>,
-    pub url: Arc<str>,
+    pub target: LinkTarget,
     pub id: Option<u32>,
 }
 
@@ -32,8 +31,11 @@ impl VisibleLink {
     /// True when painted cell width equals the URL's display width (bare URL
     /// text on screen, not a short label or wide citation block).
     pub fn looks_like_bare_url_text(&self) -> bool {
+        let LinkTarget::Url(url) = &self.target else {
+            return false;
+        };
         let painted: usize = self.rects.iter().map(|r| usize::from(r.width)).sum();
-        painted == unicode_width::UnicodeWidthStr::width(self.url.as_ref())
+        painted == unicode_width::UnicodeWidthStr::width(url.as_ref())
     }
 }
 
@@ -66,12 +68,36 @@ impl VisibleLinkMap {
         overlay: &LinkOverlay,
         citation_links: Vec<VisibleLink>,
     ) {
+        self.rebuild_for_context(
+            generation,
+            overlay,
+            citation_links,
+            crate::terminal::terminal_context(),
+        );
+    }
+
+    fn rebuild_for_context(
+        &mut self,
+        generation: u64,
+        overlay: &LinkOverlay,
+        citation_links: Vec<VisibleLink>,
+        terminal: &crate::terminal::TerminalContext,
+    ) {
         self.links.clear();
         self.generation = generation;
         self.links
             .reserve(overlay.links().len() + citation_links.len());
-        self.push_overlay_links(overlay, /* merge_from */ 0);
-        self.links.extend(citation_links);
+        self.push_overlay_links(overlay, /* merge_from */ 0, terminal);
+        self.links
+            .extend(citation_links.into_iter().filter_map(|mut link| {
+                link.target = crate::render::osc8::resolve_link_target_for_context(
+                    &link.target,
+                    crate::render::osc8::LinkPresentation::Opaque,
+                    terminal,
+                )?
+                .open_target?;
+                Some(link)
+            }));
     }
 
     /// Append overlay links (e.g. `/btw`) without changing generation.
@@ -88,14 +114,27 @@ impl VisibleLinkMap {
     /// each frame's links will accumulate.
     pub fn append_from_overlay(&mut self, overlay: &LinkOverlay) {
         let start_len = self.links.len();
-        self.push_overlay_links(overlay, start_len);
+        self.push_overlay_links(overlay, start_len, crate::terminal::terminal_context());
     }
 
     /// Push overlay segments, merging same-`id` only with entries at
     /// indices `>= merge_from` (0 for rebuild; map length for append).
-    fn push_overlay_links(&mut self, overlay: &LinkOverlay, merge_from: usize) {
+    fn push_overlay_links(
+        &mut self,
+        overlay: &LinkOverlay,
+        merge_from: usize,
+        terminal: &crate::terminal::TerminalContext,
+    ) {
         self.links.reserve(overlay.links().len());
         for link in overlay.links() {
+            let Some(target) = crate::render::osc8::resolve_link_target_for_context(
+                &link.target,
+                link.presentation,
+                terminal,
+            )
+            .and_then(|resolved| resolved.open_target) else {
+                continue;
+            };
             let width = link.col_end.saturating_sub(link.col_start);
             if width == 0 {
                 continue;
@@ -110,7 +149,7 @@ impl VisibleLinkMap {
             } else {
                 self.links.push(VisibleLink {
                     rects: vec![rect],
-                    url: Arc::clone(&link.url),
+                    target,
                     id: link.id,
                 });
             }
@@ -144,7 +183,8 @@ impl VisibleLinkMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::osc8::{LinkOverlay, OverlayLink};
+    use crate::render::osc8::{LinkOverlay, LinkPresentation, OverlayLink, resolve_link_target};
+    use crate::terminal::{TerminalContext, TerminalName};
     use std::sync::Arc;
 
     fn make_overlay(links: Vec<(u16, u16, u16, &str, Option<u32>)>) -> LinkOverlay {
@@ -154,7 +194,8 @@ mod tests {
                 screen_row: row,
                 col_start,
                 col_end,
-                url: Arc::from(url),
+                target: LinkTarget::Url(Arc::from(url)),
+                presentation: LinkPresentation::Opaque,
                 id,
             });
         }
@@ -168,7 +209,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, w)| Rect::new(0, i as u16, *w, 1))
                 .collect(),
-            url: Arc::from(url),
+            target: LinkTarget::Url(Arc::from(url)),
             id: None,
         }
     }
@@ -194,6 +235,120 @@ mod tests {
     }
 
     #[test]
+    fn file_target_provenance_survives_overlay_to_visible_map() {
+        let path = Arc::<std::path::Path>::from(std::path::Path::new(
+            "/tmp/non-display-target/file name.rs",
+        ));
+        let mut overlay = LinkOverlay::new();
+        overlay.push(OverlayLink {
+            screen_row: 3,
+            col_start: 4,
+            col_end: 10,
+            target: LinkTarget::File(Arc::clone(&path)),
+            presentation: crate::render::osc8::LinkPresentation::Opaque,
+            id: None,
+        });
+
+        let mut map = VisibleLinkMap::default();
+        map.rebuild(1, &overlay, vec![]);
+
+        assert_eq!(map.links()[0].target, LinkTarget::File(Arc::clone(&path)));
+        let resolved = resolve_link_target(&map.links()[0].target).expect("resolved file target");
+        assert_eq!(resolved.open_target, Some(LinkTarget::File(path)));
+        assert_eq!(
+            resolved.osc8_url.unwrap().as_ref(),
+            "file:///tmp/non-display-target/file%20name.rs"
+        );
+        assert!(!map.links()[0].looks_like_bare_url_text());
+    }
+
+    #[test]
+    fn official_vscode_remote_file_is_excluded_from_activation_map() {
+        let file = LinkTarget::File(Arc::from(std::path::Path::new("/worktree/src/main.rs")));
+        let web = LinkTarget::Url(Arc::from("https://example.com/docs"));
+        let mut overlay = LinkOverlay::new();
+        for (row, target, presentation) in [
+            (3, file, LinkPresentation::SelfResolvingPath),
+            (4, web.clone(), LinkPresentation::Opaque),
+        ] {
+            overlay.push(OverlayLink {
+                screen_row: row,
+                col_start: 4,
+                col_end: 20,
+                target,
+                presentation,
+                id: None,
+            });
+        }
+        let terminal = TerminalContext {
+            brand: TerminalName::VsCode,
+            is_ssh: true,
+            is_official_vscode_remote: true,
+            ..Default::default()
+        };
+
+        let mut map = VisibleLinkMap::default();
+        map.rebuild_for_context(1, &overlay, vec![], &terminal);
+
+        assert_eq!(map.links().len(), 1);
+        assert_eq!(map.links()[0].target, web);
+        assert!(map.link_at(5, 3).is_none());
+        assert!(map.link_at(5, 4).is_some());
+    }
+
+    #[test]
+    fn cwd_change_stales_map_before_presentation_ownership_flip() {
+        let target = LinkTarget::File(Arc::from(std::path::Path::new("/worktree/src/main.rs")));
+        let painted = "src/main.rs";
+        let mut state = crate::scrollback::ScrollbackState::new();
+        let terminal = TerminalContext {
+            brand: TerminalName::VsCode,
+            is_ssh: true,
+            is_official_vscode_remote: true,
+            ..Default::default()
+        };
+        let overlay_for = |cwd: Option<&std::path::Path>| {
+            let mut overlay = LinkOverlay::new();
+            overlay.push(OverlayLink {
+                screen_row: 3,
+                col_start: 4,
+                col_end: 15,
+                target: target.clone(),
+                presentation: crate::render::osc8::file_link_presentation(painted, &target, cwd),
+                id: None,
+            });
+            overlay
+        };
+
+        state.set_cwd(Some(std::path::PathBuf::from("/other")));
+        let mut map = VisibleLinkMap::default();
+        map.rebuild_for_context(
+            state.generation(),
+            &overlay_for(state.cwd()),
+            vec![],
+            &terminal,
+        );
+        assert_eq!(map.len(), 1, "opaque relative paint stays Grok-owned");
+        assert!(!map.is_stale(state.generation()));
+
+        let new_cwd = std::path::PathBuf::from("/worktree");
+        state.set_cwd(Some(new_cwd.clone()));
+        assert!(map.is_stale(state.generation()));
+        map.rebuild_for_context(
+            state.generation(),
+            &overlay_for(state.cwd()),
+            vec![],
+            &terminal,
+        );
+        assert!(map.is_empty(), "self-resolving paint delegates to VS Code");
+
+        let generation = state.generation();
+        state.set_cwd(Some(new_cwd));
+        assert_eq!(state.generation(), generation);
+        assert!(!map.is_stale(state.generation()));
+    }
+
+    #[test]
     fn link_at_hit_and_miss() {
         let mut map = VisibleLinkMap::default();
         let overlay = make_overlay(vec![(5, 10, 20, "https://example.com", Some(1))]);
@@ -203,7 +358,13 @@ mod tests {
         // Hit inside the link
         let hit = map.link_at(15, 5);
         assert!(hit.is_some());
-        assert_eq!(&*hit.unwrap().url, "https://example.com");
+        assert_eq!(
+            &*resolve_link_target(&hit.unwrap().target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://example.com"
+        );
         // Miss: wrong row
         assert!(map.link_at(15, 6).is_none());
         // Miss: before start col
@@ -240,7 +401,13 @@ mod tests {
         ]);
         map.rebuild(2, &overlay2, vec![]);
         assert_eq!(map.links().len(), 2);
-        assert_eq!(&*map.links()[0].url, "https://second.com");
+        assert_eq!(
+            &*resolve_link_target(&map.links()[0].target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://second.com"
+        );
     }
 
     #[test]
@@ -252,7 +419,13 @@ mod tests {
         ]);
         map.rebuild(1, &overlay, vec![]);
         assert_eq!(map.links().len(), 1);
-        assert_eq!(&*map.links()[0].url, "https://valid.com");
+        assert_eq!(
+            &*resolve_link_target(&map.links()[0].target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://valid.com"
+        );
     }
 
     #[test]
@@ -261,7 +434,7 @@ mod tests {
         let overlay = make_overlay(vec![(0, 0, 5, "https://md-link.com", Some(1))]);
         let citations = vec![VisibleLink {
             rects: vec![Rect::new(2, 10, 30, 1)],
-            url: Arc::from("https://citation.com"),
+            target: LinkTarget::Url(Arc::from("https://citation.com")),
             id: None,
         }];
         map.rebuild(1, &overlay, citations);
@@ -270,12 +443,24 @@ mod tests {
         // Markdown link
         let hit = map.link_at(3, 0);
         assert!(hit.is_some());
-        assert_eq!(&*hit.unwrap().url, "https://md-link.com");
+        assert_eq!(
+            &*resolve_link_target(&hit.unwrap().target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://md-link.com"
+        );
 
         // Citation link
         let hit = map.link_at(15, 10);
         assert!(hit.is_some());
-        assert_eq!(&*hit.unwrap().url, "https://citation.com");
+        assert_eq!(
+            &*resolve_link_target(&hit.unwrap().target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://citation.com"
+        );
     }
 
     #[test]
@@ -291,7 +476,13 @@ mod tests {
         // Position 5 is in both links; first match wins (iter order)
         let hit = map.link_at(5, 5);
         assert!(hit.is_some());
-        assert_eq!(&*hit.unwrap().url, "https://first.com");
+        assert_eq!(
+            &*resolve_link_target(&hit.unwrap().target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://first.com"
+        );
     }
 
     #[test]
@@ -316,7 +507,13 @@ mod tests {
         // Should be 1 logical link with 2 rects
         assert_eq!(map.links().len(), 1);
         assert_eq!(map.links()[0].rects.len(), 2);
-        assert_eq!(&*map.links()[0].url, "https://wrapped.com");
+        assert_eq!(
+            &*resolve_link_target(&map.links()[0].target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://wrapped.com"
+        );
 
         // Hit on first row segment
         assert!(map.link_at(15, 3).is_some());
@@ -364,8 +561,20 @@ mod tests {
             2,
             "colliding per-doc ids must not merge across append"
         );
-        assert_eq!(&*map.link_at(5, 0).unwrap().url, "https://scrollback.com");
-        assert_eq!(&*map.link_at(5, 5).unwrap().url, "https://btw.com");
+        assert_eq!(
+            &*resolve_link_target(&map.link_at(5, 0).unwrap().target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://scrollback.com"
+        );
+        assert_eq!(
+            &*resolve_link_target(&map.link_at(5, 5).unwrap().target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://btw.com"
+        );
     }
 
     #[test]
@@ -397,6 +606,12 @@ mod tests {
         map.append_from_overlay(&make_overlay(vec![(2, 0, 5, "https://new-btw.com", None)]));
         assert_eq!(map.len(), 2);
         assert!(map.link_at(1, 1).is_none());
-        assert_eq!(&*map.link_at(1, 2).unwrap().url, "https://new-btw.com");
+        assert_eq!(
+            &*resolve_link_target(&map.link_at(1, 2).unwrap().target)
+                .unwrap()
+                .osc8_url
+                .unwrap(),
+            "https://new-btw.com"
+        );
     }
 }

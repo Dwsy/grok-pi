@@ -4049,12 +4049,19 @@ impl AgentView {
                                 && r.x < link.col_end
                         })
                     })
-                    .map(|link| xai_ratatui_inline::LinkSpan {
-                        row: link.screen_row,
-                        col_start: link.col_start,
-                        col_end: link.col_end,
-                        url: link.url.clone(),
-                        id: if emit_id { link.id } else { None },
+                    .filter_map(|link| {
+                        crate::render::osc8::resolve_link_target_with_presentation(
+                            &link.target,
+                            link.presentation,
+                        )
+                        .and_then(|resolved| resolved.osc8_url)
+                        .map(|url| xai_ratatui_inline::LinkSpan {
+                            row: link.screen_row,
+                            col_start: link.col_start,
+                            col_end: link.col_end,
+                            url,
+                            id: if emit_id { link.id } else { None },
+                        })
                     })
                     .collect();
                 self.push_promo_cta_link_span(

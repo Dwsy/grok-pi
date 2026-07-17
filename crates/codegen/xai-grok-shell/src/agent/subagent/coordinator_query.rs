@@ -55,8 +55,17 @@ impl SubagentCoordinator {
                     reason: completed.result.error.clone(),
                 }
             } else if completed.result.success {
+                let output = match &completed.persisted_output_dir {
+                    Some(dir) => {
+                        read_subagent_output(dir)
+                            .unwrap_or_else(|| {
+                                OUTPUT_UNAVAILABLE_PLACEHOLDER.to_string()
+                            })
+                    }
+                    None => completed.result.output.to_string(),
+                };
                 SubagentSnapshotStatus::Completed {
-                    output: completed.result.output.to_string(),
+                    output,
                     tool_calls: completed.result.tool_calls,
                     turns: completed.result.turns,
                     worktree_path: completed.result.worktree_path.clone(),
@@ -209,7 +218,7 @@ impl SubagentCoordinator {
     /// to a different parent session (prevents cross-session context bleed).
     ///
     /// Fast path: checks the in-memory `completed` map first. When that
-    /// misses (e.g. after TTL eviction), falls back to on-disk metadata
+    /// misses (e.g. after cap eviction), falls back to on-disk metadata
     /// in `{parent_session_dir}/subagents/{id}/meta.json`.
     pub(crate) fn resumable_source_for(
         &self,
@@ -293,10 +302,21 @@ impl SubagentCoordinator {
             will_wake: false,
         })
     }
-    /// TTL cleanup: remove completed entries older than 30 minutes.
-    pub fn evict_stale_completed(&mut self) {
-        let cutoff = std::time::Duration::from_secs(30 * 60);
-        self.completed.retain(|_, entry| entry.completed_at.elapsed() < cutoff);
+    /// Oldest completions are evicted first; their `output.json` stays on disk.
+    pub fn enforce_completed_cap(&mut self) {
+        if self.completed.len() <= MAX_COMPLETED_ENTRIES {
+            return;
+        }
+        let excess = self.completed.len() - MAX_COMPLETED_ENTRIES;
+        let mut by_age: Vec<(std::time::Instant, String)> = self
+            .completed
+            .iter()
+            .map(|(id, e)| (e.completed_at, id.clone()))
+            .collect();
+        by_age.sort_unstable_by_key(|(completed_at, _)| *completed_at);
+        for (_, id) in by_age.into_iter().take(excess) {
+            self.completed.remove(&id);
+        }
     }
     /// Snapshot all currently-running subagents for compaction state context.
     ///

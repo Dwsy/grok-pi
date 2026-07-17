@@ -223,11 +223,12 @@ pub(crate) async fn apply(
         current_agent_type: None,
     });
     if agent.cfg.borrow().mode != config::AgentMode::Leader {
-        agent.models_manager.set_current_model_id(model_id);
+        agent.models_manager.set_current_model_id(model_id.clone());
         agent
             .models_manager
             .set_current_reasoning_effort(applied_effort);
     }
+    agent.sync_process_static_api_key(Some(model_id.0.as_ref()));
     Ok(acp::SetSessionModelResponse::new().meta(
         serde_json::json!({ "model" : updated_model, })
             .as_object()

@@ -43,8 +43,6 @@ fn voice_final_appends_to_peek_reply_when_peek_open() {
             time_ago: "1m".into(),
             response_type: "Response".into(),
             last_user_message: None,
-            last_agent_lines: vec![],
-            last_response_truncated: false,
             question: None,
             options: vec![],
             request_id: None,
@@ -92,8 +90,6 @@ fn voice_final_discarded_when_peek_row_changed_after_stop() {
                 time_ago: "1m".into(),
                 response_type: "Response".into(),
                 last_user_message: None,
-                last_agent_lines: vec![],
-                last_response_truncated: false,
                 question: None,
                 options: vec![],
                 request_id: None,
@@ -258,8 +254,6 @@ fn voice_target_bound_at_start_dispatch_vs_peek() {
             time_ago: "1m".into(),
             response_type: "Response".into(),
             last_user_message: None,
-            last_agent_lines: vec![],
-            last_response_truncated: false,
             question: None,
             options: vec![],
             request_id: None,
@@ -289,8 +283,6 @@ fn voice_auto_stops_when_peek_row_changes() {
                 time_ago: "1m".into(),
                 response_type: "Response".into(),
                 last_user_message: None,
-                last_agent_lines: vec![],
-                last_response_truncated: false,
                 question: None,
                 options: vec![],
                 request_id: None,
@@ -3908,7 +3900,7 @@ fn dashboard_upgrade_cta_paints_arms_rect_and_ctrl_o_override() {
     use xai_grok_telemetry::events::AnnouncementCtaSurface;
 
     let registry = ActionRegistry::defaults();
-    let agents: indexmap::IndexMap<AgentId, crate::app::agent_view::AgentView> =
+    let mut agents: indexmap::IndexMap<AgentId, crate::app::agent_view::AgentView> =
         indexmap::IndexMap::new();
     // Wide enough that the reservation leaves room for the button + caption.
     let area = Rect::new(0, 0, 140, 20);
@@ -3931,7 +3923,7 @@ fn dashboard_upgrade_cta_paints_arms_rect_and_ctrl_o_override() {
         &mut buf,
         area,
         &mut state,
-        &agents,
+        &mut agents,
         &registry,
         None,
         &[],
@@ -3985,7 +3977,7 @@ fn dashboard_upgrade_cta_paints_arms_rect_and_ctrl_o_override() {
         &mut buf,
         area,
         &mut state,
-        &agents,
+        &mut agents,
         &registry,
         None,
         &[],
@@ -4016,7 +4008,7 @@ fn dashboard_upgrade_cta_paints_arms_rect_and_ctrl_o_override() {
         &mut buf,
         area,
         &mut state,
-        &agents,
+        &mut agents,
         &registry,
         None,
         &[],
@@ -4053,7 +4045,7 @@ fn dashboard_upgrade_cta_paints_arms_rect_and_ctrl_o_override() {
         &mut buf,
         area,
         &mut state,
-        &agents,
+        &mut agents,
         &registry,
         None,
         &[],
@@ -4808,8 +4800,6 @@ fn dashboard_permission_select_drops_stale_request() {
                 time_ago: String::new(),
                 response_type: "Awaiting your input".into(),
                 last_user_message: None,
-                last_agent_lines: Vec::new(),
-                last_response_truncated: false,
                 question: Some("q?".into()),
                 options: vec![("allow".into(), "Allow".into())],
                 request_id: Some(123), // mismatched id
@@ -4845,8 +4835,6 @@ fn dashboard_permission_select_for_missing_row_clears_peek() {
                 time_ago: String::new(),
                 response_type: "Idle".into(),
                 last_user_message: None,
-                last_agent_lines: Vec::new(),
-                last_response_truncated: false,
                 question: None,
                 options: Vec::new(),
                 request_id: None,
@@ -4885,8 +4873,6 @@ fn dashboard_peek_reply_to_idle_agent_sends() {
                 time_ago: String::new(),
                 response_type: "Idle".into(),
                 last_user_message: None,
-                last_agent_lines: Vec::new(),
-                last_response_truncated: false,
                 question: None,
                 options: Vec::new(),
                 request_id: None,
@@ -4928,8 +4914,6 @@ fn dashboard_peek_reply_to_running_agent_queues() {
                 time_ago: String::new(),
                 response_type: "Running\u{2026}".into(),
                 last_user_message: None,
-                last_agent_lines: Vec::new(),
-                last_response_truncated: false,
                 question: None,
                 options: Vec::new(),
                 request_id: None,
@@ -4970,8 +4954,6 @@ fn dashboard_peek_reply_with_image_sends_blocks() {
                 time_ago: String::new(),
                 response_type: "Idle".into(),
                 last_user_message: None,
-                last_agent_lines: Vec::new(),
-                last_response_truncated: false,
                 question: None,
                 options: Vec::new(),
                 request_id: None,
@@ -5028,8 +5010,6 @@ fn dashboard_peek_reply_image_with_whitespace_survives_rewind_restore() {
                 time_ago: String::new(),
                 response_type: "Idle".into(),
                 last_user_message: None,
-                last_agent_lines: Vec::new(),
-                last_response_truncated: false,
                 question: None,
                 options: Vec::new(),
                 request_id: None,
@@ -5104,8 +5084,6 @@ fn dashboard_peek_reply_with_image_queues_images() {
                 time_ago: String::new(),
                 response_type: "Running\u{2026}".into(),
                 last_user_message: None,
-                last_agent_lines: Vec::new(),
-                last_response_truncated: false,
                 question: None,
                 options: Vec::new(),
                 request_id: None,
@@ -5345,7 +5323,7 @@ fn dashboard_peek_auto_opens_for_selected_row() {
     let mut app = test_app_with_agent();
     mark_agent_nonempty(&mut app, AgentId(0));
     open_dashboard(&mut app);
-    let area = Rect::new(0, 0, 80, 24); // tall enough for the peek
+    let area = Rect::new(0, 0, 80, 40); // list-first: list floor 12 + peek min 8 + chrome
     let reg = crate::actions::ActionRegistry::defaults();
 
     // Select a row, then render → the peek opens by default.
@@ -5360,7 +5338,7 @@ fn dashboard_peek_auto_opens_for_selected_row() {
         &mut buf,
         area,
         app.dashboard.as_mut().unwrap(),
-        &app.agents,
+        &mut app.agents,
         &reg,
         None,
         &[],
@@ -5379,7 +5357,7 @@ fn dashboard_peek_auto_opens_for_selected_row() {
         &mut buf2,
         area,
         app.dashboard.as_mut().unwrap(),
-        &app.agents,
+        &mut app.agents,
         &reg,
         None,
         &[],
@@ -5402,7 +5380,7 @@ fn dashboard_peek_box_grows_for_multiline_reply() {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     let reg = crate::actions::ActionRegistry::defaults();
-    let area = Rect::new(0, 0, 80, 24);
+    let area = Rect::new(0, 0, 80, 40);
 
     let box_height_for = |reply_text: &str| -> u16 {
         let mut app = test_app_with_agent();
@@ -5417,7 +5395,7 @@ fn dashboard_peek_box_grows_for_multiline_reply() {
                 &mut buf,
                 area,
                 app.dashboard.as_mut().unwrap(),
-                &app.agents,
+                &mut app.agents,
                 &reg,
                 None,
                 &[],

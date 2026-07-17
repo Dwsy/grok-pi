@@ -29,6 +29,25 @@ struct RawSource {
     branch: Option<String>,
 }
 
+/// Whether remote plugin installs/updates must pin a full commit sha.
+///
+/// `[marketplace] require_sha = true` in config.toml, or
+/// `GROK_MARKETPLACE_REQUIRE_SHA=1`. Tighten-only: either source can enable,
+/// neither can override the other off. Defaults off so existing unpinned
+/// catalogs keep installing.
+pub fn load_require_sha(config: &toml::Value) -> bool {
+    env_require_sha()
+        || config
+            .get("marketplace")
+            .and_then(|m| m.get("require_sha"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+}
+
+pub fn env_require_sha() -> bool {
+    xai_grok_config::env_bool("GROK_MARKETPLACE_REQUIRE_SHA").unwrap_or(false)
+}
+
 /// Reads `[marketplace].sources` array. Returns empty vec if not configured.
 pub fn load_sources(config: &toml::Value) -> Vec<MarketplaceSource> {
     let Some(marketplace) = config.get("marketplace") else {
@@ -308,6 +327,34 @@ mod tests {
     fn empty_config_returns_empty() {
         let config: toml::Value = toml::from_str("").unwrap();
         assert!(load_sources(&config).is_empty());
+    }
+
+    /// Drives the shipped composition: config alone, env alone, and the
+    /// tighten-only rule (falsy env cannot relax config-set true).
+    #[test]
+    fn require_sha_policy_composition() {
+        // Process-global env: serialize against any other env-touching test.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let empty: toml::Value = toml::from_str("").unwrap();
+        let enabled: toml::Value = toml::from_str("[marketplace]\nrequire_sha = true\n").unwrap();
+
+        // SAFETY: single-threaded within the lock; restored before release.
+        unsafe { std::env::remove_var("GROK_MARKETPLACE_REQUIRE_SHA") };
+        assert!(!load_require_sha(&empty), "absent everywhere → off");
+        assert!(load_require_sha(&enabled), "config alone can enable");
+
+        unsafe { std::env::set_var("GROK_MARKETPLACE_REQUIRE_SHA", "1") };
+        assert!(load_require_sha(&empty), "env alone can enable");
+
+        unsafe { std::env::set_var("GROK_MARKETPLACE_REQUIRE_SHA", "0") };
+        assert!(
+            load_require_sha(&enabled),
+            "a falsy env must not relax config-set policy (tighten-only)"
+        );
+
+        unsafe { std::env::remove_var("GROK_MARKETPLACE_REQUIRE_SHA") };
     }
 
     #[test]

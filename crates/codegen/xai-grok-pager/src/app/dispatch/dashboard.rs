@@ -6,7 +6,7 @@ use super::dashboard_telemetry::{
 };
 use super::modes::{dispatch_cycle_mode_and_sync, set_yolo_mode, yolo_enable_blocked};
 use super::permissions::resolve_permission_queue_transition;
-use super::queue::maybe_drain_queue;
+use super::queue::{maybe_drain_queue, note_peek_page_flip_after_drain};
 use super::router::dispatch;
 use super::session::lifecycle::{
     dispatch_new_session_inner_with_id, dispatch_new_worktree_session,
@@ -247,6 +247,7 @@ pub(super) fn dispatch_exit_dashboard(app: &mut AppView) -> Vec<Effect> {
     // (`close_popup()` atomically clears the hit
     // rects too.)
     if let Some(d) = app.dashboard.as_mut() {
+        d.restore_peek_viewport(&mut app.agents);
         d.close_popup();
     }
     log_dashboard_closed(app);
@@ -277,6 +278,9 @@ pub(super) fn dispatch_dashboard_attach(
     // on a previously attached agent (legacy popup row-click path
     // reaches here without a key press) must not follow the user in.
     clear_pending_overlay_stop(app);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.restore_peek_viewport(&mut app.agents);
+    }
     match id {
         DashboardRowId::TopLevel(agent_id) => {
             if !app.agents.contains_key(&agent_id) {
@@ -404,6 +408,7 @@ pub(super) fn dispatch_dashboard_attach(
 /// fullscreen-with-frame layout.
 pub(super) fn dispatch_dashboard_overlay_exit(app: &mut AppView) -> Vec<Effect> {
     if let Some(d) = app.dashboard.as_mut() {
+        d.restore_peek_viewport(&mut app.agents);
         d.close_popup();
     }
     // Leaving the overlay by mouse (`[Dashboard]` click) doesn't pass
@@ -644,6 +649,7 @@ pub(super) fn dispatch_dashboard_create_new_agent_with_detail(app: &mut AppView)
         apply_pending_dispatch_config(agent, pending_model.as_ref(), pending_mode, policy_block);
     }
     if let Some(d) = app.dashboard.as_mut() {
+        d.restore_peek_viewport(&mut app.agents);
         // Clear the dispatch input even though we don't enqueue
         // anything — a stray paste while the button is focused
         // (no typed Enter) shouldn't survive the view switch.
@@ -959,6 +965,7 @@ pub(super) fn dispatch_dashboard_confirm_worktree(
             // Send+open: attach the dashboard's detail-view overlay onto the
             // agent (`dispatch_new_worktree_session` already set `active_view`).
             if let Some(d) = app.dashboard.as_mut() {
+                d.restore_peek_viewport(&mut app.agents);
                 d.focus_row(crate::views::dashboard::DashboardRowId::TopLevel(new_id));
                 d.attached_agent = Some(new_id);
             }
@@ -1036,6 +1043,7 @@ pub(super) fn dispatch_dashboard_overlay_cycle(app: &mut AppView, delta: i32) ->
     // the key-press disarm ever running.
     clear_pending_overlay_stop(app);
     if let Some(d) = app.dashboard.as_mut() {
+        d.restore_peek_viewport(&mut app.agents);
         d.attached_agent = Some(next_id);
         d.focus_row(DashboardRowId::TopLevel(next_id));
     }
@@ -1173,6 +1181,7 @@ pub(super) fn dispatch_dashboard_dispatch(
         // row so the overlay's `i/n [‹][›] [✗]` chips have an
         // anchor and Esc walks back to the dashboard.
         if let Some(d) = app.dashboard.as_mut() {
+            d.restore_peek_viewport(&mut app.agents);
             d.focus_row(crate::views::dashboard::DashboardRowId::TopLevel(new_id));
             d.attached_agent = Some(new_id);
         }
@@ -1668,24 +1677,28 @@ pub(super) fn dispatch_dashboard_peek_reply(
         return vec![];
     }
 
-    let Some(agent) = app.agents.get_mut(&agent_id) else {
-        if let Some(d) = app.dashboard.as_mut() {
-            d.set_peek(None);
-            d.set_error_toast("Session no longer exists");
-        }
-        return vec![];
-    };
+    let effects = {
+        let Some(agent) = app.agents.get_mut(&agent_id) else {
+            if let Some(d) = app.dashboard.as_mut() {
+                d.set_peek(None);
+                d.set_error_toast("Session no longer exists");
+            }
+            return vec![];
+        };
 
-    // Enqueue + drain: idle → sends now, running → stays queued.
-    // Untrimmed so `chip_elements` byte ranges stay aligned with the stored text.
-    agent.session.enqueue_prompt(text);
-    if let Some(entry) = agent.session.pending_prompts.back_mut() {
-        entry.chip_elements = chip_elements;
-        if !images.is_empty() {
-            entry.images = images;
+        // Enqueue + drain: idle → sends now, running → stays queued.
+        // Untrimmed so `chip_elements` byte ranges stay aligned with the stored text.
+        agent.session.enqueue_prompt(text);
+        if let Some(entry) = agent.session.pending_prompts.back_mut() {
+            entry.chip_elements = chip_elements;
+            if !images.is_empty() {
+                entry.images = images;
+            }
         }
-    }
-    let effects = maybe_drain_queue(agent);
+        maybe_drain_queue(agent)
+    };
+    // Note page-flip before restore on attach.
+    note_peek_page_flip_after_drain(app, agent_id);
 
     // Clear the reply draft now that it's been accepted, and drop any
     // stale error toast.
@@ -1699,6 +1712,7 @@ pub(super) fn dispatch_dashboard_peek_reply(
         // with the session-overlay chrome, mirroring
         // `dispatch_dashboard_dispatch`'s attach branch.
         if let Some(d) = app.dashboard.as_mut() {
+            d.restore_peek_viewport(&mut app.agents);
             d.focus_row(DashboardRowId::TopLevel(agent_id));
             d.attached_agent = Some(agent_id);
         }

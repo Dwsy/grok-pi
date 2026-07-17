@@ -8,10 +8,12 @@ use crate::session::persistence::{CHAT_FORMAT_VERSION, Summary};
 use crate::tools::todo::TodoState;
 use agent_client_protocol as acp;
 use async_trait::async_trait;
+use fs2::FileExt;
 use std::fs::OpenOptions;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, Write};
+#[cfg(target_os = "macos")]
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
 use xai_grok_workspace::session::file_state::RewindPoint;
 /// How the adapter resolves the session directory on disk.
 ///
@@ -24,6 +26,10 @@ enum SessionDirMode {
     FromRoot(PathBuf),
     /// New: use this directory directly (for subagent children).
     Explicit(PathBuf),
+}
+pub(super) enum AppendDurability {
+    Buffered,
+    Durable,
 }
 /// JSONL-based storage adapter (legacy format)
 /// Stores sessions in {root}/sessions/{url_encoded_cwd}/{session_id}/
@@ -75,7 +81,7 @@ impl JsonlStorageAdapter {
             SessionDirMode::Explicit(dir) => dir.clone(),
         }
     }
-    fn updates_file(&self, info: &Info) -> PathBuf {
+    pub(super) fn updates_file(&self, info: &Info) -> PathBuf {
         self.session_dir(info).join("updates.jsonl")
     }
     fn chat_file(&self, info: &Info) -> PathBuf {
@@ -222,32 +228,124 @@ impl JsonlStorageAdapter {
     /// the torn record is terminated as its own (single) corrupt line. This
     /// bounds the damage of any torn write to exactly one record, which the
     /// lenient readers (e.g. [`Self::read_chat_history_sync`]) then skip.
-    async fn append_jsonl_line(&self, path: PathBuf, mut line: Vec<u8>) -> io::Result<()> {
+    async fn append_jsonl_line(&self, path: PathBuf, line: Vec<u8>) -> io::Result<()> {
+        Self::append_jsonl_line_locked(path, line, AppendDurability::Buffered).await
+    }
+    async fn append_jsonl_line_locked(
+        path: PathBuf,
+        line: Vec<u8>,
+        durability: AppendDurability,
+    ) -> io::Result<()> {
+        tokio::task::spawn_blocking(move || Self::append_jsonl_line_sync(&path, line, durability))
+            .await
+            .map_err(io::Error::other)?
+    }
+    fn append_jsonl_line_sync(
+        path: &Path,
+        line: Vec<u8>,
+        durability: AppendDurability,
+    ) -> io::Result<()> {
+        Self::append_jsonl_line_sync_with(
+            path,
+            line,
+            durability,
+            Self::sync_file_durable,
+            Self::sync_parent_directory,
+        )
+    }
+    fn append_jsonl_line_sync_with(
+        path: &Path,
+        mut line: Vec<u8>,
+        durability: AppendDurability,
+        sync_file: fn(&std::fs::File) -> io::Result<()>,
+        sync_parent: fn(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
         debug_assert!(line.ends_with(b"\n"), "JSONL record must end with \\n");
-        let mut file = tokio::fs::OpenOptions::new()
+        let lock_path = path.with_extension("jsonl.lock");
+        let lock = OpenOptions::new()
             .read(true)
+            .write(true)
             .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        let len = file.metadata().await?.len();
-        if len > 0 {
-            use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
-            file.seek(io::SeekFrom::Start(len - 1)).await?;
-            let mut last = [0u8; 1];
-            file.read_exact(&mut last).await?;
-            if last[0] != b'\n' {
-                tracing::warn!(
-                    path = % path.display(),
-                    "jsonl file has a torn trailing line (previous append crashed \
-                     mid-write?); terminating it before appending"
-                );
-                line.insert(0, b'\n');
+            .truncate(false)
+            .open(lock_path)?;
+        lock.lock_exclusive()?;
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .read(true)
+                .create(true)
+                .append(true)
+                .open(path)?;
+            let len = file.metadata()?.len();
+            if len > 0 {
+                file.seek(io::SeekFrom::Start(len - 1))?;
+                let mut last = [0u8; 1];
+                file.read_exact(&mut last)?;
+                if last[0] != b'\n' {
+                    tracing::warn!(
+                        path = % path.display(), "terminating torn jsonl tail"
+                    );
+                    line.insert(0, b'\n');
+                }
             }
+            file.write_all(&line)?;
+            file.flush()?;
+            if matches!(durability, AppendDurability::Durable) {
+                sync_file(&file)?;
+                drop(file);
+                sync_parent(path)?;
+            } else {
+                drop(file);
+            }
+            Ok(())
+        })();
+        let _ = lock.unlock();
+        result
+    }
+    #[cfg(target_os = "macos")]
+    fn sync_file_durable(file: &std::fs::File) -> io::Result<()> {
+        file.sync_all()?;
+        Self::fullfsync_raw(file.as_raw_fd())
+    }
+    #[cfg(target_os = "macos")]
+    fn fullfsync_raw(fd: std::os::fd::RawFd) -> io::Result<()> {
+        let result = unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) };
+        if result == -1 {
+            return Err(io::Error::last_os_error());
         }
-        file.write_all(&line).await?;
-        file.flush().await?;
         Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn sync_file_durable(file: &std::fs::File) -> io::Result<()> {
+        file.sync_all()
+    }
+    #[cfg(windows)]
+    fn sync_file_durable(file: &std::fs::File) -> io::Result<()> {
+        file.sync_all()
+    }
+    #[cfg(not(any(unix, windows)))]
+    fn sync_file_durable(_file: &std::fs::File) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "durable file sync is unsupported on this platform",
+        ))
+    }
+    #[cfg(unix)]
+    fn sync_parent_directory(path: &Path) -> io::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "update has no parent"))?;
+        std::fs::File::open(parent)?.sync_all()
+    }
+    #[cfg(windows)]
+    fn sync_parent_directory(_path: &Path) -> io::Result<()> {
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    fn sync_parent_directory(_path: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "durable directory sync is unsupported on this platform",
+        ))
     }
     /// Write a full JSONL file (rewriting all items), crash-atomically: serialize
     /// to a temp file then rename over the target, so a crash / `ENOSPC` mid-write
@@ -283,17 +381,34 @@ impl JsonlStorageAdapter {
         Ok(items)
     }
     /// Append a session update to the updates.jsonl file, wrapping it in an envelope with timestamp.
-    async fn append_update_to_file(
+    pub(super) async fn append_update_to_file(
         &self,
         path: PathBuf,
         update: &super::SessionUpdate,
+        durability: AppendDurability,
     ) -> io::Result<()> {
         let envelope = SessionUpdateEnvelope::from_update(update)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut line = serde_json::to_vec(&envelope)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         line.push(b'\n');
-        self.append_jsonl_line(path, line).await
+        Self::append_jsonl_line_locked(path, line, durability).await
+    }
+    pub(crate) async fn append_update_with_bookkeeping<F>(
+        &self,
+        info: &Info,
+        update: &super::SessionUpdate,
+        bookkeeping: F,
+    ) -> Result<(), super::AppendUpdateError>
+    where
+        F: std::future::Future<Output = io::Result<()>>,
+    {
+        self.append_update_to_file(self.updates_file(info), update, AppendDurability::Buffered)
+            .await
+            .map_err(super::AppendUpdateError::NotCommitted)?;
+        bookkeeping
+            .await
+            .map_err(super::AppendUpdateError::Committed)
     }
     /// Read session updates from an updates.jsonl file, handling both envelope and legacy formats.
     ///
@@ -927,7 +1042,35 @@ impl StorageAdapter for JsonlStorageAdapter {
         .await
     }
     async fn append_update(&self, info: &Info, update: &super::SessionUpdate) -> io::Result<()> {
-        self.append_update_to_file(self.updates_file(info), update)
+        self.append_update_commit_aware(info, update)
+            .await
+            .map_err(super::AppendUpdateError::into_io_error)
+    }
+    async fn append_update_commit_aware(
+        &self,
+        info: &Info,
+        update: &super::SessionUpdate,
+    ) -> Result<(), super::AppendUpdateError> {
+        self.append_update_with_bookkeeping(
+            info,
+            update,
+            self.apply_summary_patch(
+                info,
+                super::summary_write::SummaryPatch {
+                    record_activity: true,
+                    messages: Some(super::summary_write::CounterOp::Increment(1)),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+    }
+    async fn append_update_durable(
+        &self,
+        info: &Info,
+        update: &super::SessionUpdate,
+    ) -> io::Result<()> {
+        self.append_update_to_file(self.updates_file(info), update, AppendDurability::Durable)
             .await?;
         self.apply_summary_patch(
             info,
@@ -1518,5 +1661,7 @@ fn is_valid_data_uri_image(url: &str) -> bool {
         }
     }
 }
+#[cfg(test)]
+mod durable_tests;
 #[cfg(test)]
 mod tests;

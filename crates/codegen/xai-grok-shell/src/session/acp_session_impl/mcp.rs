@@ -414,16 +414,10 @@ impl SessionActor {
         if server_name.starts_with(crate::session::managed_mcp::MANAGED_MCP_PREFIX) {
             return Err("To authenticate, visit grok.com".to_string());
         }
-        let client = {
-            let state = self.mcp_state.lock().await;
-            state
-                .get_client(server_name)
-                .cloned()
-                .ok_or_else(|| format!("MCP server '{}' not found", server_name))?
+        let client = match self.mcp_state.lock().await.get_client(server_name).cloned() {
+            Some(c) if c.has_auth() => c,
+            _ => self.recreate_http_client_with_oauth(server_name).await?,
         };
-        if !client.has_auth() {
-            return Err(format!("MCP server '{}' does not use OAuth", server_name));
-        }
         if !client.force_reauth(true).await {
             return Err(format!(
                 "Authentication failed for MCP server '{}'",
@@ -437,6 +431,7 @@ impl SessionActor {
             .map_err(|e| format!("Failed to get tools after auth: {}", e))?;
         let mut mcp_state = self.mcp_state.lock().await;
         mcp_state.auth_required.remove(server_name);
+        mcp_state.init_failed.remove(server_name);
         let mut ui_tools: std::collections::HashMap<
             String,
             Vec<crate::extensions::mcp::McpToolEntry>,
@@ -454,6 +449,73 @@ impl SessionActor {
             "MCP server authenticated and tools registered via auth_trigger"
         );
         Ok(())
+    }
+    /// Rebuild an HTTP MCP client with Interactive OAuth discovery and swap it
+    /// into session state. Used when auth is requested for a client that was
+    /// previously started without an `AuthorizationManager`.
+    async fn recreate_http_client_with_oauth(
+        &self,
+        server_name: &str,
+    ) -> Result<std::sync::Arc<crate::session::mcp_servers::McpClient>, String> {
+        let (server_config, meta_config, event_tx) = {
+            let mcp_state = self.mcp_state.lock().await;
+            let server_config = mcp_state
+                .configs
+                .iter()
+                .find(|c| crate::session::mcp_servers::mcp_server_name(c) == server_name)
+                .cloned()
+                .ok_or_else(|| format!("MCP server '{}' not found in config", server_name))?;
+            match &server_config {
+                acp::McpServer::Http(_) | acp::McpServer::Sse(_) => {}
+                _ => {
+                    return Err(format!("MCP server '{}' does not use OAuth", server_name));
+                }
+            }
+            let meta_config = mcp_state.meta_config_map.get(server_name).cloned();
+            let event_tx = mcp_state.client_event_tx();
+            (server_config, meta_config, event_tx)
+        };
+        let cwd = std::path::Path::new(&self.session_info.cwd);
+        let session_id = self.session_info.id.0.as_ref();
+        let (_, oauth_config_map) =
+            crate::util::config::load_mcp_servers_with_oauth(cwd, &self.rebuild_spec.compat);
+        let byo_config = oauth_config_map.get(server_name).cloned();
+        let event_writer = self.events.writer();
+        let mode = crate::session::mcp_servers::OauthInteractivity::Interactive;
+        let new_client = crate::session::mcp_servers::start_mcp_server(
+            server_config,
+            Some(session_id),
+            Some(cwd),
+            meta_config.as_ref(),
+            byo_config.as_ref(),
+            &event_writer,
+            mode,
+        )
+        .await
+        .map_err(|e| format!("Failed to prepare OAuth for '{}': {}", server_name, e))?;
+        if !new_client.has_auth() {
+            return Err(format!(
+                "MCP server '{}' does not support OAuth (discovery found no authorization support)",
+                server_name
+            ));
+        }
+        if let Some(tx) = event_tx {
+            new_client.set_event_tx(Some(tx));
+        }
+        let arc = std::sync::Arc::new(new_client);
+        {
+            let mut mcp_state = self.mcp_state.lock().await;
+            mcp_state
+                .owned_clients
+                .insert(server_name.to_string(), arc.clone());
+            mcp_state.auth_required.insert(server_name.to_string());
+            mcp_state.init_failed.remove(server_name);
+        }
+        tracing::info!(
+            server = server_name,
+            "Rebuilt MCP HTTP client with OAuth manager for auth_trigger"
+        );
+        Ok(arc)
     }
     /// Attempt to re-initialize MCP servers stuck in `auth_required`.
     ///

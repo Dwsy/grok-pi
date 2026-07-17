@@ -15,6 +15,36 @@ use url::Url;
 
 use crate::rmcp;
 
+/// Ensure credential paths are owner-only (Unix `0o600`).
+///
+/// Local helper (not shell-base): `xai-grok-mcp` sits below `config-types` in the
+/// dep graph, and shell-base pulls shared→config-types→mcp — a cycle if linked.
+/// Windows ACL tightening stays on auth via shell-base; MCP is Unix-first here.
+fn ensure_owner_only_permissions(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            Ok(metadata) => {
+                let mode = metadata.permissions().mode();
+                if mode & 0o777 != 0o600 {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o600);
+                    std::fs::set_permissions(path, perms)?;
+                }
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 type Result<T> = std::result::Result<T, McpCredentialError>;
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +100,15 @@ impl McpCredentialStore {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path)?;
+        // Tighten world-readable credential files on load (hand copies, etc.).
+        // Best-effort: chmod failure must not block using existing tokens.
+        if let Err(e) = ensure_owner_only_permissions(path) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "mcp credentials: failed to enforce owner-only permissions"
+            );
+        }
         let store: McpCredentialStore = serde_json::from_str(&content)?;
         Ok(store)
     }
@@ -188,7 +227,18 @@ impl McpCredentialStore {
             writer.flush()?;
         }
 
+        // `mode(0o600)` only applies on create; tighten before rename.
+        // Fail hard on tmp: credentials are not published yet.
+        ensure_owner_only_permissions(&tmp_path)?;
         std::fs::rename(&tmp_path, path)?;
+        // Best-effort after rename: new tokens are already published.
+        if let Err(e) = ensure_owner_only_permissions(path) {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "mcp: failed to ensure owner-only permissions after credential save"
+            );
+        }
         Ok(())
     }
 
@@ -431,5 +481,38 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("creds.json");
+        let mut store = McpCredentialStore::default();
+        let url = Url::parse("https://test.example.com/mcp").unwrap();
+        store.insert_rmcp("test", &url, test_stored_creds("c"));
+        store.save_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_tightens_world_readable_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("creds.json");
+        let mut store = McpCredentialStore::default();
+        let url = Url::parse("https://test.example.com/mcp").unwrap();
+        store.insert_rmcp("test", &url, test_stored_creds("c"));
+        store.save_to(&path).unwrap();
+        let mut loose = std::fs::metadata(&path).unwrap().permissions();
+        loose.set_mode(0o644);
+        std::fs::set_permissions(&path, loose).unwrap();
+
+        let _ = McpCredentialStore::load_from(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }

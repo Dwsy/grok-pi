@@ -380,6 +380,7 @@ mod tests {
                 subdir: subdir.map(str::to_string),
             },
             registry,
+            false,
         )
         .unwrap();
         let now = chrono::Utc::now().to_rfc3339();

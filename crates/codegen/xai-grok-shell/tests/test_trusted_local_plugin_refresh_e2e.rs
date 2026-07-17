@@ -45,6 +45,7 @@ fn register_local_install(registry: &mut InstallRegistry, source: &Path) -> Inst
             subdir: None,
         },
         registry,
+        false,
     )
     .expect("install local plugin");
     let plugins = installed

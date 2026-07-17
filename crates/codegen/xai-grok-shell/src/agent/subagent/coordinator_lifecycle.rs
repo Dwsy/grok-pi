@@ -323,8 +323,10 @@ impl SubagentCoordinator {
                     effective_model_id: String::new(),
                     block_waited: false,
                     explicitly_killed: false,
+                    persisted_output_dir: None,
                 },
             );
+        self.enforce_completed_cap();
         if surface_completion {
             self.pending_completions
                 .push(SubagentCompletionSummary {
@@ -353,6 +355,7 @@ impl SubagentCoordinator {
         description: String,
         subagent_type: String,
         result: SubagentResult,
+        persisted_output_dir: Option<PathBuf>,
     ) -> Option<SubagentTracker> {
         let tracker = self.active.remove(id);
         self.sync_running_gauge();
@@ -383,30 +386,26 @@ impl SubagentCoordinator {
         let block_waited = tracker.as_ref().is_some_and(|t| t.block_waited);
         let explicitly_killed = tracker.as_ref().is_some_and(|t| t.explicitly_killed);
         let surface_completion = tracker.as_ref().is_none_or(|t| t.surface_completion);
-        self.completed
-            .insert(
-                id.to_string(),
-                CompletedSubagent {
-                    subagent_id: id.to_string(),
-                    parent_session_id,
-                    parent_prompt_id,
-                    child_session_id,
-                    description,
-                    subagent_type,
-                    persona,
-                    started_at,
-                    completed_at: std::time::Instant::now(),
-                    result,
-                    resumed_from,
-                    child_cwd,
-                    worktree_path,
-                    snapshot_ref: None,
-                    effective_model_id,
-                    block_waited,
-                    explicitly_killed,
-                },
-            );
-        let completed = self.completed.get(id).expect("just inserted");
+        let mut completed = CompletedSubagent {
+            subagent_id: id.to_string(),
+            parent_session_id,
+            parent_prompt_id,
+            child_session_id,
+            description,
+            subagent_type,
+            persona,
+            started_at,
+            completed_at: std::time::Instant::now(),
+            result,
+            resumed_from,
+            child_cwd,
+            worktree_path,
+            snapshot_ref: None,
+            effective_model_id,
+            block_waited,
+            explicitly_killed,
+            persisted_output_dir,
+        };
         let success = completed.result.success && !completed.result.cancelled;
         {
             let preview = crate::util::truncate(&completed.result.output, 200);
@@ -444,6 +443,11 @@ impl SubagentCoordinator {
                     output: completed.result.output.clone(),
                 });
         }
+        if completed.persisted_output_dir.is_some() {
+            completed.result.output = Arc::from("");
+        }
+        self.completed.insert(id.to_string(), completed);
+        self.enforce_completed_cap();
         self.completion_notify.notify_waiters();
         tracker
     }

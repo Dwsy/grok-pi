@@ -72,54 +72,10 @@ pub struct HubConfig {
     pub alpha_test_key: Option<String>,
     /// Permit a plaintext `ws://` server on a non-loopback host (mesh-secured).
     pub allow_insecure_ws: bool,
-    /// When set, the ready file tracks hub readiness for the sandbox reconnect
-    /// gate: written on initial connect (hello / server registered), removed on
-    /// disconnect, rewritten only after reconnect **serve replay settles**
-    /// (not merely socket-up). Presence means the tool-server is registered and
-    /// prior sessions have been re-served when applicable. `None` = unmanaged.
-    pub ready_file: Option<std::path::PathBuf>,
-    /// Diagnostics-server state handle, driven from the same lifecycle points
-    /// as the ready file. `None` = no diagnostics server (embedded/local use).
+    /// Diagnostics-server state handle driving the `/ready` state from the
+    /// connection lifecycle. `None` = no diagnostics server (embedded/local
+    /// use).
     pub diag: Option<DiagHandle>,
-}
-/// Write the workspace-server ready file (pid as contents). Presence means the
-/// tool-server is hub-ready for the sandbox gate (initial hello, or reconnect
-/// after serve replay settled); failures are logged, not fatal.
-fn write_ready_file(path: &std::path::Path) {
-    if let Err(e) = std::fs::write(path, std::process::id().to_string()) {
-        tracing::warn!(
-            path = % path.display(), error = % e,
-            "failed to write workspace-server ready file"
-        );
-    }
-}
-/// Publishes hub readiness to the ready file and the diagnostics server from
-/// the same lifecycle transitions, so the two protocols cannot disagree while
-/// a diagnostics handle is configured (its shutdown latch gates both).
-struct ReadyPublisher {
-    ready_file: Option<std::path::PathBuf>,
-    diag: Option<DiagHandle>,
-}
-impl ReadyPublisher {
-    fn connected(&self) {
-        if self.diag.as_ref().is_some_and(DiagHandle::is_shutting_down) {
-            return;
-        }
-        if let Some(path) = &self.ready_file {
-            write_ready_file(path);
-        }
-        if let Some(diag) = &self.diag {
-            diag.set_connected();
-        }
-    }
-    fn disconnected(&self) {
-        if let Some(path) = &self.ready_file {
-            let _ = std::fs::remove_file(path);
-        }
-        if let Some(diag) = &self.diag {
-            diag.set_disconnected();
-        }
-    }
 }
 impl std::fmt::Debug for HubConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -277,17 +233,13 @@ impl HubHandle {
                 }
             });
         }
-        if config.ready_file.is_some() || config.diag.is_some() {
-            let publisher = Arc::new(ReadyPublisher {
-                ready_file: config.ready_file.clone(),
-                diag: config.diag.clone(),
-            });
-            let on_connect = Arc::clone(&publisher);
-            let on_disconnect = Arc::clone(&publisher);
+        if let Some(diag) = config.diag.clone() {
+            let on_connect = diag.clone();
+            let on_disconnect = diag.clone();
             server_builder = server_builder
-                .on_connect(move || on_connect.connected())
-                .on_disconnect(move || on_disconnect.disconnected())
-                .on_reconnect_settled(move || publisher.connected());
+                .on_connect(move || on_connect.set_connected())
+                .on_disconnect(move || on_disconnect.set_disconnected())
+                .on_reconnect_settled(move || diag.set_connected());
         }
         if let Some(ref id) = config.server_id {
             server_builder = server_builder.server_id(parse_server_id(id)?);

@@ -96,7 +96,7 @@ libc = { workspace = true }
 # AssignProcessToJobObject, TerminateJobObject) and process creation flags
 # (CREATE_NO_WINDOW, DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP).
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true }
+windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 dirs = { workspace = true }
@@ -114,8 +114,6 @@ tar = { workspace = true }
 workspace = true
 
 [features]
-default-bazel = [
-    "serde",
-    ]
+default-bazel = ["serde"]
 default = ["serde"]
 serde = []

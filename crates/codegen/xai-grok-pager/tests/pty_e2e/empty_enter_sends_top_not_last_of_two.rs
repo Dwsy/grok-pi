@@ -10,14 +10,25 @@ use super::common::*;
 #[ignore]
 async fn empty_enter_sends_top_not_last_of_two() {
     let content = ContentController::start().await.expect("start content");
-    // Gate turn 1's terminal event so both queues + the empty Enter provably
-    // land while turn 1 is still the running turn.
-    content.hold_agent_completions();
-    content.set_turns([
-        slow_turn_text("TURNONE"),
-        "TURNTWO top-row send-now acknowledged.".to_owned(),
-        "TURNTHREE remaining queue promoted.".to_owned(),
-    ]);
+    let mut turn_one = content.expect_response_blocked(
+        "running turn before top-row send-now",
+        InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+        ScriptedResponse::sse(chat_completions_message_events(&slow_turn_text("TURNONE"))),
+    );
+    let mut turn_two = content.expect_response(
+        "top queued row",
+        InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+        ScriptedResponse::sse(chat_completions_message_events(
+            "TURNTWO top-row send-now acknowledged.",
+        )),
+    );
+    let mut turn_three = content.expect_response(
+        "remaining queued row",
+        InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+        ScriptedResponse::sse(chat_completions_message_events(
+            "TURNTHREE remaining queue promoted.",
+        )),
+    );
 
     let binary = pager_binary().expect("resolve pager binary");
     let mut harness =
@@ -33,6 +44,9 @@ async fn empty_enter_sends_top_not_last_of_two() {
     harness
         .wait_for_text("TURNONE", Duration::from_secs(45))
         .expect("turn 1 streaming");
+    tokio::time::timeout(Duration::from_secs(10), turn_one.wait_blocked())
+        .await
+        .expect("turn 1 reached completion barrier");
 
     harness
         .inject_keys(b"queue-alpha-top\r")
@@ -50,7 +64,7 @@ async fn empty_enter_sends_top_not_last_of_two() {
     harness
         .inject_keys(b"\r")
         .expect("empty Enter send-now top");
-    content.release_agent_completions();
+    turn_one.release();
     // Alpha (the promoted TOP row) then bravo drain back-to-back. Each
     // promoted "❯ …" block and the intermediate TURNTWO reply is scrolled
     // above the viewport by the next turn's start-adoption before a 100ms poll
@@ -61,6 +75,12 @@ async fn empty_enter_sends_top_not_last_of_two() {
     harness
         .wait_for_text("TURNTHREE", Duration::from_secs(90))
         .expect("all queued turns drained through to the final reply");
+    tokio::time::timeout(Duration::from_secs(10), turn_two.wait_satisfied())
+        .await
+        .expect("top queued row expectation satisfied");
+    tokio::time::timeout(Duration::from_secs(10), turn_three.wait_satisfied())
+        .await
+        .expect("remaining queued row expectation satisfied");
 
     // The send-now cancel of turn 1 is silent.
     assert!(

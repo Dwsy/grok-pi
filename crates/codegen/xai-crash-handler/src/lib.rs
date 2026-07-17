@@ -121,9 +121,9 @@ pub fn check_previous_crash(crash_dir: &Path) -> Option<CrashReport> {
     let frames = symbolicate::resolve_frames(&blob);
     let report_text = symbolicate::format_report(&blob, &frames);
 
-    // Write the human-readable report.
+    // Write the human-readable report (owner-only when the OS supports it).
     let report_path = crash_dir.join("last-crash-report.txt");
-    let _ = std::fs::write(&report_path, &report_text);
+    let _ = write_owner_only(&report_path, report_text.as_bytes());
 
     // Archive to history/ (keep last MAX_HISTORY).
     archive_report(crash_dir, &report_text, blob.timestamp);
@@ -142,12 +142,42 @@ pub fn check_previous_crash(crash_dir: &Path) -> Option<CrashReport> {
     })
 }
 
+/// Write `contents` with owner-only permissions when the platform allows it.
+///
+/// Crash reports may include source paths and backtraces; when they land under
+/// `$GROK_HOME` they must not be world-readable.
+fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        // mode() only applies on create — force owner-only before writing so a
+        // preexisting 0644 file never holds sensitive content while world-readable.
+        let mut perms = file.metadata()?.permissions();
+        perms.set_mode(0o600);
+        file.set_permissions(perms)?;
+        file.write_all(contents)?;
+        file.flush()?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
+}
+
 fn archive_report(crash_dir: &Path, report_text: &str, timestamp: u64) {
     let history_dir = crash_dir.join("history");
     let _ = std::fs::create_dir_all(&history_dir);
 
     let filename = format!("crash-{}.txt", timestamp);
-    let _ = std::fs::write(history_dir.join(&filename), report_text);
+    let _ = write_owner_only(&history_dir.join(&filename), report_text.as_bytes());
 
     // Prune old reports beyond MAX_HISTORY.
     if let Ok(mut entries) = std::fs::read_dir(&history_dir) {
@@ -174,5 +204,56 @@ mod tests {
     fn check_previous_crash_returns_none_when_no_file() {
         let dir = PathBuf::from("/tmp/xai-crash-handler-test-nonexistent");
         assert!(check_previous_crash(&dir).is_none());
+    }
+
+    #[cfg(unix)]
+    fn unique_tmp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "xai-crash-handler-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create tmp dir");
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_owner_only_creates_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = unique_tmp_dir("create-0600");
+        let path = dir.join("report.txt");
+        write_owner_only(&path, b"secret").expect("write");
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "new file must be owner-only");
+        assert_eq!(std::fs::read(&path).expect("read"), b"secret");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_owner_only_tightens_preexisting_0644() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = unique_tmp_dir("tighten-0644");
+        let path = dir.join("report.txt");
+        std::fs::write(&path, b"old").expect("seed");
+        let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path, perms).expect("set 0644");
+        assert_eq!(
+            std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777,
+            0o644
+        );
+
+        write_owner_only(&path, b"new-secret").expect("overwrite");
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "overwrite must tighten to owner-only");
+        assert_eq!(std::fs::read(&path).expect("read"), b"new-secret");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

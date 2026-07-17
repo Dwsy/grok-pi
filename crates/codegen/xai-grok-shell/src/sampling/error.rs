@@ -12,9 +12,12 @@ use agent_client_protocol as acp;
 /// ACP error code for rate-limited requests (HTTP 429).
 /// Uses the JSON-RPC implementation-defined server error range (-32000 to -32099).
 ///
-/// Contract: this code must only be set for actual HTTP 429 responses from the
-/// sampling client. Clients (desktop, pager) suppress error detail when they
-/// see this code and show a user-friendly upgrade message instead.
+/// Contract: set only for actual HTTP 429 responses from the sampling client.
+/// User-facing text is produced by [`format_rate_limited_user_message`] (free-usage
+/// paywall rewrite, else server body, else a generic fallback). Pager/headless
+/// use that helper. Desktop may still special-case `stopReason: rate_limit` with
+/// its own UI and ignore the body — that is a client choice, not a shell
+/// requirement to suppress detail.
 pub const RATE_LIMITED_ERROR_CODE: i32 = -32003;
 
 /// OAuth / session rate-limit copy (personal plan upgrade path).
@@ -38,6 +41,59 @@ pub fn rate_limited_user_message(is_api_key_auth: bool) -> &'static str {
     } else {
         RATE_LIMITED_USER_MESSAGE_OAUTH
     }
+}
+
+/// Well-known free-usage exhaustion code CCP returns on HTTP 429.
+/// Matches `prod_util_well_known_errors::SUBSCRIPTION_FREE_USAGE_EXHAUSTED`.
+/// sampling-types' `parse_error_bytes` prepends the flat `code` to the
+/// flattened message, so this reaches clients embedded in error detail.
+pub const FREE_USAGE_EXHAUSTED_ERROR_CODE: &str = "subscription:free-usage-exhausted";
+
+/// User-facing free-usage exhaustion copy (paywall). Deliberately promises no
+/// reset duration — the quota window is backend-config-driven.
+pub const FREE_USAGE_USER_MESSAGE: &str = "You\u{2019}ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=grok-build";
+
+/// Whether flattened server detail is free-usage-quota exhaustion (paywall),
+/// not transient throttling. Sniffs the well-known code embedded by
+/// `parse_error_bytes`.
+pub fn is_free_usage_exhausted_error(detail: &str) -> bool {
+    detail.contains(FREE_USAGE_EXHAUSTED_ERROR_CODE)
+}
+
+/// User-facing text for an ACP -32003 rate-limit error.
+///
+/// 1. Free-usage well-known code → [`FREE_USAGE_USER_MESSAGE`] (OAuth product paywall).
+/// 2. Non-empty body that pushes a **personal** Grok subscription, when the
+///    caller is on **API key** auth → [`RATE_LIMITED_USER_MESSAGE_API_KEY`]
+///    (team credits / console rate-limit tiers; not grok.com SuperGrok).
+/// 3. Any other non-empty body → shown as-is (capacity, team RPS limits, etc.).
+/// 4. Empty body → [`rate_limited_user_message`].
+///
+/// Pass the real active auth method (`AppView.is_api_key_auth` /
+/// `AuthMethodKind::is_api_key`), not env-only key presence.
+pub fn format_rate_limited_user_message(
+    server_detail: Option<&str>,
+    is_api_key_auth: bool,
+) -> String {
+    if server_detail.is_some_and(is_free_usage_exhausted_error) {
+        return FREE_USAGE_USER_MESSAGE.to_string();
+    }
+    if let Some(detail) = server_detail.map(str::trim).filter(|s| !s.is_empty()) {
+        if is_api_key_auth && pushes_consumer_subscription_upsell(detail) {
+            return RATE_LIMITED_USER_MESSAGE_API_KEY.to_string();
+        }
+        return detail.to_string();
+    }
+    rate_limited_user_message(is_api_key_auth).to_string()
+}
+
+/// IC sometimes reuses OAuth free-tier upsell copy on 429s ("upgrade to a Grok
+/// subscription" / grok.com/supergrok). That is wrong for API-key / team auth:
+/// higher limits come from credits and spend-based rate-limit tiers, not a
+/// personal SuperGrok plan.
+fn pushes_consumer_subscription_upsell(detail: &str) -> bool {
+    let d = detail.to_ascii_lowercase();
+    d.contains("grok.com/supergrok") || d.contains("upgrade to a grok subscription")
 }
 
 /// Map a `SamplingError` to an ACP `Error` for client-facing responses.
@@ -332,6 +388,93 @@ mod tests {
                 .contains("https://docs.x.ai/developers/rate-limits#rate-limit-tiers")
         );
         assert!(!RATE_LIMITED_USER_MESSAGE_API_KEY.contains("Upgrade your account"));
+    }
+
+    #[test]
+    fn format_rate_limited_surfaces_nonempty_server_detail() {
+        let service = "The service is temporarily at capacity. Please retry your request shortly.";
+        assert_eq!(
+            format_rate_limited_user_message(Some(service), false),
+            service
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some(service), true),
+            service
+        );
+
+        // Team console rate-limit copy has no personal SuperGrok upsell — surface as-is.
+        let team = "resource-exhausted: Too many requests for team abc. See https://console.x.ai/team/default/rate-limits.";
+        assert_eq!(format_rate_limited_user_message(Some(team), true), team);
+        assert_eq!(
+            format_rate_limited_user_message(Some("slow down"), false),
+            "slow down"
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_api_key_rewrites_consumer_subscription_upsell() {
+        let rpm = "Some resource has been exhausted: You are sending requests too quickly. \
+             Please slow down, or upgrade to a Grok subscription for higher limits: \
+             https://grok.com/supergrok";
+        // OAuth keeps the IC body (personal plan upgrade is correct).
+        assert_eq!(format_rate_limited_user_message(Some(rpm), false), rpm);
+        // API key must not push grok.com SuperGrok — team credits / rate-limit tiers.
+        assert_eq!(
+            format_rate_limited_user_message(Some(rpm), true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+        assert!(
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+                .contains("https://docs.x.ai/developers/rate-limits#rate-limit-tiers")
+        );
+        assert!(!RATE_LIMITED_USER_MESSAGE_API_KEY.contains("grok.com/supergrok"));
+    }
+
+    #[test]
+    fn is_free_usage_exhausted_error_sniffs_well_known_code() {
+        assert!(is_free_usage_exhausted_error(
+            "subscription:free-usage-exhausted: You have used all your free usage."
+        ));
+        assert!(is_free_usage_exhausted_error(
+            "API error (status 429): subscription:free-usage-exhausted quota hit"
+        ));
+        assert!(!is_free_usage_exhausted_error("throttled"));
+        assert!(!is_free_usage_exhausted_error(
+            "The service is temporarily at capacity."
+        ));
+    }
+
+    #[test]
+    fn format_rate_limited_free_usage_uses_paywall_copy() {
+        let detail = "subscription:free-usage-exhausted: You have used all your free usage.";
+        assert_eq!(
+            format_rate_limited_user_message(Some(detail), false),
+            FREE_USAGE_USER_MESSAGE
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some(detail), true),
+            FREE_USAGE_USER_MESSAGE
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_empty_detail_uses_auth_aware_fallback() {
+        assert_eq!(
+            format_rate_limited_user_message(None, false),
+            RATE_LIMITED_USER_MESSAGE_OAUTH
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some(""), false),
+            RATE_LIMITED_USER_MESSAGE_OAUTH
+        );
+        assert_eq!(
+            format_rate_limited_user_message(None, true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some("   "), true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
     }
 
     #[test]

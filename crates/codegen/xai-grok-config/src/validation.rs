@@ -8,19 +8,21 @@ use crate::paths::{system_config_dir, user_grok_home};
 use crate::version_overrides::{VersionOverrideError, apply_version_overrides};
 
 use prod_mc_cli_chat_proxy_types::FAIL_CLOSED_KEY;
-/// The canonical opt-in key + string parse live in the shared types crate, next to
-/// the signed payload that carries the flag, so the server-side signer and this
-/// client parse the same semantics.
-pub use prod_mc_cli_chat_proxy_types::fail_closed_flag_from_str;
 
-/// Read the `fail_closed` opt-in from a parsed requirements layer — same semantics as
-/// [`fail_closed_flag_from_str`]. Env tightening (file vs `GROK_MANAGED_CONFIG_FAIL_CLOSED`)
-/// is layered on top by [`resolve_fail_closed_mode`], not here.
+/// `fail_closed` from a requirements table; non-bool → warn once and treat as false.
 fn fail_closed_flag(requirements: &toml::Value) -> bool {
-    requirements
-        .get(FAIL_CLOSED_KEY)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+    use prod_mc_cli_chat_proxy_types::{FailClosedFlag, fail_closed_flag_status_from_value};
+    let status = fail_closed_flag_status_from_value(requirements);
+    if matches!(status, FailClosedFlag::Invalid) {
+        static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+        WARN_ONCE.call_once(|| {
+            tracing::warn!(
+                "requirements fail_closed is present but not a boolean \
+                 (e.g. fail_closed = \"true\"); treating as false - use fail_closed = true"
+            );
+        });
+    }
+    status.is_enabled()
 }
 
 /// Env override for [`FAIL_CLOSED_KEY`]. Named for prefix-alignment
@@ -352,15 +354,13 @@ minimum_version = "not-a-version"
     }
 
     #[test]
-    fn fail_closed_flag_from_str_reads_the_opt_in() {
-        assert!(fail_closed_flag_from_str("fail_closed = true\n"));
-        assert!(!fail_closed_flag_from_str("fail_closed = false\n"));
-        // Missing key, a non-bool value, malformed TOML, and empty all read as
-        // not-opted-in (best-effort false) rather than panicking.
-        assert!(!fail_closed_flag_from_str("[features]\ntelemetry = true\n"));
-        assert!(!fail_closed_flag_from_str("fail_closed = \"yes\"\n"));
-        assert!(!fail_closed_flag_from_str("[unclosed"));
-        assert!(!fail_closed_flag_from_str(""));
+    fn fail_closed_flag_reads_the_opt_in() {
+        let flag = |s: &str| fail_closed_flag(&toml::from_str::<toml::Value>(s).unwrap());
+        assert!(flag("fail_closed = true\n"));
+        assert!(!flag("fail_closed = false\n"));
+        assert!(!flag("[features]\ntelemetry = true\n"));
+        assert!(!flag("fail_closed = \"yes\"\n"));
+        assert!(!flag(""));
     }
 
     #[test]

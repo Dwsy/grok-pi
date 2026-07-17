@@ -254,6 +254,14 @@ pub fn repo_config_kinds(cwd: &Path) -> Vec<&'static str> {
     collect_repo_config_kinds(cwd, false)
 }
 
+fn path_present_or_uncertain(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
 /// Shared scanner behind [`repo_configs_present`] and [`repo_config_kinds`]. With
 /// `first_only` it returns immediately after the first marker (the gate's
 /// historical short-circuit); otherwise it collects every distinct kind.
@@ -346,7 +354,7 @@ fn collect_repo_config_kinds(cwd: &Path, first_only: bool) -> Vec<&'static str> 
     // resolve trusted and run ungated. Presence mirrors discovery's "something to
     // gate" check.
     let hook_root = chain.git_root.as_deref().unwrap_or(cwd);
-    if hook_root.join(".grok").join("hooks").is_dir()
+    if path_present_or_uncertain(&hook_root.join(".grok").join("hooks"))
         || hook_root.join(".cursor").join("hooks.json").is_file()
     {
         hit!("hooks");
@@ -608,6 +616,29 @@ mod tests {
         let tmp = repo_tmp();
         std::fs::create_dir_all(tmp.path().join(".grok").join("hooks")).unwrap();
         assert!(repo_configs_present(tmp.path()));
+    }
+
+    #[test]
+    fn repo_configs_present_detects_project_hooks_file() {
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(grok.join("hooks"), "{}").unwrap();
+
+        assert!(repo_configs_present(tmp.path()));
+        assert!(repo_config_kinds(tmp.path()).contains(&"hooks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repo_configs_present_detects_dangling_project_hooks_symlink() {
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::os::unix::fs::symlink("missing-hooks", grok.join("hooks")).unwrap();
+
+        assert!(repo_configs_present(tmp.path()));
+        assert!(repo_config_kinds(tmp.path()).contains(&"hooks"));
     }
 
     #[test]

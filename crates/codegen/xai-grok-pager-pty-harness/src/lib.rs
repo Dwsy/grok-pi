@@ -35,7 +35,10 @@ pub mod scripted;
 pub mod scroll_matrix;
 pub mod timing;
 
-pub use content::{ContentController, MockModel, ScriptedResponse, SseEvent, sse};
+pub use content::{
+    ContentController, InferenceEndpoint, InferenceExpectation, InferenceRequestMatcher, MockModel,
+    ScriptedResponse, SseEvent, sse,
+};
 pub use env::pager_binary;
 pub use flows::{
     inference_request_count, oauth_env_for_pager, seed_fake_oauth, submit_turn,

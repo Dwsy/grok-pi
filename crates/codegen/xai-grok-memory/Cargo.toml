@@ -5,6 +5,9 @@ version = "0.1.0"
 edition.workspace = true
 
 [features]
+# Exposes `#[cfg(test)]`-only helpers (`MemoryStorage::with_paths`,
+# `MockEmbeddingProvider`) to downstream crates' test targets.
+test-support = []
 
 [dependencies]
 anyhow = { workspace = true }

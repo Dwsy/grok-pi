@@ -99,10 +99,6 @@ pub(super) static ALLOWED_STRING_KEYS: &[&str] = &[
     "status",
     "action",
     "auth_method",
-    // auth 401 attribution: fixed enum-ish consumer labels only
-    // (e.g. "OaiCompatClient.chat_completions_stream"); never user content.
-    // Key suffix fields stay denied — they are token fingerprints.
-    "consumer",
     "to_mode",
     "trigger",
     "survey_type",
@@ -458,7 +454,6 @@ mod tests {
             "status",
             "action",
             "auth_method",
-            "consumer",
             "to_mode",
             "trigger",
             "survey_type",
@@ -502,7 +497,7 @@ mod tests {
         assert_eq!(
             ALLOWED_STRING_KEYS, expected,
             "ALLOWED_STRING_KEYS changed: adding a key exports a new field — confirm it carries no \
-             user content, then update this pin."
+             user content and get telemetry-owner review, then update this pin."
         );
     }
 
@@ -589,5 +584,53 @@ mod tests {
             !blob.contains("CANARY"),
             "secret in allowlisted value not scrubbed: {blob}"
         );
+    }
+
+    #[test]
+    fn allowlisted_path_values_are_still_home_scrubbed() {
+        // Path keys are allowlisted so the field exports, but home/username
+        // segments must still collapse — allowlist is not a scrub bypass.
+        let home = dirs::home_dir().expect("home dir for path-scrub test");
+        let home_str = home.to_string_lossy();
+        // Skip if the home path is too short/generic for the scrubber to match.
+        if home_str.len() < 4 {
+            return;
+        }
+        let full = format!("{home_str}/secret-project/src/main.rs");
+        let mut attrs = vec![
+            KeyValue::new("path", full.clone()),
+            KeyValue::new("file_path", full.clone()),
+            KeyValue::new("cwd", full.clone()),
+        ];
+        scrub_attributes(&mut attrs);
+        let blob = format!("{attrs:?}");
+        assert!(
+            !blob.contains(home_str.as_ref()),
+            "home path survived allowlisted scrub: {blob}"
+        );
+        assert!(
+            blob.contains("main.rs") || blob.contains("[HOME]") || blob.contains("~"),
+            "expected redacted path to retain a filename or home marker: {blob}"
+        );
+    }
+
+    #[test]
+    fn error_key_value_is_secret_and_path_scrubbed() {
+        // Free-form `error` strings are allowlisted for classification labels;
+        // any secret/path content that sneaks in must still be scrubbed.
+        let home = dirs::home_dir().expect("home dir");
+        let home_str = home.to_string_lossy();
+        let msg =
+            format!("failed reading {home_str}/.config/creds with sk-CANARYabcdefghij1234567890");
+        let mut attrs = vec![KeyValue::new("error", msg)];
+        scrub_attributes(&mut attrs);
+        let blob = format!("{attrs:?}");
+        assert!(!blob.contains("CANARY"), "secret survived in error: {blob}");
+        if home_str.len() >= 4 {
+            assert!(
+                !blob.contains(home_str.as_ref()),
+                "home path survived in error: {blob}"
+            );
+        }
     }
 }

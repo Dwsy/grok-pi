@@ -1,7 +1,7 @@
 //! Login, logout, account switching, and auth-code submission dispatchers.
 
 use super::ctx::{restore_auth_return_view, show_welcome};
-use super::queue::maybe_drain_queue;
+use super::queue::{maybe_drain_queue, note_peek_page_flip_after_drain};
 use super::router::dispatch;
 use super::session::lifecycle::{clear_startup_actions, drain_startup_actions};
 use crate::app::actions::{Action, Effect};
@@ -56,6 +56,33 @@ fn no_login_method_error(app: &AppView) -> String {
     }
 }
 
+/// Abort any in-flight Authenticate/SwitchAccount task *and* its URL poll so a
+/// new login cannot stack device-code mints or have a stale poll steal the
+/// successor's URL (single-flight). No-op when not authenticating or when the
+/// abort handles have not been installed yet.
+fn abort_prior_auth(app: &mut AppView) {
+    if let AuthState::Authenticating {
+        handle,
+        request_seq,
+        ..
+    } = &mut app.auth_state
+        && let Some(h) = handle.take()
+    {
+        tracing::debug!(
+            request_seq,
+            "aborting prior in-flight auth task for single-flight"
+        );
+        h.abort();
+    }
+    if let Some((seq, h)) = app.auth_url_poll_handle.take() {
+        tracing::debug!(
+            request_seq = seq,
+            "aborting prior auth URL poll for single-flight"
+        );
+        h.abort();
+    }
+}
+
 /// Log out, then start a new login flow in a single sequential task.
 pub(super) fn dispatch_switch_account(app: &mut AppView) -> Vec<Effect> {
     ensure_login_method(app);
@@ -66,6 +93,8 @@ pub(super) fn dispatch_switch_account(app: &mut AppView) -> Vec<Effect> {
         };
         return vec![];
     };
+
+    abort_prior_auth(app);
 
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;
@@ -197,6 +226,8 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
         show_welcome(app);
     }
 
+    abort_prior_auth(app);
+
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;
     app.auth_code_input.clear();
@@ -220,15 +251,22 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
 
 /// Cancel a login that was started from inside a session and restore the
 /// caller's view. Only meaningful when `auth_return_view` is set (a
-/// mid-session `/login` or 401 re-auth prompt). Any in-flight auth task is
-/// left to finish in the background — its `AuthComplete`/`AuthFailed`
-/// result is ignored because we move `auth_state` out of `Authenticating`
-/// here (the request-seq/state guard in those handlers drops stale results)
-/// and bump the seq so a fresh login does not collide.
+/// mid-session `/login` or 401 re-auth prompt). Aborts the in-flight auth
+/// task and tells the shell to cancel its device/loopback flow so a retry
+/// does not race a still-polling prior mint. Bump the seq so a fresh login
+/// does not collide with a late `AuthComplete`/`AuthFailed`.
 pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
     let Some(return_view) = app.auth_return_view.take() else {
         return vec![];
     };
+    // Capture the attempt's request_seq before abort clears Authenticating so
+    // the shell cancel is scoped to this attempt only (a delayed RPC must not
+    // cancel a fast re-login).
+    let cancel_seq = match &app.auth_state {
+        AuthState::Authenticating { request_seq, .. } => Some(*request_seq),
+        _ => None,
+    };
+    abort_prior_auth(app);
     app.next_auth_request_seq += 1;
     app.auth_state = AuthState::Done;
     app.auth_show_raw_url = false;
@@ -245,7 +283,12 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
         agent.reauth_stashed_prompt = None;
         strip_trailing_auth_error_blocks(agent);
     }
-    vec![]
+    // Ask the shell to cancel its in-flight interactive auth (device poll /
+    // loopback wait). Fire-and-forget: UI state is already restored.
+    match cancel_seq {
+        Some(request_seq) => vec![Effect::CancelAuth { request_seq }],
+        None => vec![],
+    }
 }
 
 /// User submitted a manually-pasted auth token in loopback mode.
@@ -303,6 +346,7 @@ pub(super) fn handle_auth_complete(
             // have been started from the dashboard, not the agent
             // that 401'd).
             let mut retry_effects = Vec::new();
+            let mut drained_ids = Vec::new();
             for agent in app.agents.values_mut() {
                 strip_trailing_auth_error_blocks(agent);
                 // Auto-resubmit the prompt that failed on the expired
@@ -315,7 +359,11 @@ pub(super) fn handle_auth_complete(
                     ));
                     agent.session.enqueue_in_flight_prompt_front(prompt);
                     retry_effects.extend(maybe_drain_queue(agent));
+                    drained_ids.push(agent.session.id);
                 }
+            }
+            for id in drained_ids {
+                note_peek_page_flip_after_drain(app, id);
             }
             let mut effects = dispatch(Action::RequestBundleStatus, app);
             if app.usage_visible {
@@ -397,7 +445,7 @@ pub(super) fn handle_mcp_auth_trigger_done(
     app: &mut AppView,
     agent_id: AgentId,
     server_name: String,
-    result: Result<(), String>,
+    result: Result<crate::app::actions::McpAuthTriggerOutcome, String>,
 ) -> Vec<Effect> {
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return vec![];
@@ -405,20 +453,50 @@ pub(super) fn handle_mcp_auth_trigger_done(
     if let Some(ref mut modal) = agent.extensions_modal {
         modal.pending_action = None;
         modal.pending_entry_index = None;
-        if let Err(e) = result {
-            // String-match heuristic: directive vs name-embedded vs generic.
-            // Brittle if the shell ever quotes a name shape that doesn't
-            // match `server_name` here — replace with a structured
-            // discriminator on McpAuthTriggerResponse if that happens.
-            let msg = if e.starts_with("To authenticate") {
-                format!("{server_name}: {e}")
-            } else if e.contains(&server_name) {
-                format!("Auth failed: {e}")
-            } else {
-                format!("{server_name} auth failed: {e}")
-            };
-            modal.modal_message = Some(crate::views::extensions_modal::ModalMessage::Error(msg));
-            return vec![];
+        match result {
+            Ok(crate::app::actions::McpAuthTriggerOutcome::Authenticated) => {}
+            Ok(crate::app::actions::McpAuthTriggerOutcome::SetupRequired(setup)) => {
+                let setup_values = match &modal.mcps_data {
+                    crate::views::extensions_modal::TabDataState::Loaded(servers) => servers
+                        .iter()
+                        .find(|server| server.name == server_name)
+                        .map(|server| server.setup_values.clone())
+                        .unwrap_or_default(),
+                    _ => std::collections::HashMap::new(),
+                };
+                if let Some(form) = crate::views::extensions_modal::McpSetupFormState::from_setup(
+                    server_name.clone(),
+                    setup,
+                    setup_values,
+                ) {
+                    modal.mcp_setup = Some(form);
+                } else {
+                    modal.modal_message =
+                        Some(crate::views::extensions_modal::ModalMessage::Error(
+                            format!("{server_name}: setup schema is not supported in this UI"),
+                        ));
+                }
+                return vec![];
+            }
+            Err(e) => {
+                let msg = if e.starts_with("To authenticate") {
+                    format!("{server_name}: {e}")
+                } else if e.contains(&server_name) {
+                    format!("Auth failed: {e}")
+                } else {
+                    format!("{server_name} auth failed: {e}")
+                };
+                modal.modal_message =
+                    Some(crate::views::extensions_modal::ModalMessage::Error(msg));
+                if let Some(session_id) = agent.session.session_id.clone() {
+                    return vec![Effect::FetchMcpsList {
+                        agent_id,
+                        session_id,
+                        cache: false,
+                    }];
+                }
+                return vec![];
+            }
         }
     }
     // No toast on success: the row transition from the FetchMcpsList
@@ -430,5 +508,42 @@ pub(super) fn handle_mcp_auth_trigger_done(
         agent_id,
         session_id,
         cache: false,
+    }]
+}
+
+pub(super) fn handle_mcp_setup_submit_done(
+    app: &mut AppView,
+    agent_id: AgentId,
+    server_name: String,
+    result: Result<(), String>,
+) -> Vec<Effect> {
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return vec![];
+    };
+    if let Some(ref mut modal) = agent.extensions_modal {
+        if let Err(e) = result {
+            modal.pending_action = None;
+            modal.pending_entry_index = None;
+            modal.modal_message = Some(crate::views::extensions_modal::ModalMessage::Error(
+                format!("{server_name} setup failed: {e}"),
+            ));
+            return vec![];
+        }
+        modal.pending_action = Some(format!("Authenticating {server_name}..."));
+        modal.pending_entry_index = None;
+    }
+    let Some(session_id) = agent.session.session_id.clone() else {
+        if let Some(ref mut modal) = agent.extensions_modal {
+            modal.pending_action = None;
+            modal.modal_message = Some(crate::views::extensions_modal::ModalMessage::Error(
+                format!("{server_name}: no active session for authentication"),
+            ));
+        }
+        return vec![];
+    };
+    vec![Effect::McpAuthTrigger {
+        agent_id,
+        session_id,
+        server_name,
     }]
 }

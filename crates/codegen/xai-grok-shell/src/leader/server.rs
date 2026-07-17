@@ -1099,7 +1099,6 @@ async fn handle_workspace_start(
         upload_queue_enabled,
         project_lsp_trusted,
         None,
-        None,
         false,
         false,
     )

@@ -35,9 +35,6 @@ pub struct BashToolConfig {
     /// Whether to allow a background `&` operator in foreground commands
     /// (default: `true`). Resolution: config.toml (this) > remote settings > `true`.
     pub allow_background_operator: Option<bool>,
-    /// Declared so the unknown-key scan accepts `[toolset.bash] persistent_shell`;
-    /// the effective value is resolved (layered) by `resolve_persistent_local_shell`.
-    pub persistent_shell: Option<bool>,
 }
 
 impl BashToolConfig {

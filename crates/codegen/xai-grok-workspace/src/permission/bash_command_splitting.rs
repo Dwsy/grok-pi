@@ -152,7 +152,7 @@ pub(crate) fn is_setup_command(cmd: &[String]) -> bool {
 
     matches!(
         cmd[0].as_str(),
-        "cd" | "pushd" | "popd" | "export" | "unset" | "set" | "source" | "." | "sleep" | "timeout"
+        "cd" | "pushd" | "popd" | "export" | "unset" | "set" | "sleep" | "timeout"
     )
 }
 

@@ -45,6 +45,7 @@ pub enum McpServerTransportConfig {
         cwd: Option<String>,
     },
     StreamableHttp {
+        #[serde(default, alias = "urlTemplate", alias = "url_template")]
         url: String,
         #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
         transport_type: Option<String>,
@@ -78,6 +79,90 @@ pub struct McpJsonOAuthBlock {
     pub callback_port: Option<u16>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSetupConfig {
+    #[serde(default)]
+    pub fields: Vec<McpSetupField>,
+    #[serde(default, alias = "values")]
+    pub variables: HashMap<String, McpSetupDerivedValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSetupField {
+    pub id: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: McpSetupFieldType,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub options: Vec<McpSetupOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum McpSetupFieldType {
+    Select,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSetupOption {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSetupDerivedValue {
+    pub from: String,
+    pub map: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPreferenceSource {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerPreferences {
+    #[serde(default)]
+    pub values: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<McpPreferenceSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpPreferencesFile {
+    pub version: u32,
+    #[serde(default)]
+    pub servers: HashMap<String, McpServerPreferences>,
+}
+
+impl Default for McpPreferencesFile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            servers: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum McpSetupResolution {
+    Resolved(Box<McpServerConfig>),
+    Required(McpSetupConfig),
+    Invalid(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     #[serde(flatten)]
@@ -86,6 +171,8 @@ pub struct McpServerConfig {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<McpJsonOAuthBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<McpSetupConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,7 +187,123 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_image_base64: Option<bool>,
 }
+
+fn render_setup_template(
+    input: &str,
+    variables: &HashMap<String, String>,
+) -> Result<String, String> {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find("{{") {
+        let (prefix, after_start) = rest.split_at(start);
+        out.push_str(prefix);
+        let after_start = &after_start[2..];
+        let Some(end) = after_start.find("}}") else {
+            return Err("unterminated setup variable template".to_string());
+        };
+        let key = after_start[..end].trim();
+        let Some(value) = variables.get(key) else {
+            return Err(format!("unresolved setup variable '{key}'"));
+        };
+        out.push_str(value);
+        rest = &after_start[end + 2..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+fn render_setup_templates(
+    config: &mut McpServerConfig,
+    variables: &HashMap<String, String>,
+) -> Result<(), String> {
+    let sub = |s: &str| render_setup_template(s, variables);
+    match &mut config.transport {
+        McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
+            *command = sub(command)?;
+            for arg in args.iter_mut() {
+                *arg = sub(arg)?;
+            }
+            if let Some(env) = env.as_mut() {
+                for value in env.values_mut() {
+                    *value = sub(value)?;
+                }
+            }
+            if let Some(cwd) = cwd.as_mut() {
+                *cwd = sub(cwd)?;
+            }
+        }
+        McpServerTransportConfig::StreamableHttp { url, headers, .. } => {
+            *url = sub(url)?;
+            if let Some(headers) = headers.as_mut() {
+                for value in headers.values_mut() {
+                    *value = sub(value)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl McpServerConfig {
+    /// Resolve `setup` templates using stored preferences.
+    ///
+    /// v0 supports exactly one select field with options. Multi-field schemas
+    /// are Invalid until the TUI can collect them.
+    pub fn resolve_setup(&self, preferences: Option<&McpServerPreferences>) -> McpSetupResolution {
+        let Some(setup) = self.setup.as_ref() else {
+            return McpSetupResolution::Resolved(Box::new(self.clone()));
+        };
+
+        if setup.fields.len() != 1 {
+            return McpSetupResolution::Invalid(
+                "setup schema must declare exactly one select field (v0)".to_string(),
+            );
+        }
+        let field = &setup.fields[0];
+        if !matches!(field.field_type, McpSetupFieldType::Select) || field.options.is_empty() {
+            return McpSetupResolution::Invalid(
+                "setup field must be a non-empty select (v0)".to_string(),
+            );
+        }
+
+        let Some(preferences) = preferences else {
+            return McpSetupResolution::Required(setup.clone());
+        };
+
+        let Some(value) = preferences.values.get(&field.id) else {
+            return McpSetupResolution::Required(setup.clone());
+        };
+        if !field.options.iter().any(|option| option.value == *value) {
+            return McpSetupResolution::Required(setup.clone());
+        }
+
+        let mut variables = HashMap::new();
+        for (name, derived) in &setup.variables {
+            if derived.from != field.id {
+                return McpSetupResolution::Invalid(format!(
+                    "setup variable '{name}' references unknown field '{}'",
+                    derived.from
+                ));
+            }
+            let Some(mapped) = derived.map.get(value) else {
+                return McpSetupResolution::Required(setup.clone());
+            };
+            variables.insert(name.clone(), mapped.clone());
+        }
+
+        let mut resolved = self.clone();
+        resolved.setup = None;
+        match render_setup_templates(&mut resolved, &variables) {
+            Ok(()) => McpSetupResolution::Resolved(Box::new(resolved)),
+            Err(e) => McpSetupResolution::Invalid(e),
+        }
+    }
+
     pub fn expand_strings(&mut self, sub: &dyn Fn(&str) -> String) {
         match &mut self.transport {
             McpServerTransportConfig::Stdio {
@@ -134,7 +337,7 @@ impl McpServerConfig {
     }
 
     pub fn to_acp_mcp_server(&self, name: impl Into<String>) -> Option<acp::McpServer> {
-        if !self.enabled {
+        if !self.enabled || self.setup.is_some() {
             return None;
         }
         let name = name.into();
@@ -167,6 +370,9 @@ impl McpServerConfig {
                 headers,
                 ..
             } => {
+                if url.is_empty() {
+                    return None;
+                }
                 let mut http_headers: Vec<acp::HttpHeader> = headers
                     .as_ref()
                     .map(|h| {
@@ -273,4 +479,179 @@ impl RelaySyncConfig {
 pub struct McpConfig {
     #[serde(default, rename = "mcpServers")]
     pub mcp_servers: IndexMap<String, McpServerConfig>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn site_select_setup_json() -> &'static str {
+        r#"{
+            "mcpServers": {
+                "acme": {
+                    "type": "http",
+                    "urlTemplate": "{{url}}",
+                    "setup": {
+                        "fields": [{
+                            "id": "site",
+                            "label": "Site",
+                            "type": "select",
+                            "required": true,
+                            "default": "us1",
+                            "options": [
+                                {"label": "US1", "value": "us1"},
+                                {"label": "US5", "value": "us5"}
+                            ]
+                        }],
+                        "values": {
+                            "url": {
+                                "from": "site",
+                                "map": {
+                                    "us1": "https://mcp.example.com/v1/mcp",
+                                    "us5": "https://mcp.us5.example.com/v1/mcp"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"#
+    }
+
+    #[test]
+    fn mcp_setup_schema_parses_and_missing_preference_requires_setup() {
+        let config: McpConfig = serde_json::from_str(site_select_setup_json()).unwrap();
+        let server = config.mcp_servers.get("acme").unwrap();
+        let setup = server.setup.as_ref().unwrap();
+        assert_eq!(setup.fields[0].id, "site");
+        assert_eq!(setup.fields[0].default.as_deref(), Some("us1"));
+        assert!(setup.variables.contains_key("url"));
+        assert!(matches!(
+            server.resolve_setup(None),
+            McpSetupResolution::Required(_)
+        ));
+        assert!(server.to_acp_mcp_server("acme").is_none());
+    }
+
+    #[test]
+    fn mcp_setup_valid_preference_resolves_mapped_url() {
+        let config: McpConfig = serde_json::from_str(site_select_setup_json()).unwrap();
+        let server = config.mcp_servers.get("acme").unwrap();
+        let prefs = McpServerPreferences {
+            values: HashMap::from([("site".to_string(), "us5".to_string())]),
+            source: None,
+            updated_at: None,
+        };
+        let resolved = match server.resolve_setup(Some(&prefs)) {
+            McpSetupResolution::Resolved(config) => config,
+            other => panic!("expected resolved config, got {other:?}"),
+        };
+        assert!(resolved.setup.is_none());
+        assert!(resolved.to_acp_mcp_server("acme").is_some());
+        match &resolved.transport {
+            McpServerTransportConfig::StreamableHttp { url, .. } => {
+                assert_eq!(url, "https://mcp.us5.example.com/v1/mcp");
+            }
+            _ => panic!("expected http config"),
+        }
+    }
+
+    #[test]
+    fn mcp_setup_invalid_preference_value_requires_setup() {
+        let setup = McpSetupConfig {
+            fields: vec![McpSetupField {
+                id: "site".into(),
+                label: "Site".into(),
+                field_type: McpSetupFieldType::Select,
+                required: true,
+                default: Some("us1".into()),
+                options: vec![McpSetupOption {
+                    label: "US1".into(),
+                    value: "us1".into(),
+                }],
+            }],
+            variables: HashMap::new(),
+        };
+        let config = McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "{{url}}".into(),
+                transport_type: None,
+                bearer_token_env_var: None,
+                headers: None,
+                oauth_client_id: None,
+                oauth_client_secret_env_var: None,
+                oauth_scopes: None,
+            },
+            enabled: true,
+            oauth: None,
+            setup: Some(setup),
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            tool_timeouts: None,
+            expose_image_base64: None,
+        };
+        let prefs = McpServerPreferences {
+            values: HashMap::from([("site".to_string(), "us5".to_string())]),
+            source: None,
+            updated_at: None,
+        };
+        assert!(matches!(
+            config.resolve_setup(Some(&prefs)),
+            McpSetupResolution::Required(_)
+        ));
+    }
+
+    #[test]
+    fn mcp_setup_multi_field_schema_is_invalid() {
+        let setup = McpSetupConfig {
+            fields: vec![
+                McpSetupField {
+                    id: "a".into(),
+                    label: "A".into(),
+                    field_type: McpSetupFieldType::Select,
+                    required: true,
+                    default: None,
+                    options: vec![McpSetupOption {
+                        label: "1".into(),
+                        value: "1".into(),
+                    }],
+                },
+                McpSetupField {
+                    id: "b".into(),
+                    label: "B".into(),
+                    field_type: McpSetupFieldType::Select,
+                    required: true,
+                    default: None,
+                    options: vec![McpSetupOption {
+                        label: "2".into(),
+                        value: "2".into(),
+                    }],
+                },
+            ],
+            variables: HashMap::new(),
+        };
+        let config = McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com".into(),
+                transport_type: None,
+                bearer_token_env_var: None,
+                headers: None,
+                oauth_client_id: None,
+                oauth_client_secret_env_var: None,
+                oauth_scopes: None,
+            },
+            enabled: true,
+            oauth: None,
+            setup: Some(setup),
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            tool_timeouts: None,
+            expose_image_base64: None,
+        };
+        assert!(matches!(
+            config.resolve_setup(None),
+            McpSetupResolution::Invalid(_)
+        ));
+        assert!(config.to_acp_mcp_server("x").is_none());
+    }
 }

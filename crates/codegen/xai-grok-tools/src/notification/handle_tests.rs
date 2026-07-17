@@ -1,0 +1,117 @@
+use super::*;
+
+fn removed(task_id: &str) -> ScheduledTaskRemoved {
+    ScheduledTaskRemoved {
+        task_id: task_id.into(),
+    }
+}
+
+fn created(task_id: &str) -> ScheduledTaskCreated {
+    ScheduledTaskCreated {
+        task_id: task_id.into(),
+        prompt: task_id.into(),
+        human_schedule: "every 5 minutes".into(),
+        next_fire_at: None,
+    }
+}
+
+fn task_id(notification: &ToolNotification) -> &str {
+    match notification {
+        ToolNotification::ScheduledTaskCreated(value) => &value.task_id,
+        ToolNotification::ScheduledTaskRemoved(value) => &value.task_id,
+        other => panic!("unexpected notification: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn acknowledged_removal_stays_in_fifo() {
+    let (handle, mut receiver) = ToolNotificationHandle::acknowledged_channel();
+    handle.send_scheduled_task_created(created("before"));
+    let batch = handle.send_scheduled_task_removed_acknowledged(removed("deleted"));
+    handle.send_scheduled_task_created(created("after"));
+
+    let first = receiver.recv().await.unwrap();
+    assert_eq!(task_id(&first.notification), "before");
+    assert!(first.acknowledgement.is_none());
+    let second = receiver.recv().await.unwrap();
+    assert_eq!(task_id(&second.notification), "deleted");
+    second.acknowledgement.unwrap().send(Ok(())).unwrap();
+    let third = receiver.recv().await.unwrap();
+    assert_eq!(task_id(&third.notification), "after");
+    assert!(third.acknowledgement.is_none());
+
+    assert_eq!(batch.durable_targets(), DurableNotificationTargets::Present);
+    batch.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn mixed_fanout_attempts_every_target_before_reporting_closed_dispatch() {
+    let (closed, closed_rx) = ToolNotificationHandle::acknowledged_channel();
+    drop(closed_rx);
+    let (plain, mut plain_rx) = ToolNotificationHandle::channel();
+    let (durable, mut durable_rx) = ToolNotificationHandle::acknowledged_channel();
+    let handle = ToolNotificationHandle::tee(vec![closed, plain, durable]);
+
+    handle.send_scheduled_task_created(created("before"));
+    let batch = handle.send_scheduled_task_removed_acknowledged(removed("deleted"));
+    handle.send_scheduled_task_created(created("after"));
+
+    assert_eq!(task_id(&plain_rx.recv().await.unwrap()), "before");
+    assert_eq!(task_id(&plain_rx.recv().await.unwrap()), "deleted");
+    assert_eq!(task_id(&plain_rx.recv().await.unwrap()), "after");
+    let durable_before = durable_rx.recv().await.unwrap();
+    assert_eq!(task_id(&durable_before.notification), "before");
+    let durable_removed = durable_rx.recv().await.unwrap();
+    assert_eq!(task_id(&durable_removed.notification), "deleted");
+    durable_removed
+        .acknowledgement
+        .unwrap()
+        .send(Ok(()))
+        .unwrap();
+    let durable_after = durable_rx.recv().await.unwrap();
+    assert_eq!(task_id(&durable_after.notification), "after");
+
+    assert_eq!(
+        batch.wait().await,
+        Err(NotificationAcknowledgementError::DispatchClosed(1))
+    );
+}
+
+#[tokio::test]
+async fn batch_distinguishes_dropped_and_rejected_acknowledgements() {
+    let (dropped, mut dropped_rx) = ToolNotificationHandle::acknowledged_channel();
+    let (rejected, mut rejected_rx) = ToolNotificationHandle::acknowledged_channel();
+    let handle = ToolNotificationHandle::tee(vec![dropped, rejected]);
+    let batch = handle.send_scheduled_task_removed_acknowledged(removed("deleted"));
+
+    drop(dropped_rx.recv().await.unwrap().acknowledgement);
+    rejected_rx
+        .recv()
+        .await
+        .unwrap()
+        .acknowledgement
+        .unwrap()
+        .send(Err("rejected".into()))
+        .unwrap();
+
+    assert_eq!(
+        batch.wait().await,
+        Err(NotificationAcknowledgementError::Multiple {
+            dispatch_closed: 0,
+            acknowledgements_dropped: 1,
+            consumer_rejections: vec!["rejected".into()],
+        })
+    );
+}
+
+#[tokio::test]
+async fn plain_and_noop_batches_make_zero_durable_targets_explicit() {
+    for handle in [
+        ToolNotificationHandle::channel().0,
+        ToolNotificationHandle::noop(),
+    ] {
+        let batch = handle.send_scheduled_task_removed_acknowledged(removed("deleted"));
+        assert_eq!(batch.durable_targets(), DurableNotificationTargets::None);
+        batch.wait().await.unwrap();
+    }
+}

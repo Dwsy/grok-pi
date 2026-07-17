@@ -643,11 +643,11 @@ impl AgentView {
                         modifiers: mouse.modifiers,
                     };
                     let _ = self.prompt.handle_mouse(&event);
-                } else if let Some((scroll_top, scroll_bottom)) = self.question_scroll_region {
-                    if mouse.row >= scroll_top && mouse.row < scroll_bottom {
-                        self.apply_question_scroll(delta);
-                    }
-                } else {
+                } else if let Some((scroll_top, scroll_bottom)) = self.question_scroll_region
+                    && mouse.row >= scroll_top
+                    && mouse.row < scroll_bottom
+                {
+                    self.apply_question_scroll(delta);
                 }
                 InputOutcome::Changed
             }

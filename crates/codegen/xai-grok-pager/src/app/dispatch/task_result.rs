@@ -1,6 +1,7 @@
 //! Async task-result application: routes task results into state.
 use super::auth::{
     ensure_login_method, handle_auth_complete, handle_auth_url_ready, handle_mcp_auth_trigger_done,
+    handle_mcp_setup_submit_done,
 };
 use super::billing::{
     PAYWALL_AUTO_CHECK_TIMEOUT, apply_auto_topup, handle_billing_fetched,
@@ -577,6 +578,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             mode,
         } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
         TaskResult::AuthCodeSubmitted { .. } => vec![],
+        TaskResult::AuthCancelComplete => vec![],
         TaskResult::McpsListLoaded { agent_id, result } => {
             use crate::views::extensions_modal::TabDataState;
             if let Some(agent) = app.agents.get_mut(&agent_id)
@@ -596,6 +598,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             server_name,
             result,
         } => handle_mcp_auth_trigger_done(app, agent_id, server_name, result),
+        TaskResult::McpSetupSubmitDone {
+            agent_id,
+            server_name,
+            result,
+        } => handle_mcp_setup_submit_done(app, agent_id, server_name, result),
         TaskResult::HooksListLoaded { agent_id, result } => {
             handle_hooks_list_loaded(app, agent_id, result)
         }

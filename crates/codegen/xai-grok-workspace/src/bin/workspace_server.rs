@@ -45,10 +45,10 @@ struct Args {
     /// Propagated to `ServerInfo.metadata` in `servers.list` responses.
     #[arg(long)]
     metadata: Option<String>,
-    /// Path to write a PID file once the server connection is established.
-    /// The sandbox service polls this file to determine readiness.
-    #[arg(long, default_value = daemonize::DEFAULT_READY_PATH)]
-    ready_file: PathBuf,
+    /// Deprecated no-op, accepted for one release so existing callers don't
+    /// trip clap: nothing writes or reads this path.
+    #[arg(long, hide = true)]
+    ready_file: Option<PathBuf>,
     /// Unix-socket path for the in-guest diagnostics HTTP server
     /// (`/ready`, `/statusz`).
     #[cfg(unix)]
@@ -78,9 +78,7 @@ struct Args {
     )]
     upload_queue_enabled: bool,
     /// Fail `session.bind`s without an explicit toolset closed (RPC-only)
-    /// instead of widening to the built-in default catalog. Passed by the
-    /// sandbox service; doubles as a version tripwire (a stale revived binary
-    /// rejects the argv and never reports ready).
+    /// instead of widening to the built-in default catalog.
     #[arg(long)]
     require_explicit_toolset: bool,
     /// Confine `x.ai/fs/*` resolution to the workspace root (reject `..`,
@@ -189,7 +187,6 @@ fn main() -> anyhow::Result<()> {
         let anchor = |p: PathBuf| if p.is_absolute() { p } else { cwd.join(p) };
         args.log_file = anchor(std::mem::take(&mut args.log_file));
         args.pid_file = anchor(std::mem::take(&mut args.pid_file));
-        args.ready_file = anchor(std::mem::take(&mut args.ready_file));
         #[cfg(unix)]
         {
             args.diag_socket = anchor(std::mem::take(&mut args.diag_socket));
@@ -279,7 +276,8 @@ async fn run(args: Args, cwd: PathBuf) -> anyhow::Result<()> {
                 "Workspace server sandbox NOT active"
             };
             tracing::info!(
-                profile = % profile_name, active, restrict_network =
+                profile = % profile_name, active,
+                restrict_network_at_known_linux_launches =
                 xai_grok_sandbox::should_restrict_child_network(), "{status_msg}"
             );
         }
@@ -354,7 +352,6 @@ async fn run(args: Args, cwd: PathBuf) -> anyhow::Result<()> {
         status_config,
         args.upload_queue_enabled,
         project_lsp_trusted,
-        Some(args.ready_file.clone()),
         Some(diag_handle.clone()),
         args.require_explicit_toolset,
         args.confine_fs_to_workspace_root,
@@ -413,7 +410,6 @@ async fn run(args: Args, cwd: PathBuf) -> anyhow::Result<()> {
     if let Some((tx, _)) = &preview_shutdown {
         let _ = tx.send(true);
     }
-    let _ = std::fs::remove_file(&args.ready_file);
     diag_handle.set_shutting_down();
     tracing::info!("Received shutdown signal, draining...");
     let tracker = ws_handle.activity_tracker().clone();
@@ -482,10 +478,13 @@ mod tests {
             args.pid_file,
             PathBuf::from(daemonize::DEFAULT_PIDFILE_PATH)
         );
-        assert_eq!(
-            args.ready_file,
-            PathBuf::from(daemonize::DEFAULT_READY_PATH)
-        );
+        assert_eq!(args.ready_file, None);
+    }
+    #[test]
+    fn ready_file_is_accepted_as_a_deprecated_no_op() {
+        let args =
+            Args::try_parse_from(["xai-workspace-server", "--ready-file", "/tmp/x.ready"]).unwrap();
+        assert_eq!(args.ready_file, Some(PathBuf::from("/tmp/x.ready")));
     }
     #[test]
     fn invalid_server_id_produces_the_marker_line() {

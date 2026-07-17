@@ -817,12 +817,12 @@ impl StorageMode {
 pub use xai_grok_config::ConfigLayers;
 pub use xai_grok_config::{
     MDM_REQUIREMENTS_SOURCE, RequirementsLayer, RequirementsSource, ServingIdentity, SyncMarker,
-    claude_managed_settings_probe_path, fail_closed_flag_from_str,
+    claude_managed_settings_probe_path, confirmed_team_switch, confirmed_team_switch_at,
     is_managed_config_hard_stale_for, is_managed_config_stale_for, load_config_file,
     load_from_disk, load_managed_config, load_merged_requirements, load_system_managed_config,
-    load_toml_file, managed_config_identity_changed, managed_deployment_id,
-    managed_policy_compromised_for, mark_managed_config_synced, requirements_layers,
-    system_config_dir, user_grok_home,
+    load_toml_file, managed_config_identity_changed_at, managed_deployment_id,
+    managed_policy_compromised_for, mark_managed_config_synced, mark_managed_config_synced_at,
+    normalize_identity, requirements_layers, system_config_dir, user_grok_home,
 };
 /// Map of "dotted.path" to which config file the value came from.
 pub fn config_origins(

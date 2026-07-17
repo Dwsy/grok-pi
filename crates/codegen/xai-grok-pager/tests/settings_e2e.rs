@@ -71,6 +71,7 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "contextual_hints.send_now",
     "contextual_hints.small_screen",
     "contextual_hints.word_select",
+    "contextual_hints.ssh_wrap",
 ];
 
 #[test]
@@ -1568,6 +1569,7 @@ fn registry_kind_membership_through_pr_14() {
             "contextual_hints.send_now",
             "contextual_hints.small_screen",
             "contextual_hints.word_select",
+            "contextual_hints.ssh_wrap",
         ]
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>()
@@ -1733,6 +1735,7 @@ fn defaults_round_trip_through_registry() {
             "contextual_hints.send_now" => SettingValue::Bool(true),
             "contextual_hints.small_screen" => SettingValue::Bool(true),
             "contextual_hints.word_select" => SettingValue::Bool(true),
+            "contextual_hints.ssh_wrap" => SettingValue::Bool(true),
             other => panic!("test must list expected default for `{other}`"),
         }
     };

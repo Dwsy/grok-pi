@@ -233,19 +233,19 @@ impl ReadToolCallBlock {
     ///
     /// Spans: `["Read ", path, optional_range_suffix, optional_extra_suffix]`
     /// or `["Skill ", skill_name]`. Prefix/suffixes excluded (no `selection_text`
-    /// override). Sets absolute `file://` `link_url` for non-skill paths.
+    /// override). Attaches a semantic filesystem target for non-skill paths.
     fn header_block_line(&self, line: Line<'static>, cwd: Option<&std::path::Path>) -> BlockLine {
         let path_end = 2.min(line.spans.len()).max(1);
-        let link_url = if self.skill_name().is_some() {
+        let link_target = if self.skill_name().is_some() {
             None
         } else {
-            crate::render::osc8::tool_path_file_url(&self.path, cwd)
+            crate::render::osc8::tool_path_file_target(&self.path, cwd)
         };
         BlockLine {
             selectable: Selectable::Spans(1..path_end),
             selection_range: Some(TOOL_HEADER_RANGE),
             content: line,
-            link_url,
+            link_target,
             ..Default::default()
         }
     }
@@ -615,16 +615,31 @@ mod tests {
     }
 
     #[test]
-    fn header_link_url_is_absolute_for_collapsed_and_expanded() {
+    fn header_link_target_is_absolute_file_for_collapsed_and_expanded() {
         let abs = "/Users/me/project/src/main.rs";
         let block = ReadToolCallBlock::new(abs);
         let mut ctx = make_ctx();
         ctx.cwd = Some(std::path::PathBuf::from("/Users/me/project"));
 
         let collapsed = block.output(&ctx);
-        let url = collapsed.lines[0].link_url.as_ref().expect("link_url");
-        assert!(url.starts_with("file://"), "got {url}");
-        assert!(url.contains("main.rs"), "got {url}");
+        let target = collapsed.lines[0]
+            .link_target
+            .as_ref()
+            .expect("link target");
+        assert_eq!(
+            target,
+            &crate::render::osc8::LinkTarget::File(
+                std::sync::Arc::from(std::path::Path::new(abs),)
+            )
+        );
+        assert_eq!(
+            crate::render::osc8::resolve_link_target(target)
+                .unwrap()
+                .osc8_url
+                .unwrap()
+                .as_ref(),
+            "file:///Users/me/project/src/main.rs"
+        );
         assert_eq!(
             collapsed.lines[0].content.spans[1].content.as_ref(),
             "main.rs"
@@ -636,7 +651,7 @@ mod tests {
             expanded.lines[0].content.spans[1].content.as_ref(),
             "src/main.rs"
         );
-        assert_eq!(expanded.lines[0].link_url.as_deref(), Some(url.as_ref()));
+        assert_eq!(expanded.lines[0].link_target.as_ref(), Some(target));
     }
 
     #[test]

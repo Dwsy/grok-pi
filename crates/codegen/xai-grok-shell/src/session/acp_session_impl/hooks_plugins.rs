@@ -311,6 +311,7 @@ impl SessionActor {
                 match xai_grok_agent::plugins::git_install::install_from_source(
                     &install_source,
                     &registry,
+                    crate::plugin::marketplace_require_sha(),
                 ) {
                     Ok(result) => {
                         let repo = xai_grok_agent::plugins::git_install::build_installed_repo(
@@ -448,7 +449,11 @@ impl SessionActor {
                 let mut messages = Vec::new();
                 let mut any_updated = false;
                 for (key, repo) in &repos_to_update {
-                    match xai_grok_agent::plugins::git_install::update_repo(key, repo) {
+                    match xai_grok_agent::plugins::git_install::update_repo(
+                        key,
+                        repo,
+                        crate::plugin::marketplace_require_sha(),
+                    ) {
                         Ok(status) => {
                             use xai_grok_agent::plugins::git_install::UpdateStatus;
                             match status {

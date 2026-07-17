@@ -23,6 +23,7 @@ pub mod acp_client;
 pub mod counting_server;
 pub mod env;
 pub mod headless;
+mod inference_override;
 #[cfg(unix)]
 pub mod leader;
 pub mod mock_server;
@@ -38,4 +39,5 @@ pub use headless::{
     HeadlessResult, assert_headless_success, assert_no_crashes, run_headless,
     run_headless_with_cmd, stderr_tail,
 };
+pub use inference_override::{InferenceEndpoint, InferenceExpectation, InferenceRequestMatcher};
 pub use mock_server::{MockInferenceServer, MockModelEntry, ScriptedResponse, SseEvent};

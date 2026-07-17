@@ -56,11 +56,17 @@ impl AgentView {
             }
         });
     }
-    /// Return the URL of the currently highlighted link, if any.
-    pub fn highlighted_link_url(&self) -> Option<&str> {
+    /// Return the semantic target of the currently highlighted link, if any.
+    pub fn highlighted_link_target(&self) -> Option<&crate::render::osc8::LinkTarget> {
         self.highlighted_link_idx
             .and_then(|idx| self.visible_link_map.links().get(idx))
-            .map(|link| &*link.url)
+            .map(|link| &link.target)
+    }
+    /// Return the current OSC 8 URL for the highlighted link preview.
+    pub fn highlighted_link_url(&self) -> Option<std::sync::Arc<str>> {
+        self.highlighted_link_target()
+            .and_then(crate::render::osc8::resolve_link_target)
+            .and_then(|resolved| resolved.osc8_url)
     }
     /// True when `(x, y)` lies inside an overlay drawn over the scrollback this
     /// frame (dropdown, goal detail). Such positions belong to the overlay, not
@@ -275,16 +281,32 @@ mod link_click_tests {
         agent.active_pane = AgentPane::Scrollback;
     }
     /// Add a link to the visible_link_map covering (col_start..col_end, row).
-    fn add_visible_link(agent: &mut AgentView, row: u16, col_start: u16, col_end: u16, url: &str) {
+    fn add_visible_target(
+        agent: &mut AgentView,
+        row: u16,
+        col_start: u16,
+        col_end: u16,
+        target: crate::render::osc8::LinkTarget,
+    ) {
         let mut overlay = LinkOverlay::new();
         overlay.push(OverlayLink {
             screen_row: row,
             col_start,
             col_end,
-            url: Arc::from(url),
+            target,
+            presentation: crate::render::osc8::LinkPresentation::Opaque,
             id: Some(1),
         });
         agent.visible_link_map.rebuild(1, &overlay, vec![]);
+    }
+    fn add_visible_link(agent: &mut AgentView, row: u16, col_start: u16, col_end: u16, url: &str) {
+        add_visible_target(
+            agent,
+            row,
+            col_start,
+            col_end,
+            crate::render::osc8::LinkTarget::Url(Arc::from(url)),
+        );
     }
     fn mouse_down(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
@@ -1032,7 +1054,11 @@ mod link_click_tests {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_drag(16, 5));
         assert!(matches!(
@@ -1042,22 +1068,29 @@ mod link_click_tests {
         assert!(agent.pending_link_click.is_none());
     }
     #[test]
-    fn up_at_same_position_returns_open_url_action() {
+    fn up_at_same_position_returns_open_link_action() {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(15, 5));
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://example.com");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://example.com".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl, got {other:?}"),
+            other => panic!("expected Action::OpenLink, got {other:?}"),
         }
     }
-    /// A modifier+click on a `file://` link dispatches `OpenUrl` (Ctrl on
-    /// Linux/Windows; macOS polls CoreGraphics so the Down step isn't
+    /// A modifier+click preserves a filesystem target through app activation
+    /// (Ctrl on Linux/Windows; macOS polls CoreGraphics so the Down step isn't
     /// reproducible in a unit test).
     #[test]
     #[cfg(not(target_os = "macos"))]
@@ -1065,21 +1098,41 @@ mod link_click_tests {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        add_visible_link(&mut agent, 5, 10, 30, "file:///tmp/session/images/1.png");
+        add_visible_target(
+            &mut agent,
+            5,
+            10,
+            30,
+            crate::render::osc8::LinkTarget::File(Arc::from(std::path::Path::new(
+                "/tmp/session/images/1.png",
+            ))),
+        );
         let mut down = mouse_down(15, 5);
         down.modifiers = crossterm::event::KeyModifiers::CONTROL;
         assert!(matches!(agent.handle_mouse(&down), InputOutcome::Changed));
         match agent.handle_mouse(&mouse_up(15, 5)) {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "file:///tmp/session/images/1.png");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::File(Arc::from(std::path::Path::new(
+                        "/tmp/session/images/1.png",
+                    )))
+                );
             }
-            other => panic!("expected Action::OpenUrl(file://…), got {other:?}"),
+            other => panic!("expected Action::OpenLink(file), got {other:?}"),
         }
     }
     fn test_link(url: &str, painted_w: u16) -> crate::scrollback::VisibleLink {
         crate::scrollback::VisibleLink {
             rects: vec![Rect::new(0, 0, painted_w, 1)],
-            url: std::sync::Arc::from(url),
+            target: crate::render::osc8::LinkTarget::Url(std::sync::Arc::from(url)),
+            id: None,
+        }
+    }
+    fn test_file_link(path: &std::path::Path, painted_w: u16) -> crate::scrollback::VisibleLink {
+        crate::scrollback::VisibleLink {
+            rects: vec![Rect::new(0, 0, painted_w, 1)],
+            target: crate::render::osc8::LinkTarget::File(Arc::from(path)),
             id: None,
         }
     }
@@ -1115,13 +1168,14 @@ mod link_click_tests {
             true,
             &test_link(bare, bare_w.saturating_add(40))
         ));
+        let file_path = std::path::Path::new("/tmp/session/images/1.png");
         assert!(app_should_open_link_on_click_with(
             true,
-            &test_link(file, file_w)
+            &test_file_link(file_path, file_w)
         ));
         assert!(app_should_open_link_on_click_with(
             true,
-            &test_link(file, 8)
+            &test_file_link(file_path, 8)
         ));
     }
     /// Regression: while the plan preview (line viewer) is open and the
@@ -1192,10 +1246,17 @@ mod link_click_tests {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(16, 5));
-        assert!(!matches!(outcome, InputOutcome::Action(Action::OpenUrl(_))));
+        assert!(!matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenLink(_))
+        ));
         assert!(agent.pending_link_click.is_none());
     }
     #[test]
@@ -1204,7 +1265,11 @@ mod link_click_tests {
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
         add_visible_link(&mut agent, 5, 10, 30, "https://example.com");
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         let outcome = agent.handle_mouse(&mouse_down(5, 3));
         assert!(matches!(outcome, InputOutcome::Changed));
         assert!(agent.pending_link_click.is_none());
@@ -1214,7 +1279,11 @@ mod link_click_tests {
         let mut agent = make_agent();
         let area = Rect::new(0, 0, 80, 24);
         setup_scrollback_area(&mut agent, area);
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         agent.pending_text_drag = Some(PendingTextDrag {
             start_col: 15,
@@ -1238,14 +1307,21 @@ mod link_click_tests {
         let mut agent = make_agent();
         setup_scrollback_area(&mut agent, Rect::new(0, 0, 80, 20));
         agent.active_pane = AgentPane::Prompt;
-        agent.pending_link_click = Some((15, 5, "https://example.com".into()));
+        agent.pending_link_click = Some((
+            15,
+            5,
+            crate::render::osc8::LinkTarget::Url("https://example.com".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(15, 5));
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://example.com");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://example.com".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl, got {other:?}"),
+            other => panic!("expected Action::OpenLink, got {other:?}"),
         }
     }
     /// `/btw` panel links share the pane-agnostic Up path: once Down records
@@ -1258,14 +1334,21 @@ mod link_click_tests {
         agent.active_pane = AgentPane::Prompt;
         agent.btw_focused = true;
         add_visible_link(&mut agent, 20, 4, 40, "https://example.com/btw");
-        agent.pending_link_click = Some((10, 20, "https://example.com/btw".into()));
+        agent.pending_link_click = Some((
+            10,
+            20,
+            crate::render::osc8::LinkTarget::Url("https://example.com/btw".into()),
+        ));
         agent.left_mouse_down = true;
         let outcome = agent.handle_mouse(&mouse_up(10, 20));
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://example.com/btw");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://example.com/btw".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl for btw link, got {other:?}"),
+            other => panic!("expected Action::OpenLink for btw link, got {other:?}"),
         }
     }
     /// On mouse-fallback terminals, Down on a `/btw` link with the link
@@ -1292,11 +1375,12 @@ mod link_click_tests {
             let outcome = agent.handle_mouse(&down);
             assert!(matches!(outcome, InputOutcome::Changed));
             assert_eq!(
-                agent
-                    .pending_link_click
-                    .as_ref()
-                    .map(|(c, r, u)| (*c, *r, u.as_str())),
-                Some((10, 20, "https://example.com/btw"))
+                agent.pending_link_click.as_ref(),
+                Some(&(
+                    10,
+                    20,
+                    crate::render::osc8::LinkTarget::Url("https://example.com/btw".into())
+                ))
             );
         }
     }
@@ -1311,7 +1395,10 @@ mod link_click_tests {
                     screen_row: 20,
                     col_start: 4,
                     col_end: 40,
-                    url: Arc::from("https://example.com/btw"),
+                    target: crate::render::osc8::LinkTarget::Url(Arc::from(
+                        "https://example.com/btw",
+                    )),
+                    presentation: crate::render::osc8::LinkPresentation::Opaque,
                     id: Some(1),
                 });
                 o
@@ -1362,7 +1449,8 @@ mod link_click_tests {
                 screen_row: i as u16,
                 col_start: 0,
                 col_end: 10,
-                url: Arc::from(*url),
+                target: crate::render::osc8::LinkTarget::Url(Arc::from(*url)),
+                presentation: crate::render::osc8::LinkPresentation::Opaque,
                 id: Some(i as u32),
             });
         }
@@ -1374,7 +1462,10 @@ mod link_click_tests {
         add_multiple_links(&mut agent);
         agent.cycle_highlighted_link(true);
         assert_eq!(agent.highlighted_link_idx, Some(0));
-        assert_eq!(agent.highlighted_link_url(), Some("https://a.com"));
+        assert_eq!(
+            agent.highlighted_link_url().as_deref(),
+            Some("https://a.com")
+        );
     }
     #[test]
     fn cycle_backward_from_none_selects_last() {
@@ -1382,7 +1473,10 @@ mod link_click_tests {
         add_multiple_links(&mut agent);
         agent.cycle_highlighted_link(false);
         assert_eq!(agent.highlighted_link_idx, Some(2));
-        assert_eq!(agent.highlighted_link_url(), Some("https://c.com"));
+        assert_eq!(
+            agent.highlighted_link_url().as_deref(),
+            Some("https://c.com")
+        );
     }
     #[test]
     fn cycle_forward_wraps_around() {
@@ -1417,10 +1511,13 @@ mod link_click_tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let outcome = agent.handle_scrollback_key(&enter, &registry);
         match outcome {
-            InputOutcome::Action(Action::OpenUrl(url)) => {
-                assert_eq!(url, "https://b.com");
+            InputOutcome::Action(Action::OpenLink(target)) => {
+                assert_eq!(
+                    target,
+                    crate::render::osc8::LinkTarget::Url("https://b.com".into())
+                );
             }
-            other => panic!("expected Action::OpenUrl, got {other:?}"),
+            other => panic!("expected Action::OpenLink, got {other:?}"),
         }
         assert_eq!(agent.highlighted_link_idx, None);
     }
@@ -1433,7 +1530,10 @@ mod link_click_tests {
         let registry = ActionRegistry::defaults();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let outcome = agent.handle_scrollback_key(&enter, &registry);
-        assert!(!matches!(outcome, InputOutcome::Action(Action::OpenUrl(_))));
+        assert!(!matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenLink(_))
+        ));
     }
     /// Enter with a previous user prompt selected enters inline edit mode
     /// (edit-and-resubmit) instead of falling through to OpenBlockViewer.
@@ -1603,7 +1703,7 @@ mod link_click_tests {
         let mut agent = make_agent();
         add_multiple_links(&mut agent);
         agent.highlighted_link_idx = Some(99);
-        assert_eq!(agent.highlighted_link_url(), None);
+        assert!(agent.highlighted_link_url().is_none());
     }
     fn make_search_agent() -> (AgentView, ActionRegistry) {
         use crate::scrollback::block::RenderBlock;

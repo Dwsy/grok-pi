@@ -17,14 +17,31 @@ fn format_acp_error_reads_detail_from_wrapped_data() {
     assert_eq!(format_acp_error(& wrapped, false), "model does not support tools");
 }
 #[test]
-fn format_acp_error_rate_limit_is_auth_aware() {
+fn format_acp_error_rate_limit_surfaces_detail_or_fallback() {
     use xai_grok_shell::sampling::error::{
-        RATE_LIMITED_ERROR_CODE, RATE_LIMITED_USER_MESSAGE_API_KEY,
-        RATE_LIMITED_USER_MESSAGE_OAUTH,
+        FREE_USAGE_USER_MESSAGE, RATE_LIMITED_ERROR_CODE,
+        RATE_LIMITED_USER_MESSAGE_API_KEY, RATE_LIMITED_USER_MESSAGE_OAUTH,
     };
-    let err = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited").data("slow down");
-    assert_eq!(format_acp_error(& err, false), RATE_LIMITED_USER_MESSAGE_OAUTH);
-    assert_eq!(format_acp_error(& err, true), RATE_LIMITED_USER_MESSAGE_API_KEY);
+    let capacity = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited")
+        .data(
+            "The service is temporarily at capacity. Please retry your request shortly.",
+        );
+    let cap = "The service is temporarily at capacity. Please retry your request shortly.";
+    assert_eq!(format_acp_error(& capacity, false), cap);
+    assert_eq!(format_acp_error(& capacity, true), cap);
+    let rpm = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited")
+        .data(
+            "You are sending requests too quickly. Please slow down, or upgrade to a Grok subscription for higher limits: https://grok.com/supergrok",
+        );
+    assert!(format_acp_error(& rpm, false).contains("grok.com/supergrok"));
+    assert_eq!(format_acp_error(& rpm, true), RATE_LIMITED_USER_MESSAGE_API_KEY);
+    let empty = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited");
+    assert_eq!(format_acp_error(& empty, false), RATE_LIMITED_USER_MESSAGE_OAUTH);
+    assert_eq!(format_acp_error(& empty, true), RATE_LIMITED_USER_MESSAGE_API_KEY);
+    let free = acp::Error::new(RATE_LIMITED_ERROR_CODE, "Rate limited")
+        .data("subscription:free-usage-exhausted: You have used all your free usage.");
+    assert_eq!(format_acp_error(& free, false), FREE_USAGE_USER_MESSAGE);
+    assert_eq!(format_acp_error(& free, true), FREE_USAGE_USER_MESSAGE);
 }
 /// Non-empty token ranges ride the wire block meta as `skillTokenRanges`
 /// byte pairs; the text itself is untouched.

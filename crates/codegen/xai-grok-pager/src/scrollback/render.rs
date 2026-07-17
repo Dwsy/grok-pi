@@ -629,9 +629,8 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
                 }
             });
 
-            // Tool-header link_url overlays before plain-text scan (basename/relative
-            // paint still needs absolute file://). Hit box = selectable path span
-            // (respects bullet prepend + Selectable shift).
+            // Basename/relative tool headers need the stored absolute target.
+            // Hit box = selectable path span (respects bullet prepend + Selectable shift).
             {
                 for (idx, bl) in cached_output.lines.iter().enumerate().skip(content_skip) {
                     let visible_offset = (idx - content_skip) as u16;
@@ -639,7 +638,7 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
                     if screen_row >= max_y {
                         break;
                     }
-                    let Some(url) = bl.link_url.as_ref() else {
+                    let Some(target) = bl.link_target.as_ref() else {
                         continue;
                     };
                     let Some(cols) = selectable_cols_usize(&bl.content, &bl.selectable) else {
@@ -664,11 +663,18 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
                     if result.link_overlay.overlaps(screen_row, col_start, col_end) {
                         continue;
                     }
+                    let painted = derive_selection_text(bl);
+                    let fully_visible = cols.end <= visible_width;
                     result.link_overlay.push(OverlayLink {
                         screen_row,
                         col_start,
                         col_end,
-                        url: Arc::clone(url),
+                        target: target.clone(),
+                        presentation: if fully_visible {
+                            crate::render::osc8::file_link_presentation(&painted, target, cwd)
+                        } else {
+                            crate::render::osc8::LinkPresentation::Opaque
+                        },
                         id: None,
                     });
                 }
@@ -683,7 +689,7 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
                     .iter()
                     .enumerate()
                     .skip(content_skip)
-                    .filter(|(_, bl)| bl.link_url.is_none())
+                    .filter(|(_, bl)| bl.link_target.is_none())
                     .map(|(idx, bl)| {
                         let visible_offset = (idx - content_skip) as u16;
                         let screen_row = first_visible_content_y + visible_offset;
@@ -942,18 +948,16 @@ pub(crate) fn map_hyperlinks_to_overlay(
 
     // Map each hyperlink to screen-space OverlayLinks. Unsafe schemes
     // (javascript:, data:, …) are dropped since OSC 8 URLs reach the terminal
-    // without the link_opener scheme filter. A non-web destination may still be
-    // a local file the model linked (`[videos/1.mp4](videos/1.mp4)`): resolve it
-    // to a `file://` URL (relative paths matched against this transcript's
-    // generated media) so it opens like an absolute path.
+    // without the link_opener scheme filter. Local-file destinations such as
+    // `[videos/1.mp4](videos/1.mp4)` resolve against generated media.
     let scheme_filter = crate::terminal::hyperlinks::SchemeFilter::Standard;
     for h in hyperlinks {
-        let url: Arc<str> = if crate::app::link_opener::is_safe_to_open(&h.url, scheme_filter) {
-            Arc::from(h.url.as_str())
-        } else if let Some(file_url) =
-            crate::render::osc8::local_link_to_file_url(&h.url, media_paths)
+        let target = if crate::app::link_opener::is_safe_to_open(&h.url, scheme_filter) {
+            crate::render::osc8::LinkTarget::Url(Arc::from(h.url.as_str()))
+        } else if let Some(file_target) =
+            crate::render::osc8::local_link_to_file_target(&h.url, media_paths)
         {
-            file_url
+            file_target
         } else {
             continue;
         };
@@ -987,7 +991,8 @@ pub(crate) fn map_hyperlinks_to_overlay(
                 screen_row,
                 col_start: content_x + local_col_start,
                 col_end: content_x + local_col_end,
-                url: Arc::clone(&url),
+                target: target.clone(),
+                presentation: crate::render::osc8::LinkPresentation::Opaque,
                 id: Some(h.id),
             });
         }
@@ -998,6 +1003,9 @@ pub(crate) fn map_hyperlinks_to_overlay(
 mod tests {
     use super::*;
     use crate::appearance::AppearanceConfig;
+    use crate::render::osc8::{
+        LinkPresentation, resolve_link_target, resolve_link_target_for_context,
+    };
     use crate::scrollback::RenderBlock;
     use crate::scrollback::block::BlockContent;
     use crate::scrollback::types::DisplayMode;
@@ -1071,13 +1079,38 @@ mod tests {
         scroll_offset: usize,
         selected_idx: Option<usize>,
     ) -> ScrollRenderResult {
+        render_with_scratch_and_buffer(entries, viewport, scroll_offset, selected_idx).0
+    }
+
+    fn render_with_scratch_and_buffer(
+        entries: &[ScrollbackEntry],
+        viewport: Rect,
+        scroll_offset: usize,
+        selected_idx: Option<usize>,
+    ) -> (ScrollRenderResult, Buffer) {
+        render_with_scratch_and_buffer_with_cwd(
+            entries,
+            viewport,
+            scroll_offset,
+            selected_idx,
+            None,
+        )
+    }
+
+    fn render_with_scratch_and_buffer_with_cwd(
+        entries: &[ScrollbackEntry],
+        viewport: Rect,
+        scroll_offset: usize,
+        selected_idx: Option<usize>,
+        cwd: Option<&std::path::Path>,
+    ) -> (ScrollRenderResult, Buffer) {
         let theme = Theme::current();
         let appearance = AppearanceConfig::default();
         let layouts = compute_layouts(entries, viewport.width, &appearance);
         let refs: Vec<&ScrollbackEntry> = entries.iter().collect();
         let mut buf = Buffer::empty(viewport);
 
-        render_scrolled_entries_with_scratch(
+        let result = render_scrolled_entries_with_scratch(
             &mut buf,
             viewport,
             &refs,
@@ -1094,8 +1127,9 @@ mod tests {
             0,
             &[],
             None,
-            None,
-        )
+            cwd,
+        );
+        (result, buf)
     }
 
     fn render_with_selection_boundaries(
@@ -2330,7 +2364,12 @@ mod tests {
         assert_eq!(link.screen_row, 10);
         assert_eq!(link.col_start, 4);
         assert_eq!(link.col_end, 9);
-        assert_eq!(&*link.url, "https://a.com");
+        assert_eq!(
+            &*resolve_link_target(&link.target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "https://a.com"
+        );
         assert_eq!(link.id, Some(1));
     }
 
@@ -2374,11 +2413,15 @@ mod tests {
             None,
         );
 
-        let links: Vec<&str> = result
+        let links: Vec<Arc<str>> = result
             .link_overlay
             .links()
             .iter()
-            .map(|l| &*l.url)
+            .map(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url")
+            })
             .collect();
         assert!(
             links
@@ -2409,7 +2452,14 @@ mod tests {
         assert_eq!(overlay.links()[1].screen_row, 1);
         assert_eq!(overlay.links()[1].col_start, 0);
         assert_eq!(overlay.links()[1].col_end, 5);
-        assert_eq!(&*overlay.links()[0].url, &*overlay.links()[1].url);
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            &*resolve_link_target(&overlay.links()[1].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url")
+        );
     }
 
     #[test]
@@ -2425,7 +2475,12 @@ mod tests {
         map_hyperlinks_to_overlay(&links, &output, 2, 0, 10, 0, 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "https://visible.com");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "https://visible.com"
+        );
         assert_eq!(overlay.links()[0].screen_row, 0);
     }
 
@@ -2441,7 +2496,12 @@ mod tests {
         map_hyperlinks_to_overlay(&links, &output, 0, 0, 2, 0, 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "https://visible.com");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "https://visible.com"
+        );
     }
 
     #[test]
@@ -2521,14 +2581,19 @@ mod tests {
             !result.link_overlay.is_empty(),
             "execute block output should have linkified URLs"
         );
-        let urls: Vec<&str> = result
+        let urls: Vec<Arc<str>> = result
             .link_overlay
             .links()
             .iter()
-            .map(|l| &*l.url)
+            .map(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url")
+            })
             .collect();
         assert!(
-            urls.contains(&"https://docs.example.com/api"),
+            urls.iter()
+                .any(|url| url.as_ref() == "https://docs.example.com/api"),
             "expected URL from stdout in overlay, got: {:?}",
             urls,
         );
@@ -2554,7 +2619,11 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .filter(|l| &*l.url == expected_url.as_str())
+            .filter(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.as_ref() == expected_url.as_str())
+            })
             .collect();
         assert!(
             path_links.len() >= 2,
@@ -2563,7 +2632,14 @@ mod tests {
                 .link_overlay
                 .links()
                 .iter()
-                .map(|l| (&*l.url, l.screen_row, l.col_start, l.col_end))
+                .map(|l| (
+                    resolve_link_target(&l.target)
+                        .and_then(|resolved| resolved.osc8_url)
+                        .expect("url"),
+                    l.screen_row,
+                    l.col_start,
+                    l.col_end
+                ))
                 .collect::<Vec<_>>()
         );
         // Regions land on consecutive distinct rows.
@@ -2589,7 +2665,11 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .filter(|l| &*l.url == "https://example.com")
+            .filter(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.as_ref() == "https://example.com")
+            })
             .count();
         assert_eq!(
             url_count, 1,
@@ -2632,11 +2712,15 @@ mod tests {
         let viewport = Rect::new(0, 0, 80, 10);
         let result = render_with_scratch(&entries, viewport, 0, None);
 
-        let urls: Vec<&str> = result
+        let urls: Vec<Arc<str>> = result
             .link_overlay
             .links()
             .iter()
-            .map(|l| &*l.url)
+            .map(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url")
+            })
             .collect();
         assert!(
             urls.iter()
@@ -2720,7 +2804,17 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .map(|l| (l.screen_row, l.col_start, l.col_end, l.url.to_string()))
+            .map(|l| {
+                (
+                    l.screen_row,
+                    l.col_start,
+                    l.col_end,
+                    resolve_link_target(&l.target)
+                        .and_then(|resolved| resolved.osc8_url)
+                        .expect("url")
+                        .to_string(),
+                )
+            })
             .collect();
         assert!(
             links
@@ -2811,7 +2905,15 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .map(|l| (l.screen_row, l.url.to_string()))
+            .map(|l| {
+                (
+                    l.screen_row,
+                    resolve_link_target(&l.target)
+                        .and_then(|resolved| resolved.osc8_url)
+                        .expect("url")
+                        .to_string(),
+                )
+            })
             .collect();
         assert!(
             links
@@ -3072,7 +3174,11 @@ mod tests {
                 .link_overlay
                 .links()
                 .iter()
-                .filter(|l| l.url.contains("a1.rs"))
+                .filter(|l| {
+                    resolve_link_target(&l.target)
+                        .and_then(|resolved| resolved.osc8_url)
+                        .is_some_and(|url| url.contains("a1.rs"))
+                })
                 .map(|l| l.screen_row)
                 .collect::<Vec<_>>()
         };
@@ -3386,18 +3492,24 @@ mod tests {
         let viewport = Rect::new(0, 0, 80, 30);
         let result = render_with_scratch(&entries, viewport, 0, None);
 
-        let urls: Vec<&str> = result
+        let urls: Vec<Arc<str>> = result
             .link_overlay
             .links()
             .iter()
-            .map(|l| &*l.url)
+            .map(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url")
+            })
             .collect();
         assert!(
-            urls.contains(&"https://head.example.com/first"),
+            urls.iter()
+                .any(|url| url.as_ref() == "https://head.example.com/first"),
             "URL in head section should be detected, got: {urls:?}",
         );
         assert!(
-            urls.contains(&"https://tail.example.com/last"),
+            urls.iter()
+                .any(|url| url.as_ref() == "https://tail.example.com/last"),
             "URL in tail section should be detected, got: {urls:?}",
         );
         // The ellipsis separator line should not produce spurious links.
@@ -3411,7 +3523,7 @@ mod tests {
     /// Collapsed Edit header: after bullet prepend the path is span 2, and the
     /// OSC8 overlay must cover path cols only (not the verb or bullet).
     #[test]
-    fn tool_header_link_url_overlay_covers_path_after_bullet() {
+    fn tool_header_link_target_overlay_covers_path_after_bullet() {
         use crate::appearance::ToolBullet;
         use crate::scrollback::types::{BlockContext, selectable_cols};
         use unicode_width::UnicodeWidthStr;
@@ -3443,9 +3555,11 @@ mod tests {
         );
         let path_span = header.content.spans[2].content.as_ref();
         assert_eq!(path_span, "foo.rs");
-        let url = header.link_url.as_ref().expect("link_url on header");
-        assert!(url.starts_with("file://"), "got {url}");
-        assert!(url.contains("foo.rs"), "got {url}");
+        let target = header.link_target.as_ref().expect("link target on header");
+        assert_eq!(
+            target,
+            &crate::render::osc8::LinkTarget::File(Arc::from(std::path::Path::new(abs)))
+        );
 
         let cols = selectable_cols(&header.content, &header.selectable)
             .expect("path span should be selectable");
@@ -3487,7 +3601,11 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .filter(|l| l.url.contains("foo.rs") && l.url.starts_with("file://"))
+            .filter(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.contains("foo.rs") && url.starts_with("file://"))
+            })
             .collect();
         assert_eq!(
             file_links.len(),
@@ -3508,6 +3626,202 @@ mod tests {
         );
     }
 
+    fn official_vscode_remote_context() -> crate::terminal::TerminalContext {
+        crate::terminal::TerminalContext {
+            brand: crate::terminal::TerminalName::VsCode,
+            is_ssh: true,
+            is_official_vscode_remote: true,
+            ..Default::default()
+        }
+    }
+
+    fn file_link_policy(
+        link: &OverlayLink,
+        terminal: &crate::terminal::TerminalContext,
+    ) -> crate::render::osc8::ResolvedLinkTarget {
+        resolve_link_target_for_context(&link.target, link.presentation, terminal)
+            .expect("file target policy")
+    }
+
+    #[test]
+    fn official_vscode_remote_delegates_scanned_absolute_path() {
+        let path = "/worktree/src/main.rs";
+        let entry = make_markdown_entry(path);
+        let viewport = Rect::new(0, 0, 80, 5);
+        let (result, buf) =
+            render_with_scratch_and_buffer(std::slice::from_ref(&entry), viewport, 0, None);
+        let link = result
+            .link_overlay
+            .links()
+            .iter()
+            .find(|link| matches!(&link.target, crate::render::osc8::LinkTarget::File(_)))
+            .expect("scanned file target");
+
+        assert!((0..viewport.height).any(|row| buffer_row_text(&buf, row).contains(path)));
+        assert_eq!(link.presentation, LinkPresentation::SelfResolvingPath);
+        assert_eq!(
+            file_link_policy(link, &official_vscode_remote_context()),
+            crate::render::osc8::ResolvedLinkTarget {
+                osc8_url: None,
+                open_target: None,
+            }
+        );
+    }
+
+    #[test]
+    fn official_vscode_remote_tool_headers_delegate_only_self_resolving_paint() {
+        let cwd = std::path::PathBuf::from("/worktree");
+        let target = "/worktree/src/nested/main.rs";
+        let terminal = official_vscode_remote_context();
+
+        for (name, block) in [
+            ("Read", RenderBlock::read(target, None)),
+            ("Edit", RenderBlock::edit(target, None)),
+        ] {
+            for (mode, width, expected_paint, expected_presentation) in [
+                (
+                    DisplayMode::Collapsed,
+                    80,
+                    "main.rs",
+                    LinkPresentation::Opaque,
+                ),
+                (
+                    DisplayMode::Collapsed,
+                    16,
+                    "\u{2026}",
+                    LinkPresentation::Opaque,
+                ),
+                (
+                    DisplayMode::Expanded,
+                    80,
+                    "src/nested/main.rs",
+                    LinkPresentation::SelfResolvingPath,
+                ),
+            ] {
+                let mut entry = ScrollbackEntry::new(block.clone());
+                entry.display_mode = mode;
+                let viewport = Rect::new(0, 0, width, 8);
+                let (result, buf) = render_with_scratch_and_buffer_with_cwd(
+                    std::slice::from_ref(&entry),
+                    viewport,
+                    0,
+                    None,
+                    Some(&cwd),
+                );
+                let path_links: Vec<_> = result
+                    .link_overlay
+                    .links()
+                    .iter()
+                    .filter(|link| matches!(&link.target, crate::render::osc8::LinkTarget::File(_)))
+                    .collect();
+                let painted_rows = (0..viewport.height)
+                    .map(|row| buffer_row_text(&buf, row).trim_end().to_owned())
+                    .filter(|row| !row.is_empty())
+                    .collect::<Vec<_>>();
+
+                assert!(
+                    painted_rows.iter().any(|row| row.contains(expected_paint)),
+                    "{name} {mode:?} width={width}: {painted_rows:?}"
+                );
+                assert!(!path_links.is_empty(), "{name} {mode:?} width={width}");
+                assert!(
+                    path_links
+                        .iter()
+                        .all(|link| link.presentation == expected_presentation),
+                    "{name} {mode:?} width={width}: {path_links:?}"
+                );
+                let expected_owned = expected_presentation == LinkPresentation::Opaque;
+                assert!(path_links.iter().all(|link| {
+                    assert_eq!(
+                        link.target,
+                        crate::render::osc8::LinkTarget::File(Arc::from(std::path::Path::new(
+                            target
+                        )))
+                    );
+                    let policy = file_link_policy(link, &terminal);
+                    policy.osc8_url.is_some() == expected_owned
+                        && policy.open_target.is_some() == expected_owned
+                }));
+            }
+
+            let mut entry = ScrollbackEntry::new(block);
+            entry.display_mode = DisplayMode::Expanded;
+            let viewport = Rect::new(0, 0, 16, 8);
+            let (result, _) = render_with_scratch_and_buffer_with_cwd(
+                std::slice::from_ref(&entry),
+                viewport,
+                0,
+                None,
+                Some(&cwd),
+            );
+            let path_links: Vec<_> = result
+                .link_overlay
+                .links()
+                .iter()
+                .filter(|link| matches!(&link.target, crate::render::osc8::LinkTarget::File(_)))
+                .collect();
+            assert!(!path_links.is_empty(), "{name} narrow expanded header");
+            assert!(
+                path_links
+                    .iter()
+                    .all(|link| link.presentation == LinkPresentation::Opaque)
+            );
+            assert!(path_links.iter().all(|link| {
+                let policy = file_link_policy(link, &terminal);
+                policy.osc8_url.is_some() && policy.open_target.is_some()
+            }));
+        }
+    }
+
+    #[test]
+    fn basename_headers_stay_grok_owned_for_duplicate_and_outside_targets() {
+        let cwd = std::path::PathBuf::from("/worktree");
+        let terminal = official_vscode_remote_context();
+        let cases = [
+            ("duplicate-a", "/worktree/src/a/main.rs"),
+            ("duplicate-b", "/worktree/src/b/main.rs"),
+            ("outside", "/opt/service/main.rs"),
+        ];
+
+        for (name, target) in cases {
+            for (tool, block) in [
+                ("Read", RenderBlock::read(target, None)),
+                ("Edit", RenderBlock::edit(target, None)),
+            ] {
+                let entry = ScrollbackEntry::new(block);
+                let viewport = Rect::new(0, 0, 80, 5);
+                let (result, buf) = render_with_scratch_and_buffer_with_cwd(
+                    std::slice::from_ref(&entry),
+                    viewport,
+                    0,
+                    None,
+                    Some(&cwd),
+                );
+                let link = result
+                    .link_overlay
+                    .links()
+                    .iter()
+                    .find(|link| matches!(&link.target, crate::render::osc8::LinkTarget::File(_)))
+                    .unwrap_or_else(|| panic!("{tool} {name} file target"));
+
+                let painted = (0..viewport.height)
+                    .map(|row| buffer_row_text(&buf, row).trim_end().to_owned())
+                    .find(|row| row.contains("main.rs"))
+                    .unwrap_or_else(|| panic!("{tool} {name} painted basename"));
+                assert!(!painted.contains('/'), "{tool} {name}: {painted}");
+                assert_eq!(
+                    link.target,
+                    crate::render::osc8::LinkTarget::File(Arc::from(std::path::Path::new(target))),
+                    "{tool} {name} semantic target"
+                );
+                assert_eq!(link.presentation, LinkPresentation::Opaque, "{tool} {name}");
+                let policy = file_link_policy(link, &terminal);
+                assert!(policy.osc8_url.is_some(), "{tool} {name}");
+                assert!(policy.open_target.is_some(), "{tool} {name}");
+            }
+        }
+    }
+
     #[test]
     fn long_read_header_link_is_clipped_to_offset_content_area() {
         let path = "/outside/a/very/long/path/that/is/clipped/main.rs";
@@ -3520,7 +3834,11 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .find(|link| link.url.contains("main.rs"))
+            .find(|link| {
+                resolve_link_target(&link.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.contains("main.rs"))
+            })
             .expect("read header file link");
         let content =
             HorizontalLayout::new(viewport, &AppearanceConfig::default().scrollback.layout).content;
@@ -3540,7 +3858,11 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .find(|link| link.url.ends_with(".rs"))
+            .find(|link| {
+                resolve_link_target(&link.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.ends_with(".rs"))
+            })
             .expect("long Read header file link");
         let content =
             HorizontalLayout::new(viewport, &AppearanceConfig::default().scrollback.layout).content;
@@ -3595,11 +3917,11 @@ mod tests {
 
         let result = render_with_scratch(std::slice::from_ref(&entry), viewport, 0, None);
         assert!(
-            result
-                .link_overlay
-                .links()
-                .iter()
-                .all(|link| !link.url.contains("/outside/long-file-name.rs")),
+            result.link_overlay.links().iter().all(|link| {
+                !resolve_link_target(&link.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.contains("/outside/long-file-name.rs"))
+            }),
             "off-row path cells must not be clickable: {:?}",
             result.link_overlay.links()
         );
@@ -3628,7 +3950,9 @@ mod tests {
         let mut by_id: std::collections::BTreeMap<u32, Vec<&OverlayLink>> =
             std::collections::BTreeMap::new();
         for l in result.link_overlay.links() {
-            if &*l.url == url
+            if resolve_link_target(&l.target)
+                .and_then(|resolved| resolved.osc8_url)
+                .is_some_and(|target| target.as_ref() == url)
                 && let Some(id) = l.id
             {
                 by_id.entry(id).or_default().push(l);
@@ -3641,7 +3965,15 @@ mod tests {
                     .link_overlay
                     .links()
                     .iter()
-                    .map(|l| (l.screen_row, l.col_start, l.col_end, &*l.url, l.id))
+                    .map(|l| (
+                        l.screen_row,
+                        l.col_start,
+                        l.col_end,
+                        resolve_link_target(&l.target)
+                            .and_then(|resolved| resolved.osc8_url)
+                            .expect("url"),
+                        l.id
+                    ))
                     .collect::<Vec<_>>(),
             );
         }
@@ -4023,7 +4355,11 @@ mod tests {
             .link_overlay
             .links()
             .iter()
-            .filter(|l| &*l.url == url_a || &*l.url == url_b)
+            .filter(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.as_ref() == url_a || url.as_ref() == url_b)
+            })
             .filter_map(|l| l.id)
             .collect();
         assert!(

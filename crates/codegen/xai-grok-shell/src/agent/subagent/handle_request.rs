@@ -544,17 +544,15 @@ pub(crate) async fn handle_subagent_request(
         forked_conversation,
         inherited_prefix_len.unwrap_or(0),
     );
-    if crate::session::is_cursor_user_template(&definition.user_message_template)
-        && context_source != InitialContextSource::Resumed && !verbatim_mirror_fork
-    {} else if context_source != InitialContextSource::Resumed && !verbatim_mirror_fork {
-        if let Some(ref pi) = effective_runtime.persona_instructions {
-            let reminder = xai_grok_sampling_types::conversation::ConversationItem::system_reminder(
-                format!("<system-reminder>\n{pi}\n</system-reminder>"),
-            );
-            let insert_at = inherited_prefix_len.min(forked_conversation.len());
-            forked_conversation.insert(insert_at, reminder);
-            inherited_prefix_len += 1;
-        }
+    if context_source != InitialContextSource::Resumed && !verbatim_mirror_fork
+        && let Some(ref pi) = effective_runtime.persona_instructions
+    {
+        let reminder = xai_grok_sampling_types::conversation::ConversationItem::system_reminder(
+            format!("<system-reminder>\n{pi}\n</system-reminder>"),
+        );
+        let insert_at = inherited_prefix_len.min(forked_conversation.len());
+        forked_conversation.insert(insert_at, reminder);
+        inherited_prefix_len += 1;
     }
     let effective_source_str = match &context_source {
         InitialContextSource::New => "new",
@@ -1208,6 +1206,7 @@ pub(crate) async fn handle_subagent_request(
     };
     if cancel_token.is_cancelled() {
         pending_guard.defuse();
+        ctx.workspace_ops.end_local_session(child_session_id.0.as_ref());
         cancel_pending_subagent_at_promote(
                 request,
                 &child_handle,
@@ -1766,7 +1765,8 @@ pub(crate) async fn handle_subagent_request(
             }
         }
     }
-    update_subagent_meta_completed(&subagent_meta_dir, &result, &gcs_upload_ctx);
+    let persisted_output_dir = persist_subagent_output(&subagent_meta_dir, &result);
+    persist_subagent_completion(&subagent_meta_dir, &result, &gcs_upload_ctx);
     let final_status = result.status().to_string();
     let snapshot_dispose_enabled = ctx.resolve_subagent_worktree_snapshot_enabled();
     let telemetry_tokens = if result.tool_calls > 0 || result.success {
@@ -1889,6 +1889,7 @@ pub(crate) async fn handle_subagent_request(
         (None, None) => {}
     }
     let _ = child_handle.cmd_tx.send(SessionCommand::Shutdown);
+    ctx.workspace_ops.end_local_session(child_session_id.0.as_ref());
     let mut disposed_snapshot_ref: Option<String> = None;
     let mut worktree_removed = false;
     if let Some(ref wt_path) = worktree_path {
@@ -1994,6 +1995,7 @@ pub(crate) async fn handle_subagent_request(
             request.description.clone(),
             request.subagent_type.clone(),
             result.clone(),
+            persisted_output_dir,
         );
     if let Some(snapshot_ref) = disposed_snapshot_ref {
         coordinator.borrow_mut().set_completed_snapshot_ref(&request.id, snapshot_ref);

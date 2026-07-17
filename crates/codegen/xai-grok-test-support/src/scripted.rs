@@ -3,6 +3,8 @@
 //! time. Pure data — no router or handler types in the public surface.
 
 use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
 
 use axum::Json;
 use axum::http::{HeaderName, HeaderValue, StatusCode};
@@ -10,6 +12,9 @@ use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream;
 use serde_json::Value;
+
+pub(crate) type BoxWait = Pin<Box<dyn Future<Output = ()> + Send>>;
+pub(crate) type TerminalWait = Box<dyn FnOnce() -> BoxWait + Send>;
 
 /// One SSE event as data: optional `event:` name plus the `data:` payload.
 #[derive(Debug, Clone)]
@@ -45,9 +50,8 @@ pub enum ScriptedBody {
     Raw(String),
 }
 
-/// A scripted reply for a single request on one path, consumed FIFO.
-/// Takes precedence over the response mode AND the required-auth check —
-/// a script is full control over the next reply.
+/// A scripted reply served by a matched expectation or compatibility FIFO.
+/// Scripted replies take precedence over required auth and fallback modes.
 #[derive(Debug, Clone)]
 pub struct ScriptedResponse {
     pub status: u16,
@@ -83,6 +87,10 @@ impl ScriptedResponse {
         }
     }
 
+    pub(crate) fn is_sse(&self) -> bool {
+        matches!(self.body, ScriptedBody::Sse(_))
+    }
+
     /// Validate status and headers eagerly so a bad script panics at the
     /// enqueue call site rather than far away at serve time.
     pub(crate) fn validate(&self) {
@@ -93,32 +101,60 @@ impl ScriptedResponse {
         }
     }
 
-    /// Render to HTTP with SSE events paced by `delay` (sleep before each
-    /// event, mirroring the fixed/echo `paced_events` pacing) so
-    /// `set_chunk_delay` also holds scripted turns open. `None` streams
-    /// instantly. Non-SSE bodies ignore the delay.
-    pub(crate) fn into_response_paced(self, delay: Option<std::time::Duration>) -> Response {
-        use futures_util::StreamExt as _;
+    /// Render to HTTP with SSE events paced by `delay` and optional terminal
+    /// completion gating. Non-SSE bodies wait before returning so every body
+    /// mode obeys the same release barrier.
+    pub(crate) async fn into_response_paced(
+        self,
+        delay: Option<std::time::Duration>,
+        before_terminal: Option<TerminalWait>,
+    ) -> Response {
         let mut resp = match self.body {
-            ScriptedBody::Json(v) => Json(v).into_response(),
-            ScriptedBody::Raw(s) => s.into_response(),
+            ScriptedBody::Json(v) => {
+                if let Some(wait) = before_terminal {
+                    wait().await;
+                }
+                Json(v).into_response()
+            }
+            ScriptedBody::Raw(s) => {
+                if let Some(wait) = before_terminal {
+                    wait().await;
+                }
+                s.into_response()
+            }
             ScriptedBody::Sse(events) => {
-                let events: Vec<axum::response::sse::Event> = events
-                    .into_iter()
-                    .map(|e| {
-                        let ev = axum::response::sse::Event::default().data(e.data);
-                        match e.event {
-                            Some(name) => ev.event(name),
-                            None => ev,
+                let last_idx = events.len().checked_sub(1);
+                let mut events: Vec<_> = events.into_iter().enumerate().map(Some).collect();
+                if events.is_empty() && before_terminal.is_some() {
+                    events.push(None);
+                }
+                let stream = stream::unfold(
+                    (events.into_iter(), before_terminal),
+                    move |(mut events, mut before_terminal)| async move {
+                        loop {
+                            let item = events.next()?;
+                            let Some((idx, scripted_event)) = item else {
+                                if let Some(wait) = before_terminal.take() {
+                                    wait().await;
+                                }
+                                continue;
+                            };
+                            if let Some(d) = delay {
+                                tokio::time::sleep(d).await;
+                            }
+                            if Some(idx) == last_idx
+                                && let Some(wait) = before_terminal.take()
+                            {
+                                wait().await;
+                            }
+                            let event =
+                                axum::response::sse::Event::default().data(scripted_event.data);
+                            let event = match scripted_event.event {
+                                Some(name) => event.event(name),
+                                None => event,
+                            };
+                            return Some((Ok::<_, Infallible>(event), (events, before_terminal)));
                         }
-                    })
-                    .collect();
-                let stream = stream::iter(events.into_iter().map(Ok::<_, Infallible>)).then(
-                    move |event| async move {
-                        if let Some(d) = delay {
-                            tokio::time::sleep(d).await;
-                        }
-                        event
                     },
                 );
                 Sse::new(stream)

@@ -25,6 +25,7 @@ fn sign(kp: &ring::signature::Ed25519KeyPair, payload: &SignedPayload) -> Signat
 
 fn payload() -> SignedPayload {
     SignedPayload {
+        typ: MANAGED_POLICY_TYP.into(),
         version: 1,
         deployment_id: None,
         team_id: Some("team-007".into()),
@@ -54,6 +55,7 @@ fn write_policy(home: &std::path::Path, p: &SignedPayload) {
 fn server_wire_format_is_client_verifiable() {
     let (kp, pubkey) = test_keypair();
     let signed_payload = serde_json::json!({
+        "typ": "grok.managed_policy.v1",
         "deployment_id": serde_json::Value::Null,
         "team_id": "team-007",
         "managed_config": "[cli]\n",
@@ -82,6 +84,7 @@ fn server_wire_format_is_client_verifiable() {
 fn missing_fail_closed_defaults_false() {
     let (kp, pubkey) = test_keypair();
     let signed_payload = serde_json::json!({
+        "typ": "grok.managed_policy.v1",
         "team_id": "team-007",
         "expires_at": 4_000_000_000u64,
         "key_id": "v1",
@@ -956,3 +959,8 @@ fn rotation_selects_the_trusted_key_by_signed_key_id() {
         Err(SigError::SignatureMismatch)
     );
 }
+
+// The is-managed claim tests live in a sibling child module (this file is at the
+// 1k-line mark); same private access via the #[path] include below.
+#[path = "claim_tests.rs"]
+mod claim_tests;

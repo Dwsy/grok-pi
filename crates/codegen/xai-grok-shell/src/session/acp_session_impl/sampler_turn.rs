@@ -49,7 +49,7 @@ impl SessionTokenAuthGate {
             is_session_based: auth_method_id
                 .is_some_and(crate::agent::auth_method::is_session_based_method),
             model_byok,
-            endpoint_is_first_party: crate::util::is_first_party_xai_url(base_url),
+            endpoint_is_first_party: crate::util::is_xai_api_url(base_url),
         }
     }
     fn active(self) -> bool {

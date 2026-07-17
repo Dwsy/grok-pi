@@ -43,10 +43,10 @@ impl AgentView {
             return InputOutcome::Action(Action::FocusPrompt);
         }
         if key!(Enter).matches(key)
-            && let Some(url) = self.highlighted_link_url().map(String::from)
+            && let Some(target) = self.highlighted_link_target().cloned()
         {
             self.highlighted_link_idx = None;
-            return InputOutcome::Action(Action::OpenUrl(url));
+            return InputOutcome::Action(Action::OpenLink(target));
         }
         if key!(Enter).matches(key)
             && !self.scrollback.is_selected_group_header()
@@ -596,10 +596,11 @@ impl AgentView {
                     modifiers: crossterm::event::KeyModifiers::NONE,
                 };
                 let _ = self.prompt.handle_mouse(&event);
-            } else if let Some((scroll_top, scroll_bottom)) = self.question_scroll_region {
-                if row >= scroll_top && row < scroll_bottom {
-                    self.apply_question_scroll(lines);
-                }
+            } else if let Some((scroll_top, scroll_bottom)) = self.question_scroll_region
+                && row >= scroll_top
+                && row < scroll_bottom
+            {
+                self.apply_question_scroll(lines);
             }
             return;
         }

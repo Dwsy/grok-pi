@@ -16,9 +16,8 @@ use crate::deny::{
 };
 use crate::paths::grok_home;
 #[cfg(all(feature = "enforce", unix))]
-use crate::paths::{
-    DEVICE_DIRS, DEVICE_FILES, essential_writable_paths, essential_writable_paths_minimal,
-};
+use crate::paths::{DEVICE_DIRS, DEVICE_FILES};
+use crate::paths::{essential_writable_paths, essential_writable_paths_minimal};
 
 /// A resolved sandbox profile ready to be converted to a `CapabilitySet`.
 #[derive(Debug, Clone)]
@@ -69,21 +68,8 @@ pub enum ProfileName {
 }
 
 impl ProfileName {
-    pub fn restricts_network(&self) -> bool {
+    pub(crate) fn restricts_network(&self) -> bool {
         matches!(self, Self::ReadOnly | Self::Strict)
-    }
-
-    /// Resolve network restriction from config (handles Custom profiles).
-    pub fn restricts_network_resolved(&self, config: &SandboxConfig) -> bool {
-        match self {
-            Self::ReadOnly | Self::Strict => true,
-            Self::Workspace | Self::Devbox | Self::Off => false,
-            Self::Custom(name) => config
-                .profiles
-                .get(name)
-                .and_then(|p| p.restrict_network)
-                .unwrap_or(false),
-        }
     }
 }
 
@@ -183,9 +169,9 @@ fn load_config_file(path: &Path) -> Option<SandboxConfig> {
     }
 }
 
-#[cfg(all(feature = "enforce", unix))]
 impl ProfileName {
     /// Convert this profile into a nono `CapabilitySet` for the given workspace.
+    #[cfg(all(feature = "enforce", unix))]
     pub fn to_capability_set(&self, workspace: &Path) -> anyhow::Result<CapabilitySet> {
         let config = load_sandbox_config(workspace);
         self.to_capability_set_with_config(workspace, &config)
@@ -195,6 +181,7 @@ impl ProfileName {
     ///
     /// A custom profile's own `deny` list is kernel-enforced (read + write/rename)
     /// on top of the base profile.
+    #[cfg(all(feature = "enforce", unix))]
     pub fn to_capability_set_with_config(
         &self,
         workspace: &Path,
@@ -204,10 +191,15 @@ impl ProfileName {
             return Ok(CapabilitySet::new());
         }
 
-        // Resolve to a SandboxProfile
-        let profile = self.resolve(workspace, config)?;
+        let profile = self.resolve_profile(workspace, config)?;
+        Self::capability_set_from_profile(workspace, &profile)
+    }
 
-        // Build CapabilitySet from the resolved profile
+    #[cfg(all(feature = "enforce", unix))]
+    pub(crate) fn capability_set_from_profile(
+        workspace: &Path,
+        profile: &SandboxProfile,
+    ) -> anyhow::Result<CapabilitySet> {
         let mut caps = CapabilitySet::new();
 
         // Default read access
@@ -510,12 +502,83 @@ mod tests {
     }
 
     #[test]
-    fn network_restriction() {
-        assert!(!ProfileName::Workspace.restricts_network());
-        assert!(!ProfileName::Devbox.restricts_network());
-        assert!(ProfileName::ReadOnly.restricts_network());
-        assert!(ProfileName::Strict.restricts_network());
-        assert!(!ProfileName::Off.restricts_network());
+    fn built_in_network_restriction_values() {
+        let workspace = std::env::current_dir().unwrap();
+        let config = SandboxConfig::default();
+
+        for (name, expected) in [
+            (ProfileName::Workspace, false),
+            (ProfileName::Devbox, false),
+            (ProfileName::ReadOnly, true),
+            (ProfileName::Strict, true),
+        ] {
+            let resolved = name.resolve_profile(&workspace, &config).unwrap();
+            assert_eq!(resolved.restrict_network, expected, "{name}");
+        }
+    }
+
+    fn network_inheritance_config() -> SandboxConfig {
+        SandboxConfig {
+            profiles: HashMap::from([
+                (
+                    "strict-inherited".to_string(),
+                    ProfileConfig {
+                        extends: Some("strict".to_string()),
+                        restrict_network: None,
+                        read_only: vec![],
+                        read_write: vec![],
+                        deny: vec![],
+                    },
+                ),
+                (
+                    "read-only-inherited".to_string(),
+                    ProfileConfig {
+                        extends: Some("read-only".to_string()),
+                        restrict_network: None,
+                        read_only: vec![],
+                        read_write: vec![],
+                        deny: vec![],
+                    },
+                ),
+                (
+                    "strict-unrestricted".to_string(),
+                    ProfileConfig {
+                        extends: Some("strict".to_string()),
+                        restrict_network: Some(false),
+                        read_only: vec![],
+                        read_write: vec![],
+                        deny: vec![],
+                    },
+                ),
+                (
+                    "workspace-restricted".to_string(),
+                    ProfileConfig {
+                        extends: Some("workspace".to_string()),
+                        restrict_network: Some(true),
+                        read_only: vec![],
+                        read_write: vec![],
+                        deny: vec![],
+                    },
+                ),
+            ]),
+        }
+    }
+
+    #[test]
+    fn custom_network_restriction_inherits_and_overrides_base() {
+        let workspace = std::env::current_dir().unwrap();
+        let config = network_inheritance_config();
+
+        for (name, expected) in [
+            ("strict-inherited", true),
+            ("read-only-inherited", true),
+            ("strict-unrestricted", false),
+            ("workspace-restricted", true),
+        ] {
+            let profile_name = ProfileName::Custom(name.to_string());
+            let resolved = profile_name.resolve_profile(&workspace, &config).unwrap();
+            assert_eq!(resolved.restrict_network, expected, "{name}");
+        }
     }
 
     #[test]

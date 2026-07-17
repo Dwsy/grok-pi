@@ -208,6 +208,7 @@ fn lookup_returns_ready_for_completed_subagent() {
                 duration_ms: 1234,
                 ..Default::default()
             },
+            None,
         );
     let lookup = coordinator.lookup("sub-1");
     assert!(lookup.is_some());
@@ -384,6 +385,7 @@ async fn running_gauge_tracks_pending_and_active() {
             "gauge task".into(),
             "general-purpose".into(),
             SubagentResult::default(),
+            None,
         );
     assert_eq!(gauge.load(Ordering::Relaxed), 0, "completed does not count");
     coordinator
@@ -435,6 +437,7 @@ fn mark_block_waited_sets_flag_on_completed() {
                 child_session_id: "sub-bw".into(),
                 ..Default::default()
             },
+            None,
         );
     assert!(! coordinator.is_block_waited("sub-bw"));
     coordinator.mark_block_waited("sub-bw");
@@ -525,6 +528,7 @@ async fn mark_explicitly_killed_active_then_propagates_to_completed() {
                 child_session_id: "sub-ek".into(),
                 ..Default::default()
             },
+            None,
         );
     assert!(
         coordinator.is_explicitly_killed("sub-ek"),
@@ -631,6 +635,7 @@ fn mark_explicitly_killed_sets_flag_on_completed() {
                 child_session_id: "sub-ek-c".into(),
                 ..Default::default()
             },
+            None,
         );
     assert!(! coordinator.is_explicitly_killed("sub-ek-c"));
     coordinator.mark_explicitly_killed("sub-ek-c");
@@ -658,6 +663,7 @@ async fn block_waited_propagates_through_move_to_completed() {
                 child_session_id: "sub-prop".into(),
                 ..Default::default()
             },
+            None,
         );
     assert!(coordinator.is_block_waited("sub-prop"));
 }
@@ -676,6 +682,7 @@ fn complete_dummy(coordinator: &mut SubagentCoordinator, id: &str, surface: bool
                 child_session_id: id.into(),
                 ..Default::default()
             },
+            None,
         );
 }
 #[tokio::test]
@@ -861,42 +868,171 @@ fn move_pending_to_cancelled_creates_cancelled_entry() {
         }
     }
 }
+fn completed_with_output(
+    id: &str,
+    text: &str,
+    persisted_output_dir: Option<PathBuf>,
+) -> CompletedSubagent {
+    CompletedSubagent {
+        subagent_id: id.into(),
+        parent_session_id: String::new(),
+        parent_prompt_id: None,
+        child_session_id: String::new(),
+        description: "task".into(),
+        subagent_type: "explore".into(),
+        persona: None,
+        started_at: std::time::Instant::now(),
+        completed_at: std::time::Instant::now(),
+        result: SubagentResult {
+            success: true,
+            output: std::sync::Arc::from(text),
+            ..Default::default()
+        },
+        resumed_from: None,
+        child_cwd: String::new(),
+        worktree_path: None,
+        snapshot_ref: None,
+        effective_model_id: String::new(),
+        block_waited: false,
+        explicitly_killed: false,
+        persisted_output_dir,
+    }
+}
+fn lookup_output(coordinator: &SubagentCoordinator, id: &str) -> String {
+    match coordinator.lookup(id) {
+        Some(SnapshotLookup::Ready(snap)) => {
+            match snap.status {
+                SubagentSnapshotStatus::Completed { output, .. } => output,
+                other => panic!("expected Completed status, got {other:?}"),
+            }
+        }
+        other => {
+            panic!(
+                "expected Ready lookup, got {:?}", other.map(| _ | "NeedsSignals/other")
+            )
+        }
+    }
+}
 #[test]
-fn evict_stale_completed_uses_completion_time() {
+fn lookup_degrades_to_placeholder_when_output_file_is_missing() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let mut coordinator = SubagentCoordinator::new();
     coordinator
         .completed
         .insert(
-            "sub-recent".to_string(),
-            CompletedSubagent {
-                subagent_id: "sub-recent".into(),
-                parent_session_id: String::new(),
-                parent_prompt_id: None,
-                child_session_id: String::new(),
-                description: "long-running".into(),
-                subagent_type: "explore".into(),
-                persona: None,
-                started_at: std::time::Instant::now()
-                    - std::time::Duration::from_secs(31 * 60),
-                completed_at: std::time::Instant::now(),
-                result: SubagentResult {
-                    success: true,
-                    ..Default::default()
-                },
-                resumed_from: None,
-                child_cwd: String::new(),
-                worktree_path: None,
-                snapshot_ref: None,
-                effective_model_id: String::new(),
-                block_waited: false,
-                explicitly_killed: false,
-            },
+            "sub-gone".to_string(),
+            completed_with_output("sub-gone", "", Some(dir.path().to_path_buf())),
         );
-    coordinator.evict_stale_completed();
-    assert!(
-        coordinator.completed.contains_key("sub-recent"),
-        "recently completed subagent should not be evicted"
+    assert_eq!(
+        lookup_output(& coordinator, "sub-gone"), OUTPUT_UNAVAILABLE_PLACEHOLDER,
+        "an entry whose output.json is gone must degrade, not fail the query"
     );
+}
+#[test]
+fn lookup_serves_unpersisted_output_from_memory() {
+    let mut coordinator = SubagentCoordinator::new();
+    coordinator
+        .completed
+        .insert("sub-mem".to_string(), completed_with_output("sub-mem", "output", None));
+    assert_eq!(
+        lookup_output(& coordinator, "sub-mem"), "output",
+        "an entry with nothing on disk must serve its in-memory output"
+    );
+}
+#[test]
+fn completed_entries_are_capped_oldest_first() {
+    let mut coordinator = SubagentCoordinator::new();
+    let base = std::time::Instant::now();
+    for i in 0..(MAX_COMPLETED_ENTRIES + 2) {
+        let mut entry = completed_with_output(
+            &format!("sub-{i}"),
+            "",
+            Some(std::path::PathBuf::from("/nonexistent")),
+        );
+        entry.completed_at = base + std::time::Duration::from_millis(i as u64);
+        coordinator.completed.insert(format!("sub-{i}"), entry);
+    }
+    coordinator.enforce_completed_cap();
+    assert_eq!(
+        coordinator.completed.len(), MAX_COMPLETED_ENTRIES,
+        "the completed map must be capped at MAX_COMPLETED_ENTRIES"
+    );
+    assert!(
+        ! coordinator.completed.contains_key("sub-0") && ! coordinator.completed
+        .contains_key("sub-1"), "the oldest completions must be evicted first"
+    );
+    assert!(
+        coordinator.completed.contains_key("sub-2"),
+        "entries within the cap must survive"
+    );
+}
+#[test]
+fn move_to_completed_clears_persisted_output_after_the_summary_clone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let full_output = "final report".repeat(100);
+    assert!(write_subagent_output(dir.path(), & full_output));
+    let mut coordinator = SubagentCoordinator::new();
+    coordinator
+        .move_to_completed(
+            "sub-e2e",
+            "task".into(),
+            "explore".into(),
+            SubagentResult {
+                success: true,
+                output: std::sync::Arc::from(full_output.as_str()),
+                subagent_id: "sub-e2e".into(),
+                child_session_id: "sub-e2e".into(),
+                ..Default::default()
+            },
+            Some(dir.path().to_path_buf()),
+        );
+    let entry = coordinator.completed.get("sub-e2e").expect("entry inserted");
+    assert!(
+        entry.result.output.is_empty(),
+        "a persisted entry must not keep the output in memory"
+    );
+    assert_eq!(
+        lookup_output(& coordinator, "sub-e2e"), full_output,
+        "lookup must serve the persisted output from disk"
+    );
+    let summaries = coordinator.drain_pending_completions();
+    assert_eq!(
+        &* summaries[0].output, full_output,
+        "the completion summary must carry the full output"
+    );
+}
+#[test]
+fn persist_gate_only_persists_successful_nonempty_outputs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ok = SubagentResult {
+        success: true,
+        output: std::sync::Arc::from("text"),
+        ..Default::default()
+    };
+    assert_eq!(
+        persist_subagent_output(dir.path(), & ok), Some(dir.path().to_path_buf())
+    );
+    let empty = SubagentResult {
+        success: true,
+        ..Default::default()
+    };
+    assert_eq!(persist_subagent_output(dir.path(), & empty), None);
+    let failed = SubagentResult {
+        success: false,
+        output: std::sync::Arc::from("partial"),
+        ..Default::default()
+    };
+    assert_eq!(persist_subagent_output(dir.path(), & failed), None);
+}
+#[test]
+fn subagent_output_roundtrips_through_output_json() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = "line one\nline two with unicode ✓";
+    assert!(write_subagent_output(dir.path(), output));
+    assert_eq!(read_subagent_output(dir.path()).as_deref(), Some(output));
+    assert_eq!(read_subagent_output(& dir.path().join("missing")), None);
+    std::fs::write(dir.path().join("output.json"), "not json").expect("corrupt file");
+    assert_eq!(read_subagent_output(dir.path()), None);
 }
 #[test]
 fn cancel_with_outcome_fires_pending_token() {
@@ -945,6 +1081,7 @@ async fn cancel_with_outcome_returns_variant_for_active_finished_unknown() {
                 subagent_id: "sub-done".to_string(),
                 ..Default::default()
             },
+            None,
         );
     assert!(
         matches!(coordinator.cancel_with_outcome("sub-done"),
@@ -1026,6 +1163,7 @@ fn completed_takes_precedence_over_pending_in_lookup() {
                 child_session_id: "child-dup".to_string(),
                 ..Default::default()
             },
+            None,
         );
     let lookup = coordinator.lookup("sub-dup");
     assert!(

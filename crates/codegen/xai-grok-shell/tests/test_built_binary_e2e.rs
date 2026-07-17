@@ -1448,7 +1448,7 @@ fn process_dead_within(pid: u32, deadline: Duration) -> bool {
 #[cfg(unix)]
 fn read_task_pid(pid_file: &std::path::Path) -> u32 {
     let start = std::time::Instant::now();
-    while !pid_file.exists() && start.elapsed() < Duration::from_secs(2) {
+    while !pid_file.exists() && start.elapsed() < Duration::from_secs(10) {
         std::thread::sleep(Duration::from_millis(100));
     }
     let contents = std::fs::read_to_string(pid_file).unwrap_or_else(|e| {
@@ -1468,7 +1468,10 @@ fn read_task_pid(pid_file: &std::path::Path) -> u32 {
 /// answer for the post-tool turn.
 #[cfg(unix)]
 fn enqueue_background_task_turn(server: &MockInferenceServer, pid_file: &std::path::Path) {
-    let command = format!("echo $$ > {} && exec /bin/sleep 300", pid_file.display());
+    let command = format!(
+        "echo $$ > {0} && /bin/sync {0} 2>/dev/null; exec /bin/sleep 300",
+        pid_file.display()
+    );
     let args = serde_json::json!({
         "command": command,
         "description": "start long-lived background process",

@@ -942,7 +942,10 @@ fn render_goal_rules_substitutes_all_placeholders_in_slim_template() {
         "slim template must not publish a per-goal verdict file path:\n{body}",
     );
     assert!(body.contains("/tmp/grok-goal-x/implementer"));
-    assert!(body.contains("`{SCRATCH}` placeholder resolves to"));
+    assert!(body.contains("`{SCRATCH}` placeholder"));
+    assert!(body.contains("Use existing\nuser, system, or project defaults"));
+    assert!(body.contains("`CARGO_HOME`, `RUSTUP_HOME`"));
+    assert!(body.contains("the scratch dir is deleted when the goal ends"));
     for placeholder in [
         "{OBJECTIVE}",
         "{GOAL_TOOL}",
@@ -1478,6 +1481,9 @@ fn render_goal_continuation_directive_substitutes_all_placeholders() {
         body.contains("`{SCRATCH}`"),
         "continuation directive must reference the {{SCRATCH}} placeholder:\n{body}",
     );
+    assert!(body.contains("existing user, system, or project defaults"));
+    assert!(body.contains("`CARGO_HOME`, `RUSTUP_HOME`"));
+    assert!(body.contains("deleted when the goal ends"));
     const AUDIT_CONTRACT: &str = "AUDITS your committed tests";
     assert!(
         GOAL_CONTINUATION_DIRECTIVE_TEMPLATE.contains(AUDIT_CONTRACT),

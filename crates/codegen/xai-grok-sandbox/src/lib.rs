@@ -29,10 +29,15 @@
 pub mod child_net;
 mod deny;
 mod logging;
+mod network_policy;
 mod paths;
 mod profiles;
 mod types;
 pub use logging::SandboxLogger;
+pub use network_policy::{
+    ChildNetworkPolicy, NETWORK_POLICY_SNAPSHOT_VERSION, NetworkPolicySnapshot,
+    NetworkPolicySnapshotError, WebsiteAction, WebsiteOrigin, WebsiteOriginError, WebsitePolicy,
+};
 #[cfg(all(feature = "enforce", unix))]
 use nono::Sandbox;
 pub use profiles::{
@@ -46,7 +51,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub use types::{SandboxEvent, SandboxEventType, SandboxMetrics};
 static SANDBOX: OnceLock<GlobalSandboxState> = OnceLock::new();
 static CONFIGURED_PROFILE: OnceLock<String> = OnceLock::new();
-static RESTRICT_CHILD_NETWORK: AtomicBool = AtomicBool::new(false);
 static AUTO_ALLOW_BASH: AtomicBool = AtomicBool::new(false);
 const BWRAP_ENV_VAR: &str = "__GROK_INSIDE_BWRAP";
 pub fn is_inside_bwrap() -> bool {
@@ -59,10 +63,16 @@ struct GlobalSandboxState {
     profile: String,
     logger: SandboxLogger,
     applied: bool,
+    restrict_network_at_known_linux_launches: bool,
 }
-/// Whether child subprocesses should have network blocked via seccomp.
+fn restrict_network_at_known_linux_launches(applied: bool, configured: bool) -> bool {
+    applied && configured && cfg!(target_os = "linux")
+}
+/// Whether known Linux child launch paths should install the seccomp network filter.
 pub fn should_restrict_child_network() -> bool {
-    RESTRICT_CHILD_NETWORK.load(Ordering::Relaxed)
+    SANDBOX
+        .get()
+        .is_some_and(|state| state.restrict_network_at_known_linux_launches)
 }
 /// Whether bash commands should be auto-approved when the sandbox is active.
 pub fn should_auto_allow_bash() -> bool {
@@ -140,6 +150,9 @@ impl SandboxManager {
             tracing::info!("Sandbox disabled (profile: off)");
             return Ok(());
         }
+        let config = profiles::load_sandbox_config(workspace);
+        let mut resolved = self.profile.resolve_profile(workspace, &config)?;
+        self.net_restricted = resolved.restrict_network;
         let support = Sandbox::support_info();
         if !support.is_supported {
             tracing::warn!(
@@ -153,19 +166,11 @@ impl SandboxManager {
             ));
             return Ok(());
         }
-        let config = profiles::load_sandbox_config(workspace);
-        let caps = self
-            .profile
-            .to_capability_set_with_config(workspace, &config)?;
-        let mut resolved = self.profile.resolve_profile(workspace, &config)?;
+        let caps = ProfileName::capability_set_from_profile(workspace, &resolved)?;
         resolved.deny = deny::effective_deny_paths(workspace, &resolved.deny);
-        self.net_restricted = self.profile.restricts_network_resolved(&config);
         match Sandbox::apply(&caps) {
             Ok(_) => {
                 self.applied = true;
-                if self.net_restricted {
-                    RESTRICT_CHILD_NETWORK.store(true, Ordering::Relaxed);
-                }
                 self.logger.log(SandboxEvent::profile_applied(
                     &self.profile.to_string(),
                     workspace,
@@ -173,7 +178,7 @@ impl SandboxManager {
                 ));
                 tracing::info!(
                     profile = % self.profile, workspace = % workspace.display(),
-                    restrict_network = self.net_restricted,
+                    restrict_network_configured = self.net_restricted,
                     "Sandbox applied (kernel-enforced, irreversible)"
                 );
                 Ok(())
@@ -208,6 +213,10 @@ impl SandboxManager {
             profile: self.profile.to_string(),
             logger: self.logger,
             applied: self.applied,
+            restrict_network_at_known_linux_launches: restrict_network_at_known_linux_launches(
+                self.applied,
+                self.net_restricted,
+            ),
         });
     }
     /// Check whether the current platform supports sandboxing.
@@ -219,9 +228,9 @@ impl SandboxManager {
     pub fn is_applied(&self) -> bool {
         self.applied
     }
-    /// Whether child subprocesses should have network blocked.
+    /// Whether known Linux child launch paths should install the seccomp network filter.
     pub fn restrict_child_network(&self) -> bool {
-        self.applied && self.net_restricted
+        restrict_network_at_known_linux_launches(self.applied, self.net_restricted)
     }
     /// The active profile name.
     pub fn profile(&self) -> &ProfileName {
@@ -611,6 +620,15 @@ mod tests {
     fn configured_profile_is_recorded() {
         set_configured_profile("read-only");
         assert_eq!(configured_profile_name(), Some("read-only"));
+    }
+    #[test]
+    fn known_launch_guard_is_linux_only() {
+        assert_eq!(
+            restrict_network_at_known_linux_launches(true, true),
+            cfg!(target_os = "linux")
+        );
+        assert!(!restrict_network_at_known_linux_launches(false, true));
+        assert!(!restrict_network_at_known_linux_launches(true, false));
     }
     /// Create a temp workspace whose `.grok/sandbox.toml` contains `toml_body`.
     /// Returns the workspace path (caller removes it).

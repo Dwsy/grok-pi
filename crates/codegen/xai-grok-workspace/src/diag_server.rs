@@ -25,8 +25,7 @@ use tokio::net::TcpListener;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
 
-/// Default Unix socket path (resolves host-visibly under the production
-/// launcher's `/tmp` bind mount, next to the ready/pid files).
+/// Default Unix socket path (next to the log/pid files).
 #[cfg(unix)]
 pub const DEFAULT_DIAG_SOCKET_PATH: &str = "/tmp/workspace-server.sock";
 
@@ -135,11 +134,6 @@ impl DiagHandle {
         inner.shutting_down = true;
         inner.state = DiagState::Disconnected;
         inner.state_changed_at = now_ms();
-    }
-
-    /// True after [`Self::set_shutting_down`].
-    pub fn is_shutting_down(&self) -> bool {
-        self.lock().shutting_down
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -416,7 +410,6 @@ mod tests {
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
         assert_eq!(body["state"], "disconnected");
-        assert!(handle.is_shutting_down());
     }
 
     #[cfg(unix)]

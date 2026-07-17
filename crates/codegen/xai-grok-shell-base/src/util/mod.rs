@@ -55,25 +55,63 @@ fn matches_trusted_base_url(candidate: &str, trusted_base: &str) -> bool {
 }
 /// True for cli-chat-proxy URLs (production, plus local-dev hosts when the
 /// optional non-production feature is enabled). When that feature is on,
-/// runtime env overrides can extend this trust set.
+/// runtime env overrides can extend this trust set. Loopback is always
+/// accepted (unit tests and local mock servers on arbitrary ports).
 pub fn is_cli_chat_proxy_url(url: &str) -> bool {
     if matches_trusted_base_url(url, crate::env::PROD_CLI_CHAT_PROXY_BASE_URL) {
         return true;
     }
+    if let Ok(u) = reqwest::Url::parse(url)
+        && let Some(h) = u.host_str()
+        && (h == "localhost" || h == "127.0.0.1" || h == "::1")
+    {
+        return true;
+    }
     false
 }
-/// True for first-party xAI endpoints (`*.x.ai`, cli-chat-proxy, and optional
-/// non-production first-party hosts when that feature is enabled).
+/// True for xAI-operated endpoints (`*.x.ai`, cli-chat-proxy, and optional
+/// non-production xAI hosts when that feature is enabled).
 /// `disable_api_key_auth` refuses keys only for these; other hosts are BYOK and
 /// exempt. Safe against invalid URLs and suffix attacks (`evil-x.ai.example`).
-pub fn is_first_party_xai_url(url: &str) -> bool {
+///
+/// Scheme-agnostic so credential *refusal* fails closed. To decide where to
+/// *attach* a credential, use [`is_xai_api_bearer_url`].
+pub fn is_xai_api_url(url: &str) -> bool {
+    is_xai_api_url_impl(url, false)
+}
+/// Like [`is_xai_api_url`], but requires `https` on every arm, so a
+/// session bearer is never attached to a cleartext endpoint, including loopback
+/// (a co-located process could otherwise read a token sent to `http://localhost`).
+pub fn is_xai_api_bearer_url(url: &str) -> bool {
+    is_xai_api_url_impl(url, true)
+}
+fn is_xai_api_url_impl(url: &str, require_https: bool) -> bool {
+    if require_https {
+        let Ok(parsed) = reqwest::Url::parse(url) else {
+            return false;
+        };
+        if parsed.scheme() != "https" {
+            return false;
+        }
+        if is_loopback_host(&parsed) {
+            return false;
+        }
+    }
     if is_cli_chat_proxy_url(url) {
         return true;
     }
     reqwest::Url::parse(url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_owned()))
+        .and_then(|u| u.host_str().map(str::to_owned))
         .is_some_and(|host| host == "x.ai" || host.ends_with(".x.ai"))
+}
+fn is_loopback_host(parsed: &reqwest::Url) -> bool {
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => host == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
 }
 /// Truncate a string to at most `max_chars` characters.
 /// Slices at char boundaries so multi-byte UTF-8 never panics.
@@ -230,25 +268,39 @@ mod tests {
         ));
     }
     #[test]
-    fn test_is_first_party_xai_url() {
-        assert!(is_first_party_xai_url("https://api.x.ai/v1"));
-        assert!(is_first_party_xai_url(
-            "https://api.x.ai/v1/chat/completions"
-        ));
-        assert!(is_first_party_xai_url("https://x.ai"));
-        assert!(is_first_party_xai_url(
+    fn test_is_xai_api_url() {
+        assert!(is_xai_api_url("https://api.x.ai/v1"));
+        assert!(is_xai_api_url("https://api.x.ai/v1/chat/completions"));
+        assert!(is_xai_api_url("https://x.ai"));
+        assert!(is_xai_api_url(
             "https://cli-chat-proxy.grok.com/v1/chat/completions"
         ));
-        assert!(!is_first_party_xai_url("https://api.openai.com/v1"));
-        assert!(!is_first_party_xai_url("https://api.anthropic.com/v1"));
-        assert!(!is_first_party_xai_url(
-            "https://generativelanguage.googleapis.com"
+        assert!(!is_xai_api_url("https://api.openai.com/v1"));
+        assert!(!is_xai_api_url("https://api.anthropic.com/v1"));
+        assert!(!is_xai_api_url("https://generativelanguage.googleapis.com"));
+        assert!(!is_xai_api_url("https://api.x.ai.evil.example/v1"));
+        assert!(!is_xai_api_url("https://evil-x.ai.attacker.com/v1"));
+        assert!(!is_xai_api_url("https://prefixx.ai/v1"));
+        assert!(!is_xai_api_url("not-a-url"));
+        assert!(!is_xai_api_url(""));
+        assert!(is_xai_api_url("http://api.x.ai/v1"));
+        assert!(is_xai_api_url("http://localhost:11434/v1"));
+    }
+    #[test]
+    fn test_is_xai_api_bearer_url() {
+        assert!(is_xai_api_bearer_url("https://api.x.ai/v1"));
+        assert!(!is_xai_api_bearer_url("http://api.x.ai/v1"));
+        assert!(!is_xai_api_bearer_url("http://localhost:11434/v1"));
+        {
+            assert!(!is_xai_api_bearer_url("https://localhost:11434/v1"));
+            assert!(!is_xai_api_bearer_url("https://127.0.0.2:11434/v1"));
+            assert!(!is_xai_api_bearer_url("https://[::1]:11434/v1"));
+        }
+        assert!(is_xai_api_bearer_url("https://API.X.AI/v1"));
+        assert!(!is_xai_api_bearer_url(
+            "https://api.x.ai@attacker.example/v1"
         ));
-        assert!(!is_first_party_xai_url("https://api.x.ai.evil.example/v1"));
-        assert!(!is_first_party_xai_url("https://evil-x.ai.attacker.com/v1"));
-        assert!(!is_first_party_xai_url("https://prefixx.ai/v1"));
-        assert!(!is_first_party_xai_url("not-a-url"));
-        assert!(!is_first_party_xai_url(""));
+        assert!(!is_xai_api_bearer_url("https://х.ai/v1"));
     }
     #[test]
     fn test_truncate() {

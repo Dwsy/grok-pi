@@ -321,3 +321,125 @@ async fn send_with_retry_escaping_pool_combinator_behavior() {
         "stops at the first success"
     );
 }
+
+/// The sync marker is structurally separate from the artifact list — it must only ever
+/// be removed by the dedicated post-loop step in `remove_managed_config_files`.
+#[test]
+fn marker_is_not_a_managed_artifact() {
+    assert!(
+        !MANAGED_ARTIFACT_FILES.contains(&xai_grok_config::MANAGED_CONFIG_CACHE_FILE),
+        "the marker must be removed last, never as part of the artifact loop"
+    );
+    // Pin the composed contents: the purge loops, tmp-prefix sweep, and eviction all
+    // derive from these names, so a constant silently changing value would re-point
+    // them all at once.
+    assert_eq!(
+        MANAGED_ARTIFACT_FILES,
+        [
+            "managed_config.toml",
+            "requirements.toml",
+            "managed_config.sig.json",
+            "managed_identity.sig.json"
+        ],
+        "the artifact list is load-bearing for every derived loop; change it deliberately"
+    );
+}
+
+/// Error prefixes re-arm the detector like crash prefixes: when an artifact removal
+/// FAILS, the marker must survive, so the next start re-runs the purge instead of
+/// leaving the prior tenant's policy live with the detector disarmed.
+#[cfg(unix)]
+#[test]
+fn purge_keeps_marker_when_an_artifact_removal_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for name in MANAGED_ARTIFACT_FILES {
+        std::fs::write(home.join(name), "x").unwrap();
+    }
+    std::fs::write(home.join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE), "{}").unwrap();
+
+    // Make one artifact unremovable: squat it with a dir whose read-only subdir
+    // holds a file — `remove_dir_all` can't unlink inside the read-only subdir.
+    let squat = home.join("requirements.toml");
+    std::fs::remove_file(&squat).unwrap();
+    let locked_subdir = squat.join("locked");
+    std::fs::create_dir_all(&locked_subdir).unwrap();
+    std::fs::write(locked_subdir.join("pin"), "x").unwrap();
+    let readonly = std::fs::Permissions::from_mode(0o555);
+    std::fs::set_permissions(&locked_subdir, readonly).unwrap();
+    if std::fs::remove_dir_all(&squat).is_ok() {
+        // The fault can't be injected: read-only perms don't block removal (root/CI edge).
+        eprintln!("skipping: permissions not enforced (running as root?)");
+        return;
+    }
+
+    remove_managed_config_files(home);
+    assert!(
+        home.join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+            .exists(),
+        "a failed artifact removal must keep the marker (detector stays armed)"
+    );
+
+    // Clear the fault: the next purge converges and only then drops the marker.
+    std::fs::set_permissions(&locked_subdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    remove_managed_config_files(home);
+    for name in MANAGED_ARTIFACT_FILES {
+        assert!(!home.join(name).exists(), "{name} must be purged");
+    }
+    assert!(
+        !home
+            .join(xai_grok_config::MANAGED_CONFIG_CACHE_FILE)
+            .exists(),
+        "with every artifact removed, the marker goes last"
+    );
+}
+
+// --- The is-managed claim persist rules ---
+
+/// Deployment id wins over team id (server parity).
+#[test]
+fn served_principal_prefers_deployment_id() {
+    use xai_grok_config::signed_policy::SignedPayload;
+    let payload = |dep: Option<&str>, team: Option<&str>| SignedPayload {
+        typ: xai_grok_config::signed_policy::MANAGED_POLICY_TYP.into(),
+        version: 1,
+        deployment_id: dep.map(Into::into),
+        team_id: team.map(Into::into),
+        managed_config: None,
+        requirements: None,
+        fail_closed: false,
+        expires_at: 0,
+        key_id: "v1".into(),
+    };
+    assert_eq!(
+        served_principal_of(&payload(Some("dep-1"), Some("team-007"))),
+        Some("dep-1")
+    );
+    assert_eq!(
+        served_principal_of(&payload(None, Some("team-007"))),
+        Some("team-007")
+    );
+    assert_eq!(served_principal_of(&payload(None, None)), None);
+}
+
+/// A verified claim persists ONLY when bound to the served principal.
+#[test]
+fn claim_persists_only_when_bound_to_served_principal() {
+    let claim = |principal: &str| xai_grok_config::signed_policy::ManagedIdentityClaim {
+        typ: xai_grok_config::signed_policy::MANAGED_IDENTITY_TYP.into(),
+        principal: principal.into(),
+        fail_closed: true,
+        expires_at: 4_000_000_000,
+        key_id: "v1".into(),
+    };
+    assert!(claim_binds_to(&claim("team-007"), Some("team-007")));
+    assert!(!claim_binds_to(&claim("team-evil"), Some("team-007")));
+    assert!(!claim_binds_to(&claim("team-007"), None));
+}
+
+/// Old server, no claim envelopes: nothing persists, nothing errors.
+#[test]
+fn absent_claim_is_skipped() {
+    assert!(verified_claim_sidecar(&ManagedConfigResponse::default(), Some("team-007")).is_none());
+}

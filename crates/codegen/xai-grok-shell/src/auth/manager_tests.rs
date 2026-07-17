@@ -2520,9 +2520,13 @@ fn apply_user_info_enrichment_preserves_token_fields() {
 
 /// Regression: async provider calls must drive `auth()` so tool requests get refreshed tokens.
 #[tokio::test]
+#[serial_test::serial] // reaches `resolve_static_api_key`, which reads the key env vars
 async fn current_api_key_async_drives_refresh_chain() {
+    use xai_grok_test_support::EnvGuard;
     use xai_grok_tools::types::ApiKeyProvider;
 
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
     let dir = tempfile::tempdir().unwrap();
     let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
     mgr.hot_swap(GrokAuth {
@@ -3387,6 +3391,297 @@ async fn shared_api_key_provider_resolves_live_bearer() {
         provider.current_api_key(),
         Some("rotated-token".to_string()),
         "provider must follow the manager's refresh chain rather than snapshot at startup"
+    );
+}
+
+/// No OAuth session → env or auth.json `xai::api_key` for voice/tools.
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_api_key_provider_static_fallthrough() {
+    use xai_grok_test_support::EnvGuard;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    let provider = shared_api_key_provider(mgr.clone());
+
+    {
+        let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+        let _key = EnvGuard::set("XAI_API_KEY", "env-only-key");
+        assert_eq!(
+            provider.current_api_key_async().await.as_deref(),
+            Some("env-only-key")
+        );
+    }
+
+    {
+        let _xai = EnvGuard::unset("XAI_API_KEY");
+        let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+        crate::auth::store_api_key(dir.path(), "disk-api-key").unwrap();
+        assert_eq!(
+            provider.current_api_key_async().await.as_deref(),
+            Some("disk-api-key")
+        );
+    }
+
+    {
+        let _key = EnvGuard::set("XAI_API_KEY", "env-should-lose");
+        mgr.hot_swap(GrokAuth {
+            key: "session-bearer".into(),
+            expires_at: Some(Utc::now() + Duration::hours(1)),
+            create_time: Utc::now(),
+            ..GrokAuth::test_default()
+        });
+        assert_eq!(
+            provider.current_api_key_async().await.as_deref(),
+            Some("session-bearer")
+        );
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_api_key_provider_kill_switch_blocks_static() {
+    use xai_grok_test_support::EnvGuard;
+
+    let _key = EnvGuard::set("XAI_API_KEY", "blocked");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(
+        dir.path(),
+        GrokComConfig {
+            disable_api_key_auth: Some(true),
+            ..GrokComConfig::default()
+        },
+    ));
+    assert_eq!(
+        shared_api_key_provider(mgr).current_api_key_async().await,
+        None
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_api_key_provider_oidc_preferred_blocks_static() {
+    use xai_grok_test_support::EnvGuard;
+
+    let _key = EnvGuard::set("XAI_API_KEY", "should-not-use");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(
+        dir.path(),
+        GrokComConfig {
+            preferred_method: Some(crate::auth::PreferredAuthMethod::Oidc),
+            ..GrokComConfig::default()
+        },
+    ));
+    assert_eq!(
+        shared_api_key_provider(mgr).current_api_key_async().await,
+        None
+    );
+}
+
+/// preferred_method=api_key: leftover session must not beat static API key.
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_api_key_provider_api_key_preferred_skips_session() {
+    use xai_grok_test_support::EnvGuard;
+
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _key = EnvGuard::set("XAI_API_KEY", "static-preferred");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(
+        dir.path(),
+        GrokComConfig {
+            preferred_method: Some(crate::auth::PreferredAuthMethod::ApiKey),
+            ..GrokComConfig::default()
+        },
+    ));
+    mgr.hot_swap(GrokAuth {
+        key: "leftover-oidc".into(),
+        expires_at: Some(Utc::now() + Duration::hours(1)),
+        create_time: Utc::now(),
+        ..GrokAuth::test_default()
+    });
+    assert_eq!(
+        shared_api_key_provider(mgr)
+            .current_api_key_async()
+            .await
+            .as_deref(),
+        Some("static-preferred")
+    );
+}
+
+/// Expired OAuth must not block static fallthrough on the sync path.
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_api_key_provider_sync_falls_through_when_session_expired() {
+    use xai_grok_test_support::EnvGuard;
+
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _key = EnvGuard::set("XAI_API_KEY", "static-after-expiry");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    mgr.hot_swap(GrokAuth {
+        key: "expired-oidc".into(),
+        auth_mode: AuthMode::Oidc,
+        refresh_token: Some("rt".into()),
+        expires_at: Some(Utc::now() - Duration::hours(1)),
+        ..GrokAuth::test_default()
+    });
+    let provider = shared_api_key_provider(mgr);
+    assert_eq!(
+        provider.current_api_key().as_deref(),
+        Some("static-after-expiry"),
+        "sync path must not return a dead session token over a live static key"
+    );
+    assert_eq!(
+        provider.current_api_key_async().await.as_deref(),
+        Some("static-after-expiry")
+    );
+}
+
+/// A session inside the early-invalidation buffer is still wire-valid and
+/// must beat a static key on the sync path.
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_api_key_provider_sync_buffered_session_beats_static() {
+    use xai_grok_test_support::EnvGuard;
+    use xai_grok_tools::types::ApiKeyProvider;
+
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _key = EnvGuard::set("XAI_API_KEY", "leftover-static");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    // Two minutes out: inside the 5-minute buffer, but accepted on the wire.
+    mgr.hot_swap(GrokAuth {
+        key: "buffered-oidc".into(),
+        auth_mode: AuthMode::Oidc,
+        refresh_token: Some("rt".into()),
+        expires_at: Some(Utc::now() + Duration::minutes(2)),
+        ..GrokAuth::test_default()
+    });
+    let provider = super::SharedAuthKeyProvider(mgr);
+    assert_eq!(provider.current_api_key().as_deref(), Some("buffered-oidc"));
+}
+
+/// Auth.json create, rewrite (including same-length, caught by the inode in
+/// the memo stamp), and logout must all invalidate the disk static-key memo.
+#[tokio::test]
+#[serial_test::serial]
+async fn shared_api_key_provider_disk_memo_follows_rewrites() {
+    use xai_grok_test_support::EnvGuard;
+
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    let provider = shared_api_key_provider(mgr);
+
+    assert_eq!(provider.current_api_key_async().await, None);
+
+    for key in ["first-key", "fresh-key", "second-key-rotated"] {
+        crate::auth::store_api_key(dir.path(), key).unwrap();
+        assert_eq!(provider.current_api_key_async().await.as_deref(), Some(key));
+    }
+
+    crate::auth::clear_api_key(dir.path()).unwrap();
+    assert_eq!(provider.current_api_key_async().await, None);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn process_key_from_model_env_key() {
+    use crate::agent::config::{Config, resolve_model_list};
+    use xai_grok_test_support::EnvGuard;
+
+    const ENV: &str = "TEST_MODEL_ENV_KEY";
+    const TOKEN: &str = "model-env-token";
+
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _tok = EnvGuard::set(ENV, TOKEN);
+
+    let dm = crate::models::default_model();
+    let cfg = Config::new_from_toml_cfg(
+        &toml::from_str(&format!(
+            r#"
+            [model."{dm}"]
+            model = "{dm}"
+            env_key = "{ENV}"
+            "#
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let key = resolve_model_list(&cfg, None)
+        .get(dm)
+        .and_then(|m| m.own_credential())
+        .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    assert!(mgr.current().is_none());
+    mgr.set_process_static_api_key(Some(key));
+    assert_eq!(
+        shared_api_key_provider(mgr)
+            .current_api_key_async()
+            .await
+            .as_deref(),
+        Some(TOKEN)
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn process_key_precedence() {
+    use xai_grok_test_support::EnvGuard;
+
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    let provider = shared_api_key_provider(mgr.clone());
+
+    assert_eq!(provider.current_api_key_async().await, None);
+
+    crate::auth::store_api_key(dir.path(), "disk").unwrap();
+    assert_eq!(
+        provider.current_api_key_async().await.as_deref(),
+        Some("disk")
+    );
+
+    mgr.set_process_static_api_key(Some("  process  ".into()));
+    assert_eq!(
+        provider.current_api_key_async().await.as_deref(),
+        Some("process")
+    );
+
+    {
+        let _key = EnvGuard::set("XAI_API_KEY", "env");
+        assert_eq!(
+            provider.current_api_key_async().await.as_deref(),
+            Some("env")
+        );
+    }
+
+    mgr.set_process_static_api_key(None);
+    assert_eq!(
+        provider.current_api_key_async().await.as_deref(),
+        Some("disk")
+    );
+
+    let dir_blocked = tempfile::tempdir().unwrap();
+    let blocked = Arc::new(AuthManager::new(
+        dir_blocked.path(),
+        GrokComConfig {
+            disable_api_key_auth: Some(true),
+            ..GrokComConfig::default()
+        },
+    ));
+    blocked.set_process_static_api_key(Some("ignored".into()));
+    assert_eq!(
+        shared_api_key_provider(blocked)
+            .current_api_key_async()
+            .await,
+        None
     );
 }
 

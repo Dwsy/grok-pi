@@ -162,6 +162,11 @@ pub struct AuthManager {
     /// disk every few seconds, so per-read logging would flood and no
     /// logging leaves auth.json loss invisible in production captures.
     disk_state: RwLock<Option<DiskAuthState>>,
+    /// See [`Self::cached_disk_api_key`].
+    static_key_cache: parking_lot::Mutex<Option<StaticKeyCacheEntry>>,
+    /// Model `api_key` / resolved `env_key` for voice/tools without a session.
+    /// Not a session token (those live on `inner`). Prefers over disk; env wins.
+    process_static_api_key: parking_lot::RwLock<Option<String>>,
     sleep_gate: SleepGate,
     /// Count of in-flight IdP refreshes (the network call only), so a
     /// sleep-imminent transition can wait for a refresh straddling suspend to
@@ -402,6 +407,8 @@ impl AuthManager {
             proactive_starts: std::sync::atomic::AtomicU32::new(0),
             refresh_notify: Arc::new(tokio::sync::Notify::new()),
             disk_state: RwLock::new(disk_state),
+            static_key_cache: parking_lot::Mutex::new(None),
+            process_static_api_key: parking_lot::RwLock::new(None),
             sleep_gate: SleepGate::default(),
             refresh_in_flight: std::sync::atomic::AtomicU32::new(0),
             refresh_drain_lock: parking_lot::Mutex::new(()),
@@ -709,6 +716,19 @@ impl AuthManager {
     /// Prefer [`Self::auth`] when `.await` is available.
     pub(crate) fn current_or_expired(&self) -> Option<GrokAuth> {
         self.current().or_else(|| self.expired_auth())
+    }
+
+    /// Cached token if still wire-valid ([`Self::is_token_hard_expired`]),
+    /// ignoring the early-invalidation buffer. For sync callers that cannot
+    /// refresh and must not demote a still-accepted token.
+    pub(crate) fn current_wire_valid(&self) -> Option<GrokAuth> {
+        let auth = self
+            .inner
+            .read()
+            .as_ref()
+            .filter(|a| !self.is_token_hard_expired(a))
+            .cloned()?;
+        self.vet_cached(auth)
     }
 
     /// `true` when data collection must be suppressed — the team has ZDR or
@@ -2205,34 +2225,124 @@ pub(crate) fn compute_proactive_sleep(this: &AuthManager) -> StdDuration {
     }
 }
 
-/// Bridges `Arc<AuthManager>` into the `ApiKeyProvider` trait used by
-/// tool clients (image_gen, video_gen, web_search, embedding). Sync callers
-/// get the buffered snapshot; async callers drive the refresh chain.
+/// Tools + pager voice bearer. Static: env → process model key → disk.
+/// Kill-switch / `preferred_method = oidc` block static keys.
 pub(crate) struct SharedAuthKeyProvider(pub Arc<AuthManager>);
 
 impl xai_grok_tools::types::ApiKeyProvider for SharedAuthKeyProvider {
     fn current_api_key(&self) -> Option<String> {
-        self.0.current_or_expired().map(|a| a.key)
+        if prefers_static_api_key(&self.0) {
+            return resolve_static_api_key(&self.0);
+        }
+        // Wire-valid session > static key > expired session (last resort).
+        // Hard expiry, not the refresh buffer: sync cannot refresh, so a
+        // buffered-but-valid token must still beat static.
+        self.0
+            .current_wire_valid()
+            .map(|a| a.key)
+            .or_else(|| resolve_static_api_key(&self.0))
+            .or_else(|| self.0.current_or_expired().map(|a| a.key))
     }
 
     fn current_api_key_async(
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + '_>> {
         let am = self.0.clone();
-        Box::pin(async move { am.get_valid_token().await.ok() })
+        Box::pin(async move {
+            if prefers_static_api_key(&am) {
+                return resolve_static_api_key(&am);
+            }
+            am.get_valid_token()
+                .await
+                .ok()
+                .or_else(|| resolve_static_api_key(&am))
+        })
     }
 }
 
-/// Build a refreshing [`ApiKeyProvider`](xai_grok_tools::types::ApiKeyProvider)
-/// from an `Arc<AuthManager>`.
-///
-/// This is the public, supported way for out-of-crate consumers (e.g. the
-/// pager's voice channel) to obtain a bearer that follows the same refresh
-/// chain as chat / tool traffic, rather than snapshotting a token at startup
-/// (the static-snapshot bug class). The returned
-/// provider resolves a fresh bearer per call via
-/// [`current_api_key_async`](xai_grok_tools::types::ApiKeyProvider::current_api_key_async),
-/// so it works for both OAuth/session (refreshes) and API-key auth.
+fn prefers_static_api_key(am: &AuthManager) -> bool {
+    matches!(
+        am.grok_com_config.preferred_method,
+        Some(super::config::PreferredAuthMethod::ApiKey)
+    )
+}
+
+/// Env → process model key → disk. Off under kill-switch / oidc pin.
+fn resolve_static_api_key(am: &AuthManager) -> Option<String> {
+    if am.grok_com_config.api_key_auth_disabled() {
+        return None;
+    }
+    if matches!(
+        am.grok_com_config.preferred_method,
+        Some(super::config::PreferredAuthMethod::Oidc)
+    ) {
+        return None;
+    }
+    non_empty_key(crate::agent::auth_method::read_xai_api_key_env().ok())
+        .or_else(|| non_empty_key(am.process_static_api_key.read().clone()))
+        .or_else(|| am.cached_disk_api_key())
+}
+
+fn api_key_from_auth_file(path: &Path) -> Option<String> {
+    let map = read_auth_json(path).ok()?;
+    non_empty_key(map.get(super::model::API_KEY_SCOPE).map(|a| a.key.clone()))
+}
+
+/// Memo for [`AuthManager::cached_disk_api_key`]. `stamp == None` = file absent.
+struct StaticKeyCacheEntry {
+    stamp: Option<AuthFileStamp>,
+    key: Option<String>,
+}
+
+/// (inode, mtime, len). `write_auth_json`'s temp+rename allocates a new inode
+/// per rewrite, so even a same-length same-mtime rewrite misses the memo.
+/// Windows has no stable inode (0 there); its fine mtimes suffice.
+type AuthFileStamp = (u64, Option<std::time::SystemTime>, u64);
+
+fn auth_file_stamp(path: &Path) -> Option<AuthFileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let ino = 0;
+    Some((ino, meta.modified().ok(), meta.len()))
+}
+
+impl AuthManager {
+    /// `xai::api_key` from this manager's auth file, memoized on
+    /// [`AuthFileStamp`]: bearer resolution runs per tool call, so this
+    /// costs a `stat` instead of a read+parse on the hot path.
+    fn cached_disk_api_key(&self) -> Option<String> {
+        let stamp = auth_file_stamp(&self.path);
+        let mut cache = self.static_key_cache.lock();
+        match cache.as_ref() {
+            Some(entry) if entry.stamp == stamp => entry.key.clone(),
+            _ => {
+                let key = stamp
+                    .is_some()
+                    .then(|| api_key_from_auth_file(&self.path))
+                    .flatten();
+                *cache = Some(StaticKeyCacheEntry {
+                    stamp,
+                    key: key.clone(),
+                });
+                key
+            }
+        }
+    }
+
+    /// Set the process model key (empty clears). Not for session tokens.
+    pub fn set_process_static_api_key(&self, key: Option<String>) {
+        let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+        *self.process_static_api_key.write() = key;
+    }
+}
+
+fn non_empty_key(key: Option<String>) -> Option<String> {
+    key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
+}
+
+/// Per-request bearer for out-of-crate consumers (e.g. pager voice).
 pub fn shared_api_key_provider(
     auth_manager: Arc<AuthManager>,
 ) -> xai_grok_tools::types::SharedApiKeyProvider {

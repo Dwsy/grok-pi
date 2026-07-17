@@ -586,6 +586,7 @@ fn handle_reload_models(agent: &MvpAgent) -> ExtResult {
     let merged_config = agent.cfg.borrow().clone();
 
     agent.models_manager.apply_config(merged_config);
+    agent.sync_process_static_api_key(None);
 
     let count = agent.models_manager.models().len();
     tracing::info!(count, "model list reloaded from config.toml");
@@ -608,6 +609,7 @@ fn handle_reload_models(agent: &MvpAgent) -> ExtResult {
 /// rather than rebuilding the catalog and notifying clients mid-flight.
 fn handle_reload_models_cache(agent: &MvpAgent) -> ExtResult {
     agent.models_manager.reload_from_disk_cache();
+    agent.sync_process_static_api_key(None);
     ExtMethodResult::success(serde_json::json!({ "reloaded": true }))
         .to_ext_response()
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))

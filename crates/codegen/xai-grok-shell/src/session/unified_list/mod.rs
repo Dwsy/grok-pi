@@ -43,17 +43,7 @@ pub fn facet_registry() -> &'static FacetRegistry {
 /// Hard-off in release builds so they can't enable the
 /// conversations lane via env.
 pub fn conversations_lane_enabled() -> bool {
-    if true {
-        return false;
-    }
-    std::env::var("GROK_SESSION_LIST_CONVERSATIONS")
-        .ok()
-        .is_some_and(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "off" | "no"
-            )
-        })
+    false
 }
 /// Env lane (desktop `GROK_SESSION_LIST_CONVERSATIONS`) OR process-wide
 /// `--chat` (`GROK_CHAT_MODE`); hard-off in release builds.
@@ -742,7 +732,7 @@ mod tests {
             let _on = xai_grok_test_support::EnvGuard::set(GROK_CHAT_MODE_ENV, "1");
             let req = parse_list_req(&raw).expect("parse");
             let parsed = ParsedMeta::parse(req.meta.as_ref());
-            let expected = if false { "chat" } else { "build" };
+            let expected = "build";
             assert_eq!(
                 parsed.facet_filters.get(KIND_FACET_KEY),
                 Some(&vec![serde_json::json!(expected)])

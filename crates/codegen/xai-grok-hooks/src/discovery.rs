@@ -78,14 +78,18 @@ impl HookRegistry {
     /// Recompile the `matcher` field on every [`HookSpec`] from its
     /// `configured_matcher` pattern string.
     ///
-    /// After deserialization, the compiled [`HookMatcher`] is `None`
-    /// (it is `#[serde(skip)]`). This method rebuilds it using the
-    /// same logic as the original parse path, via [`HookMatcher::new`].
+    /// After deserialization the compiled [`HookMatcher`] is `None`
+    /// (`#[serde(skip)]`). This rebuilds it via [`HookMatcher::new`].
     ///
-    /// Specs whose `configured_matcher` is `None` (match-all) are
-    /// left untouched. Invalid patterns are logged and the spec's
-    /// matcher remains `None` (match-all fallback), which is the
-    /// safest fail-open behavior.
+    /// Specs whose `configured_matcher` is `None` (intentional match-all)
+    /// are left untouched. Invalid patterns cannot be rejected the way the
+    /// parse path does (`HookError::InvalidMatcher` + skip the hook): the
+    /// registry is already live, so we install [`HookMatcher::never`]
+    /// instead: fail closed rather than widening to match all.
+    ///
+    /// Call this after any serde / wire restore (e.g. workspace proxy
+    /// `wire_to_hook_registry`). Until then, a configured pattern with
+    /// `matcher: None` behaves as match-all.
     pub fn recompile_matchers(&mut self) {
         for specs in self.hooks.values_mut() {
             for spec in specs.iter_mut() {
@@ -97,9 +101,10 @@ impl HookRegistry {
                                 hook = %spec.name,
                                 pattern = %pattern,
                                 error = %e,
-                                "hooks: failed to recompile matcher after deserialization"
+                                "hooks: hook will match no tools until its matcher pattern is fixed"
                             );
-                            // Leave matcher as None → match-all (fail-open).
+                            // Fail closed: invalid matcher must not match-all.
+                            spec.matcher = Some(HookMatcher::never());
                         }
                     }
                 }
@@ -888,5 +893,104 @@ mod tests {
             load_hooks_from_sources(&[HookSource::SettingsFile(&claude_settings)], &[]);
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert_eq!(registry.len(), 1);
+    }
+
+    /// Wire/serde-shaped spec: compiled matcher cleared, pattern still set.
+    fn recompile_test_spec(
+        name: &str,
+        configured_matcher: Option<&str>,
+    ) -> crate::config::HookSpec {
+        use std::path::PathBuf;
+        crate::config::HookSpec {
+            name: name.into(),
+            event: HookEventName::PreToolUse,
+            handler_type: "command".into(),
+            configured_matcher: configured_matcher.map(str::to_owned),
+            matcher: None,
+            enabled: true,
+            command: Some(PathBuf::from("hook.sh")),
+            command_raw: Some("hook.sh".into()),
+            url: None,
+            url_raw: None,
+            timeout_ms: 5_000,
+            source_dir: PathBuf::from("/tmp"),
+            extra_env: Default::default(),
+        }
+    }
+
+    #[test]
+    fn recompile_matchers_fail_closed_on_invalid_pattern() {
+        // Serde skips `matcher`; recompile must not leave it None (match-all).
+        let mut registry = HookRegistry::default();
+        registry.append_specs(vec![recompile_test_spec("broken", Some("[invalid"))]);
+        registry.recompile_matchers();
+
+        let hooks = registry.hooks_for(HookEventName::PreToolUse);
+        assert_eq!(hooks.len(), 1);
+        let matcher = hooks[0]
+            .matcher
+            .as_ref()
+            .expect("invalid matcher must compile to never-match, not stay None");
+        assert!(!matcher.is_match("run_terminal_command"));
+        assert!(!matcher.is_match("read_file"));
+        assert!(!matcher.is_match("Bash"));
+    }
+
+    #[test]
+    fn recompile_matchers_restores_valid_pattern() {
+        let mut registry = HookRegistry::default();
+        registry.append_specs(vec![recompile_test_spec("ok", Some("Bash"))]);
+        registry.recompile_matchers();
+
+        let matcher = registry.hooks_for(HookEventName::PreToolUse)[0]
+            .matcher
+            .as_ref()
+            .expect("valid matcher should recompile");
+        assert!(matcher.is_match("run_terminal_command"));
+        assert!(!matcher.is_match("read_file"));
+    }
+
+    #[test]
+    fn recompile_matchers_leaves_intentional_match_all() {
+        let mut registry = HookRegistry::default();
+        registry.append_specs(vec![recompile_test_spec("all", None)]);
+        registry.recompile_matchers();
+
+        assert!(
+            registry.hooks_for(HookEventName::PreToolUse)[0]
+                .matcher
+                .is_none(),
+            "no configured pattern must stay match-all (matcher None)"
+        );
+    }
+
+    #[test]
+    fn recompile_matchers_isolates_invalid_sibling() {
+        let mut registry = HookRegistry::default();
+        registry.append_specs(vec![
+            recompile_test_spec("ok", Some("Bash")),
+            recompile_test_spec("broken", Some("[invalid")),
+        ]);
+        registry.recompile_matchers();
+
+        let hooks = registry.hooks_for(HookEventName::PreToolUse);
+        assert_eq!(hooks.len(), 2);
+        let by_name: std::collections::HashMap<_, _> =
+            hooks.iter().map(|h| (h.name.as_str(), h)).collect();
+
+        let ok = by_name["ok"]
+            .matcher
+            .as_ref()
+            .expect("valid sibling must recompile");
+        assert!(ok.is_match("run_terminal_command"));
+        assert!(!ok.is_match("read_file"));
+
+        let broken = by_name["broken"]
+            .matcher
+            .as_ref()
+            .expect("invalid sibling must become never-match");
+        assert!(!broken.is_match("run_terminal_command"));
+        assert!(!broken.is_match("Bash"));
+        assert!(!broken.is_match("read_file"));
     }
 }

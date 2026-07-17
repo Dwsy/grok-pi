@@ -398,8 +398,7 @@ fn initial_injection_backend_params_use_override_min_score() {
         watcher: None,
         stale_claim_secs: 60,
         search_source: "tool",
-        api_key_provider: None,
-        auth_credentials: None,
+        embedding_credentials: crate::session::memory::EndpointScopedCredentials::none(),
     };
     let initial_injection = crate::config::MemoryInitialInjectionConfig {
         enabled: true,
@@ -427,8 +426,7 @@ fn initial_injection_backend_params_preserve_default_zero_min_score() {
         watcher: None,
         stale_claim_secs: 60,
         search_source: "tool",
-        api_key_provider: None,
-        auth_credentials: None,
+        embedding_credentials: crate::session::memory::EndpointScopedCredentials::none(),
     };
     let (adjusted, effective_min_score) = build_initial_injection_backend_params(
         &params,

@@ -30,28 +30,27 @@ impl MvpAgent {
             });
         }
     }
-    /// Remove a session and its thread handle **without** finalizing the cloud
-    /// replica.
-    ///
-    /// Used for dead-actor reaping and idle-unload: the conversation stays
-    /// resumable on disk, so it must NOT be marked "done" upstream. Genuine
-    /// terminal closes go through [`MvpAgent::close_session_explicit`]. Also
-    /// drops the `session_live_state` entry so that map stays bounded.
+    /// Remove a session without finalizing; it stays resumable on disk.
     pub(crate) fn remove_session(&self, id: &acp::SessionId) {
         self.sessions.borrow_mut().remove(id);
-        self.prompt_intake_locks.borrow_mut().remove(id);
+        self.dispatch_locks.borrow_mut().remove(id);
         self.session_threads.borrow_mut().remove(id);
         self.session_index_claims.borrow_mut().remove(id);
         self.require_gateway_sessions.borrow_mut().remove(id);
+        self.model_unavailable_sessions
+            .borrow_mut()
+            .remove(id.0.as_ref());
+        self.permission_event_receivers.borrow_mut().remove(id);
+        self.session_turn_numbers.borrow_mut().remove(id);
         self.session_live_state.borrow_mut().remove(id);
+        if let Some(ops) = self.workspace_ops.borrow().as_ref() {
+            ops.end_local_session(id.0.as_ref());
+        }
     }
-    /// Get-or-create the per-session prompt-intake lock (see
-    /// [`Self::prompt_intake_locks`]). Cheap clone of the shared `Rc`.
-    pub(super) fn prompt_intake_lock(
-        &self,
-        id: &acp::SessionId,
-    ) -> std::rc::Rc<tokio::sync::Mutex<()>> {
-        self.prompt_intake_locks
+    /// Get-or-create the per-session dispatch lock (see
+    /// [`Self::dispatch_locks`]). Cheap clone of the shared `Rc`.
+    pub(super) fn dispatch_lock(&self, id: &acp::SessionId) -> std::rc::Rc<tokio::sync::Mutex<()>> {
+        self.dispatch_locks
             .borrow_mut()
             .entry(id.clone())
             .or_default()

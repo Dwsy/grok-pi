@@ -40,13 +40,6 @@ pub const DEFAULT_PIDFILE_PATH: &str = "/tmp/workspace-server.pid";
 #[cfg(windows)]
 pub const DEFAULT_PIDFILE_PATH: &str = "C:\\Windows\\Temp\\workspace-server.pid";
 
-/// Readiness marker written once the server connection is established; the control
-/// plane polls it and may override the path with `--ready-file`.
-#[cfg(unix)]
-pub const DEFAULT_READY_PATH: &str = "/tmp/workspace-server.ready";
-#[cfg(windows)]
-pub const DEFAULT_READY_PATH: &str = "C:\\Windows\\Temp\\workspace-server.ready";
-
 /// How long a takeover waits for the gracefully-terminated predecessor to
 /// release the pidfile lock before escalating to a forceful kill.
 ///

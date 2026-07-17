@@ -167,8 +167,8 @@ pub struct BlockLine {
     ///
     /// The first line of a block should always have `None`.
     pub joiner: Option<String>,
-    /// OSC 8 URL when paint text is not a scannable absolute path (tool headers).
-    pub link_url: Option<Arc<str>>,
+    /// Semantic link target when paint text cannot recover it (tool headers).
+    pub link_target: Option<crate::render::osc8::LinkTarget>,
 }
 
 impl Default for BlockLine {
@@ -183,7 +183,7 @@ impl Default for BlockLine {
             selection_range: None,
             selection_text: None,
             joiner: None,
-            link_url: None,
+            link_target: None,
         }
     }
 }
@@ -271,11 +271,6 @@ impl BlockLine {
     /// Set the soft-wrap joiner.
     pub fn with_joiner(mut self, joiner: Option<String>) -> Self {
         self.joiner = joiner;
-        self
-    }
-
-    pub fn with_link_url(mut self, url: Option<Arc<str>>) -> Self {
-        self.link_url = url;
         self
     }
 }
@@ -610,7 +605,7 @@ mod tests {
             selection_range: None,
             selection_text: None,
             joiner: None,
-            link_url: None,
+            link_target: None,
         };
     }
 

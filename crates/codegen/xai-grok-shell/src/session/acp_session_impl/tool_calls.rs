@@ -898,9 +898,7 @@ impl SessionActor {
                 .id, decision = "deny", source = "plan_mode", wait_ms = 0_i64,
             )
             .in_scope(|| {});
-            let msg = match plan_gate {
-                _ => self.plan_mode_edit_rejected_message().await,
-            };
+            let msg = self.plan_mode_edit_rejected_message().await;
             self.handle_tool_not_executed(&call.id, &tool_call_id, msg)
                 .await?;
             return Ok(Err(ToolLoop::Continue));

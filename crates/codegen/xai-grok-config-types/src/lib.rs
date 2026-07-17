@@ -227,8 +227,6 @@ pub struct RemoteSettings {
     /// When `Some(true)`, capture workspace files for non-git project dirs (client default: off).
     #[serde(default)]
     pub non_git_workspace_capture: Option<bool>,
-    #[serde(default)]
-    pub persistent_local_shell: Option<bool>,
     /// Release channel: `"stable"` or `"alpha"`.
     /// Fallback when no local `[cli] channel` or `--alpha`/`--stable` flag is set.
     #[serde(default)]
@@ -817,6 +815,9 @@ pub struct ContextualHintsRemote {
     /// Word-select tip after double-click fold/nav (settings discoverability).
     #[serde(default)]
     pub word_select: Option<bool>,
+    /// SSH wrap session-load tip (recommend `grok wrap ssh` for remote sessions).
+    #[serde(default)]
+    pub ssh_wrap: Option<bool>,
 }
 /// Tolerant deserializer for `Option<Vec<RemoteAnnouncement>>`.
 /// Parses as Vec<Value>, tries each as RemoteAnnouncement, drops failures.

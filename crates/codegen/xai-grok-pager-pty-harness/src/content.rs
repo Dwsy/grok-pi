@@ -19,7 +19,9 @@ pub use xai_grok_test_support::mock_server::MockModelEntry as MockModel;
 pub use xai_grok_test_support::mock_server::StorageUpload;
 // SSE event builders for `enqueue_response` scripts (reasoning turns etc.).
 pub use xai_grok_test_support::sse;
-pub use xai_grok_test_support::{ScriptedResponse, SseEvent};
+pub use xai_grok_test_support::{
+    InferenceEndpoint, InferenceExpectation, InferenceRequestMatcher, ScriptedResponse, SseEvent,
+};
 
 /// Drives content into the pager by serving a mock inference endpoint that
 /// the bundled shell agent hits for `/v1/chat/completions` and `/v1/responses`.
@@ -96,21 +98,9 @@ impl ContentController {
             ("GROK_TELEMETRY_ENABLED".into(), "false".into()),
             ("GROK_FEEDBACK_ENABLED".into(), "false".into()),
             ("GROK_TRACE_UPLOAD".into(), "false".into()),
-            // Next-prompt autocomplete fires an extra background model call
-            // at every turn end (default ON). Off by default in PTY tests so
-            // the mock's fixed response can't leak in as ghost text and
-            // scripted per-path FIFOs aren't consumed by it. Tests exercising
-            // the feature re-enable it via extra env.
+            // Keep unrelated autocomplete work out of PTY timing assertions.
             ("GROK_PROMPT_SUGGESTIONS".into(), "false".into()),
-            // No inference retries in tests. The mock always answers 200, so a
-            // retry only ever fires when a turn is deliberately stalled
-            // (`hold_agent_completions` / a long `chunk_delay`). On a slow
-            // runner that stall can exceed the client's first-token budget and
-            // retry the request — and because the mock serves `set_agent_turns`
-            // by popping one response per REQUEST, a retry consumes the next
-            // turn's slot, misaligning every following turn (the promoted queue
-            // prompt then hangs waiting for a response that was already popped).
-            // Pinning retries to 0 keeps one request == one turn.
+            // Compatibility set_turns remains request-FIFO, so retries stay off.
             ("GROK_MAX_RETRIES".into(), "0".into()),
         ]
     }
@@ -140,11 +130,11 @@ impl ContentController {
         self.server.set_chunk_delay(delay);
     }
 
-    /// Hold every agent turn's completion until [`release_agent_completions`]
-    /// is called. Keeps a turn deterministically "streaming" so a test can
-    /// interact with it (queue edits/removals) without racing turn end.
+    /// Hold foreground completions until [`release_agent_completions`].
+    /// Prefer [`expect_response_blocked`] for new tests.
     ///
     /// [`release_agent_completions`]: Self::release_agent_completions
+    /// [`expect_response_blocked`]: Self::expect_response_blocked
     pub fn hold_agent_completions(&self) {
         self.server.hold_agent_completions();
     }
@@ -157,8 +147,27 @@ impl ContentController {
         self.server.release_agent_completions();
     }
 
-    /// Queue one response per agent turn (FIFO) so each carries a distinct
-    /// sentinel. See [`MockInferenceServer::set_agent_turns`].
+    /// Register a named response for the next matching inference request.
+    pub fn expect_response(
+        &self,
+        name: impl Into<String>,
+        matcher: InferenceRequestMatcher,
+        response: ScriptedResponse,
+    ) -> InferenceExpectation {
+        self.server.expect_response(name, matcher, response)
+    }
+
+    /// Register one named response held immediately before its terminal event.
+    pub fn expect_response_blocked(
+        &self,
+        name: impl Into<String>,
+        matcher: InferenceRequestMatcher,
+        response: ScriptedResponse,
+    ) -> InferenceExpectation {
+        self.server.expect_response_blocked(name, matcher, response)
+    }
+
+    /// Queue one compatibility response per foreground turn.
     pub fn set_turns(&self, turns: impl IntoIterator<Item = String>) {
         self.server.set_agent_turns(turns);
     }

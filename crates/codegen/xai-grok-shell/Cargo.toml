@@ -1,14 +1,13 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "0.1.220-alpha.4"
+version = "0.2.102"
 edition.workspace = true
 
 [features]
 default = []
 unstable = []
-default-bazel = [
-    ]
+default-bazel = []
 
 [dependencies]
 dunce = { workspace = true }
@@ -184,13 +183,9 @@ windows = { workspace = true }
 criterion = { workspace = true }
 filetime = { workspace = true }
 tempfile = { workspace = true }
-xai-grok-memory = { workspace = true, features = [] }
-xai-grok-workspace = { workspace = true, features = [] }
-# Feature-unification applies the signing seam to the lib when building tests, so
-# integration tests can inject a throwaway trusted key; production builds exclude
-# dev-deps and compile the seam out.
+xai-grok-memory = { workspace = true, features = ["test-support"] }
+xai-grok-workspace = { workspace = true, features = ["test-support"] }
 xai-grok-config = { workspace = true, features = [] }
-# Ed25519 signing for the managed-config signature tests.
 ring = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
@@ -199,7 +194,7 @@ semver = { workspace = true }
 serial_test = { workspace = true }
 # Test-only builds expose `env::EnvVarGuard` and the cpu_profile test seams to
 # this crate's test targets.
-xai-grok-shell-base = { workspace = true, features = [] }
+xai-grok-shell-base = { workspace = true, features = ["test-support"] }
 xai-grok-test-support = { workspace = true, features = [] }
 xai-test-utils = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual

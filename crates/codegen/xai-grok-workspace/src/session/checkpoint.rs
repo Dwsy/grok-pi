@@ -267,8 +267,7 @@ impl WorkspaceHandle {
                 self.shared
                     .activity_tracker
                     .turn_started(session_id, turn_number);
-                let handle = None;
-                handle
+                None
             }
             TurnBoundary::End {
                 prompt_index: Some(idx),

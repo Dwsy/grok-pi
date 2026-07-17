@@ -334,6 +334,13 @@ pub enum InstallError {
     #[error("SHA verification failed: expected {expected}, got {actual}")]
     ShaMismatch { expected: String, actual: String },
 
+    #[error(
+        "refusing unpinned remote plugin code for '{plugin}' from {url}: \
+         marketplace.require_sha / GROK_MARKETPLACE_REQUIRE_SHA is enabled and \
+         no full commit sha (40/64 hex) is pinned"
+    )]
+    UnpinnedRemoteRefused { plugin: String, url: String },
+
     #[error("install failed: {detail}")]
     InstallFailed { detail: String },
 }

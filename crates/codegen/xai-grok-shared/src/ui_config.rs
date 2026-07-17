@@ -188,6 +188,10 @@ pub struct ContextualHints {
     /// is still fold/nav (`flash` / `hold`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub word_select: Option<bool>,
+    /// SSH wrap session-load tip (recommend `grok wrap ssh` when the session
+    /// runs over SSH without an OSC 52 sink).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_wrap: Option<bool>,
 }
 
 impl ContextualHints {
@@ -200,6 +204,7 @@ impl ContextualHints {
             && self.send_now.is_none()
             && self.small_screen.is_none()
             && self.word_select.is_none()
+            && self.ssh_wrap.is_none()
     }
 }
 

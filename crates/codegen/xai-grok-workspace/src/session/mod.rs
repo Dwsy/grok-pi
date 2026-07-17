@@ -57,6 +57,13 @@ pub struct WorkspaceSession {
     pub(crate) depth: u32,
     pub(crate) fork_budget: u32,
     pub(crate) hunk_tracker: HunkTrackerHandle,
+    /// Cancel token for the workspace-spawned [`HunkTrackerActor`] backing
+    /// [`Self::hunk_tracker`], fired on session teardown by
+    /// [`Self::cancel_hunk_tracker`]. `None` when the tracker is externally
+    /// owned (e.g. `create_session_with_tracker` / local shell mode).
+    ///
+    /// [`HunkTrackerActor`]: xai_hunk_tracker::HunkTrackerActor
+    pub(crate) hunk_tracker_cancel: Option<tokio_util::sync::CancellationToken>,
     pub(crate) file_state_tracker: Arc<FileStateTracker>,
     /// Per-turn hunk deltas keyed by `prompt_index`, captured at finalize and
     /// replayed on rewind (only when `workspace_rewind_hunks` is on). The live
@@ -154,6 +161,7 @@ impl WorkspaceSession {
         toolset: Arc<FinalizedToolset>,
         terminal_backend: crate::config::SessionTerminalBackend,
         hunk_tracker: HunkTrackerHandle,
+        hunk_tracker_cancel: Option<tokio_util::sync::CancellationToken>,
         viewer_ctx: Option<WorkspaceViewerContext>,
         #[allow(dead_code)] system_notifications: bool,
         system_notify_channel: Option<(
@@ -177,6 +185,7 @@ impl WorkspaceSession {
             depth,
             fork_budget,
             hunk_tracker,
+            hunk_tracker_cancel,
             file_state_tracker,
             hunk_checkpoints: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             git_checkpoints: crate::session::git::GitCheckpointStore::new(),
@@ -298,6 +307,15 @@ impl WorkspaceSession {
     /// toolset `Arc` drops.
     pub(crate) fn shutdown_terminal_backend(&self) {
         self.terminal_backend.shutdown();
+    }
+    /// Cancel the workspace-spawned hunk-tracker actor, if this session owns
+    /// one. Runs at the session drop chokepoints so the actor (which pins file
+    /// contents in `file_states`) stops even while leaked handle clones hold
+    /// its channel open.
+    pub(crate) fn cancel_hunk_tracker(&self) {
+        if let Some(token) = &self.hunk_tracker_cancel {
+            token.cancel();
+        }
     }
     /// Return the current resolved toolset (snapshot).
     pub fn toolset(&self) -> Arc<FinalizedToolset> {

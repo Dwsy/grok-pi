@@ -9,12 +9,21 @@ use serde::{Deserialize, Serialize};
 /// verifiers can distinguish generations; `0` means a pre-versioned payload.
 pub const SIGNED_PAYLOAD_VERSION: u32 = 1;
 
+/// Domain-separation tags inside the signed bytes: both message types share one
+/// signing key, so each verifier requires its own tag (no cross-substitution).
+pub const MANAGED_POLICY_TYP: &str = "grok.managed_policy.v1";
+pub const MANAGED_IDENTITY_TYP: &str = "grok.managed_identity.v1";
+
 /// The exact bytes the server signs: the served policy, the principal it is
 /// bound to, and an expiry. Serialized once on the server and shipped verbatim
 /// as `signed_payload`, so the client verifies the received bytes directly
 /// instead of re-canonicalizing (no cross-language serialization drift).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedPayload {
+    /// Domain-separation tag; the verifier requires [`MANAGED_POLICY_TYP`].
+    /// `default` so untagged JSON parses — verification still rejects it.
+    #[serde(default)]
+    pub typ: String,
     /// Payload format version ([`SIGNED_PAYLOAD_VERSION`]); `default` 0 so
     /// pre-versioned sidecars parse and verify unchanged.
     #[serde(default)]
@@ -34,6 +43,26 @@ pub struct SignedPayload {
     /// Unix seconds after which the signature is no longer trusted.
     pub expires_at: u64,
     /// Identifies the signing key, so a rotation can be distinguished.
+    pub key_id: String,
+}
+
+/// Server-signed claim that a principal is managed (+ fail-closed), persisted by
+/// the client as its OWN sidecar — so deleting the policy sidecar alone cannot
+/// downgrade the load-time gate to the forgeable marker.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedIdentityClaim {
+    /// Domain-separation tag — the verifier requires [`MANAGED_IDENTITY_TYP`].
+    #[serde(default)]
+    pub typ: String,
+    /// The managed principal (deployment or team id) this claim is bound to.
+    pub principal: String,
+    /// Strict opt-in, same server source as the policy's; `default` false so an
+    /// older/partial claim never imposes.
+    #[serde(default)]
+    pub fail_closed: bool,
+    /// Unix seconds after which the claim is no longer trusted.
+    pub expires_at: u64,
+    /// Signing key id (same rotation set as the policy envelope).
     pub key_id: String,
 }
 
@@ -61,17 +90,41 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// The `requirements.toml` opt-in key for strict (fail-closed) enforcement.
+/// `requirements.toml` key for strict (fail-closed) enforcement.
 pub const FAIL_CLOSED_KEY: &str = "fail_closed";
 
-/// Read the `fail_closed` opt-in from a requirements-TOML string — THE canonical parse,
-/// shared by the cli-chat-proxy signer and the client so the two sides can't drift.
-/// Invalid TOML or a non-bool value → `false`.
-pub fn fail_closed_flag_from_str(requirements: &str) -> bool {
-    toml::from_str::<toml::Value>(requirements)
-        .ok()
-        .and_then(|v| v.get(FAIL_CLOSED_KEY).and_then(toml::Value::as_bool))
-        .unwrap_or(false)
+/// Parse result for `fail_closed`. [`Invalid`] = key present but not a bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailClosedFlag {
+    True,
+    False,
+    Invalid,
+}
+
+impl FailClosedFlag {
+    pub fn is_enabled(self) -> bool {
+        matches!(self, Self::True)
+    }
+}
+
+/// Shared `fail_closed` parse (signer + client). Bad TOML → False; non-bool key → Invalid.
+pub fn fail_closed_flag_status(requirements: &str) -> FailClosedFlag {
+    let Ok(v) = toml::from_str::<toml::Value>(requirements) else {
+        return FailClosedFlag::False;
+    };
+    fail_closed_flag_status_from_value(&v)
+}
+
+/// [`fail_closed_flag_status`] for an already-parsed table.
+pub fn fail_closed_flag_status_from_value(requirements: &toml::Value) -> FailClosedFlag {
+    match requirements.get(FAIL_CLOSED_KEY) {
+        None => FailClosedFlag::False,
+        Some(val) => match val.as_bool() {
+            Some(true) => FailClosedFlag::True,
+            Some(false) => FailClosedFlag::False,
+            None => FailClosedFlag::Invalid,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +136,7 @@ mod tests {
     #[test]
     fn signed_payload_version_round_trips_and_defaults() {
         let versioned = SignedPayload {
+            typ: MANAGED_POLICY_TYP.to_owned(),
             version: SIGNED_PAYLOAD_VERSION,
             deployment_id: None,
             team_id: Some("team-007".into()),
@@ -101,5 +155,61 @@ mod tests {
         let legacy: SignedPayload =
             serde_json::from_str(r#"{"expires_at": 1, "key_id": "v1"}"#).unwrap();
         assert_eq!(legacy.version, 0, "pre-versioned payloads default to 0");
+        assert_eq!(
+            legacy.typ, "",
+            "an untagged payload parses (verifiers reject it)"
+        );
+    }
+
+    /// The claim round-trips; `fail_closed` is additive (absent → permissive).
+    #[test]
+    fn managed_identity_claim_round_trips_and_defaults() {
+        let claim = ManagedIdentityClaim {
+            typ: MANAGED_IDENTITY_TYP.to_owned(),
+            principal: "team-007".into(),
+            fail_closed: true,
+            expires_at: 4_000_000_000,
+            key_id: "v1".into(),
+        };
+        let json = serde_json::to_string(&claim).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ManagedIdentityClaim>(&json).unwrap(),
+            claim
+        );
+
+        let partial: ManagedIdentityClaim = serde_json::from_str(
+            r#"{"typ":"grok.managed_identity.v1","principal":"team-007","expires_at":1,"key_id":"v1"}"#,
+        )
+        .unwrap();
+        assert!(!partial.fail_closed, "a partial claim parses permissive");
+    }
+
+    #[test]
+    fn fail_closed_flag_status_distinguishes_invalid() {
+        assert_eq!(
+            fail_closed_flag_status("fail_closed = true\n"),
+            FailClosedFlag::True
+        );
+        assert_eq!(
+            fail_closed_flag_status("fail_closed = false\n"),
+            FailClosedFlag::False
+        );
+        assert_eq!(
+            fail_closed_flag_status("[features]\n"),
+            FailClosedFlag::False
+        );
+        assert_eq!(
+            fail_closed_flag_status("fail_closed = \"true\"\n"),
+            FailClosedFlag::Invalid
+        );
+        assert_eq!(
+            fail_closed_flag_status("fail_closed = 1\n"),
+            FailClosedFlag::Invalid
+        );
+        // Unparseable TOML: no key to warn about.
+        assert_eq!(
+            fail_closed_flag_status("not = = valid"),
+            FailClosedFlag::False
+        );
     }
 }

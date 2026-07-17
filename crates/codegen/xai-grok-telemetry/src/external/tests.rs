@@ -718,6 +718,8 @@ fn contextual_tip_maps_every_tip_and_action() {
         (K::SmallScreen, A::Accepted, "small_screen", "accepted"),
         (K::WordSelect, A::Shown, "word_select", "shown"),
         (K::WordSelect, A::Accepted, "word_select", "accepted"),
+        (K::SshWrap, A::Shown, "ssh_wrap", "shown"),
+        (K::SshWrap, A::Accepted, "ssh_wrap", "accepted"),
     ];
     for (tip, action, tip_label, action_label) in cases {
         let stream = build(gates_off());

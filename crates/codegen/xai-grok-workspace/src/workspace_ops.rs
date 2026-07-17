@@ -867,14 +867,17 @@ fn hook_registry_to_wire(
         serde_json::to_value(registry).map_err(|e| WorkspaceError::HubError(e.to_string()))?;
     serde_json::from_value(value).map_err(|e| WorkspaceError::HubError(e.to_string()))
 }
-/// Inverse of [`hook_registry_to_wire`]. The compiled `matcher` is absent from
-/// the wire (and from this result); callers recompile it via
-/// `HookRegistry::recompile_matchers`, exactly as the proxy path already did.
+/// Inverse of [`hook_registry_to_wire`]. Rebuilds compiled matchers via
+/// [`HookRegistry::recompile_matchers`] so invalid patterns fail closed
+/// (match nothing) rather than widening to match-all after the wire hop.
 fn wire_to_hook_registry(
     wire: &HookRegistryWire,
 ) -> WorkspaceResult<xai_grok_hooks::discovery::HookRegistry> {
     let value = serde_json::to_value(wire).map_err(|e| WorkspaceError::HubError(e.to_string()))?;
-    serde_json::from_value(value).map_err(|e| WorkspaceError::HubError(e.to_string()))
+    let mut registry: xai_grok_hooks::discovery::HookRegistry =
+        serde_json::from_value(value).map_err(|e| WorkspaceError::HubError(e.to_string()))?;
+    registry.recompile_matchers();
+    Ok(registry)
 }
 #[async_trait]
 impl WorkspaceOp for HookRegistryReq {
@@ -1514,7 +1517,7 @@ impl WorkspaceOps {
         }
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl WorkspaceOps {
     /// Test variant backed by a temp dir.
     ///

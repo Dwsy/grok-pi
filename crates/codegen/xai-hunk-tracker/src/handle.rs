@@ -33,6 +33,12 @@ impl HunkTrackerHandle {
         Self { cmd_tx }
     }
 
+    /// Whether the backing actor has exited (its command receiver was
+    /// dropped), observable even while handle clones are alive.
+    pub fn is_closed(&self) -> bool {
+        self.cmd_tx.is_closed()
+    }
+
     /// Record that an agent tool wrote to a file.
     /// This is fire-and-forget - doesn't wait for processing.
     ///

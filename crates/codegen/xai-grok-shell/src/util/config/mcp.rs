@@ -12,7 +12,11 @@ use xai_grok_tools::types::compat::{CompatConfig, CompatConfigToml};
 pub use xai_grok_mcp::oauth_config::{McpOAuthConfig, McpOAuthConfigMap};
 // MCP server config value types extracted to `xai-grok-config-types` (config
 // dependency inversion); re-exported so `crate::util::config::*` paths keep working.
-pub use xai_grok_config_types::{McpJsonOAuthBlock, McpServerConfig, McpServerTransportConfig};
+pub use xai_grok_config_types::{
+    McpJsonOAuthBlock, McpPreferenceSource, McpPreferencesFile, McpServerConfig,
+    McpServerPreferences, McpServerTransportConfig, McpSetupConfig, McpSetupDerivedValue,
+    McpSetupField, McpSetupFieldType, McpSetupOption, McpSetupResolution,
+};
 // Permission-policy value types likewise extracted; re-exported to keep paths stable.
 pub use xai_grok_config_types::{
     PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
@@ -141,8 +145,17 @@ pub fn load_mcp_servers_with_oauth(
     let mut oauth_configs = McpOAuthConfigMap::new();
     let mut acp_servers = Vec::new();
 
+    let preferences = load_mcp_preferences().file();
     let sub = &crate::config::expand_env_vars_in_string;
-    for (name, mut config) in servers_map {
+    for (name, config) in servers_map {
+        let mut config = match config.resolve_setup(preferences.servers.get(&name)) {
+            McpSetupResolution::Resolved(config) => config,
+            McpSetupResolution::Required(_) => continue,
+            McpSetupResolution::Invalid(reason) => {
+                tracing::warn!(server = %name, error = %reason, "MCP setup config is invalid");
+                continue;
+            }
+        };
         config.expand_strings(sub);
         if let Some(oauth) = config.oauth_config() {
             oauth_configs.insert(name.clone(), oauth);
@@ -195,10 +208,19 @@ pub fn load_mcp_servers(cwd: &std::path::Path, compat: &CompatConfig) -> Vec<acp
 /// tracking. Using [`load_mcp_servers`] there would cause all entries to be
 /// tagged as `ConfigSource::ConfigToml`, hiding the true origin.
 pub(crate) fn load_mcp_servers_toml_only(cwd: &std::path::Path) -> Vec<acp::McpServer> {
+    let preferences = load_mcp_preferences().file();
     let sub = &crate::config::expand_env_vars_in_string;
     load_all_mcp_configs(cwd)
         .into_iter()
-        .filter_map(|(name, mut config)| {
+        .filter_map(|(name, config)| {
+            let mut config = match config.resolve_setup(preferences.servers.get(&name)) {
+                McpSetupResolution::Resolved(config) => config,
+                McpSetupResolution::Required(_) => return None,
+                McpSetupResolution::Invalid(reason) => {
+                    tracing::warn!(server = %name, error = %reason, "MCP setup config is invalid");
+                    return None;
+                }
+            };
             config.expand_strings(sub);
             config.to_acp_mcp_server(name)
         })
@@ -267,10 +289,19 @@ pub(crate) fn reload_mcp_servers_merged(
         servers.entry(name).or_insert(config);
     }
 
+    let preferences = load_mcp_preferences().file();
     let sub = &crate::config::expand_env_vars_in_string;
     servers
         .into_iter()
-        .filter_map(|(name, mut config)| {
+        .filter_map(|(name, config)| {
+            let mut config = match config.resolve_setup(preferences.servers.get(&name)) {
+                McpSetupResolution::Resolved(config) => config,
+                McpSetupResolution::Required(_) => return None,
+                McpSetupResolution::Invalid(reason) => {
+                    tracing::warn!(server = %name, error = %reason, "MCP setup config is invalid");
+                    return None;
+                }
+            };
             config.expand_strings(sub);
             config.to_acp_mcp_server(name)
         })
@@ -315,6 +346,230 @@ pub fn load_mcp_json_servers(cwd: &std::path::Path) -> Vec<acp::McpServer> {
 /// All server names from config.toml (including `enabled = false`).
 pub fn all_toml_mcp_server_names(cwd: &std::path::Path) -> std::collections::HashSet<String> {
     load_all_mcp_configs(cwd).keys().cloned().collect()
+}
+
+pub fn mcp_preferences_path() -> PathBuf {
+    xai_grok_config::grok_home().join("mcp_preferences.json")
+}
+
+/// Result of loading prefs. Corrupt files are readable as empty for resolution
+/// but must not be overwritten (would clobber other servers).
+#[derive(Debug, Clone)]
+pub enum McpPreferencesLoad {
+    Ok(McpPreferencesFile),
+    Missing,
+    Corrupt,
+}
+
+impl McpPreferencesLoad {
+    pub fn file(&self) -> McpPreferencesFile {
+        match self {
+            Self::Ok(f) => f.clone(),
+            Self::Missing | Self::Corrupt => McpPreferencesFile::default(),
+        }
+    }
+
+    pub fn is_writable(&self) -> bool {
+        !matches!(self, Self::Corrupt)
+    }
+}
+
+pub fn load_mcp_preferences() -> McpPreferencesLoad {
+    load_mcp_preferences_from(&mcp_preferences_path())
+}
+
+pub fn load_mcp_preferences_from(path: &std::path::Path) -> McpPreferencesLoad {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return McpPreferencesLoad::Missing,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to read MCP preferences");
+            return McpPreferencesLoad::Corrupt;
+        }
+    };
+    match serde_json::from_str(&content) {
+        Ok(file) => McpPreferencesLoad::Ok(file),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to parse MCP preferences");
+            McpPreferencesLoad::Corrupt
+        }
+    }
+}
+
+pub async fn save_mcp_preferences(prefs: &McpPreferencesFile) -> Result<()> {
+    save_mcp_preferences_to(&mcp_preferences_path(), prefs).await
+}
+
+pub async fn save_mcp_preferences_to(
+    path: &std::path::Path,
+    prefs: &McpPreferencesFile,
+) -> Result<()> {
+    if matches!(load_mcp_preferences_from(path), McpPreferencesLoad::Corrupt) {
+        anyhow::bail!(
+            "refusing to overwrite unreadable MCP preferences at {}",
+            path.display()
+        );
+    }
+    let json = serde_json::to_string_pretty(prefs)?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let tmp = path.with_extension(format!(
+        "json.tmp.{}{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    tokio::fs::write(&tmp, &json).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to set mcp preferences permissions: {e}"))?;
+    }
+    tokio::fs::rename(&tmp, path).await?;
+    Ok(())
+}
+
+/// Restore a single server key after a failed setup (best-effort).
+pub async fn restore_mcp_preference_server(
+    server_name: &str,
+    previous: Option<McpServerPreferences>,
+) -> Result<()> {
+    let load = load_mcp_preferences();
+    if !load.is_writable() {
+        return Ok(());
+    }
+    let mut prefs = load.file();
+    match previous {
+        Some(entry) => {
+            prefs.servers.insert(server_name.to_string(), entry);
+        }
+        None => {
+            prefs.servers.remove(server_name);
+        }
+    }
+    save_mcp_preferences(&prefs).await
+}
+
+/// Unresolved setup-bearing MCP config collected for `/mcps` list and auth.
+#[derive(Debug, Clone)]
+pub struct McpSetupServerEntry {
+    pub name: String,
+    pub config: McpServerConfig,
+    pub source: McpPreferenceSource,
+}
+
+/// Collect MCP configs that declare a `setup` schema from config and plugins.
+/// Used to surface setup-required rows and drive `x.ai/mcp/setup`.
+pub fn collect_mcp_setup_configs(
+    cwd: &std::path::Path,
+    plugin_registry: Option<&xai_grok_agent::plugins::PluginRegistry>,
+    compat: &CompatConfig,
+) -> IndexMap<String, McpSetupServerEntry> {
+    let mut result = IndexMap::new();
+    for (name, (config, scope)) in load_mcp_server_configs_with_project(cwd) {
+        if !config.enabled || config.setup.is_none() {
+            continue;
+        }
+        result.insert(
+            name.clone(),
+            McpSetupServerEntry {
+                name,
+                config,
+                source: McpPreferenceSource {
+                    kind: "config".to_string(),
+                    plugin: None,
+                    scope: Some(scope.to_string()),
+                },
+            },
+        );
+    }
+    if !crate::claude_import::is_claude_import_marked_with_log("collect_mcp_setup_configs") {
+        for (name, config) in load_claude_json_mcp_servers_as_configs(cwd, compat) {
+            if !config.enabled || config.setup.is_none() {
+                continue;
+            }
+            result.entry(name.clone()).or_insert(McpSetupServerEntry {
+                name,
+                config,
+                source: McpPreferenceSource {
+                    kind: "config".to_string(),
+                    plugin: None,
+                    scope: Some(MCP_SCOPE_USER.to_string()),
+                },
+            });
+        }
+        for (name, config) in load_cursor_mcp_servers_as_configs(cwd, compat) {
+            if !config.enabled || config.setup.is_none() {
+                continue;
+            }
+            result.entry(name.clone()).or_insert(McpSetupServerEntry {
+                name,
+                config,
+                source: McpPreferenceSource {
+                    kind: "config".to_string(),
+                    plugin: None,
+                    scope: Some(MCP_SCOPE_USER.to_string()),
+                },
+            });
+        }
+        for (name, config) in load_mcp_json_servers_as_configs(cwd) {
+            if !config.enabled || config.setup.is_none() {
+                continue;
+            }
+            result.entry(name.clone()).or_insert(McpSetupServerEntry {
+                name,
+                config,
+                source: McpPreferenceSource {
+                    kind: "config".to_string(),
+                    plugin: None,
+                    scope: Some(MCP_SCOPE_PROJECT.to_string()),
+                },
+            });
+        }
+    }
+    if let Some(registry) = plugin_registry {
+        let toml_claimed_names = all_toml_mcp_server_names(cwd);
+        for plugin in registry.active_plugins() {
+            // File first, then inline; first-wins matches runtime plugin load.
+            let mut plugin_configs = IndexMap::new();
+            if let Some(ref mcp_path) = plugin.mcp_config_path
+                && let Some(config) = read_mcp_json(mcp_path)
+            {
+                for (name, server) in config.mcp_servers {
+                    plugin_configs.entry(name).or_insert(server);
+                }
+            }
+            if let Some(ref inline_value) = plugin.inline_mcp_servers {
+                let normalized =
+                    xai_grok_agent::plugins::manifest::normalize_inline_mcp_servers(inline_value);
+                if let Ok(config) = serde_json::from_value::<McpConfig>(normalized) {
+                    for (name, server) in config.mcp_servers {
+                        plugin_configs.entry(name).or_insert(server);
+                    }
+                }
+            }
+            for (name, config) in plugin_configs {
+                if toml_claimed_names.contains(&name) || !config.enabled || config.setup.is_none() {
+                    continue;
+                }
+                result.entry(name.clone()).or_insert(McpSetupServerEntry {
+                    name,
+                    config,
+                    source: McpPreferenceSource {
+                        kind: "plugin".to_string(),
+                        plugin: Some(plugin.name.clone()),
+                        scope: None,
+                    },
+                });
+            }
+        }
+    }
+    result
 }
 
 pub const MANAGED_GATEWAY_DISABLED_CONNECTORS_KEY: &str = "__managed_gateway_connectors";
@@ -681,10 +936,23 @@ pub(crate) fn parse_mcp_config_with_oauth(
     source_label: &str,
     sub: &dyn Fn(&str) -> String,
 ) -> (Vec<acp::McpServer>, McpOAuthConfigMap) {
+    let preferences = load_mcp_preferences().file();
     let mut servers = Vec::new();
     let mut oauth_configs = McpOAuthConfigMap::new();
     for (name, server_config) in &config.mcp_servers {
-        let mut server_config = server_config.clone();
+        let mut server_config = match server_config.resolve_setup(preferences.servers.get(name)) {
+            McpSetupResolution::Resolved(config) => config,
+            McpSetupResolution::Required(_) => continue,
+            McpSetupResolution::Invalid(reason) => {
+                tracing::warn!(
+                    source = source_label,
+                    server = %name,
+                    error = %reason,
+                    "MCP setup config is invalid"
+                );
+                continue;
+            }
+        };
         server_config.expand_strings(sub);
         if let Some(oauth) = server_config.oauth_config() {
             oauth_configs.insert(name.clone(), oauth);
@@ -1648,6 +1916,53 @@ enabled = false
                 tmp.path().join("a").join(".mcp.json"),
                 nested.join(".mcp.json"),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_preferences_missing_malformed_and_save_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp_preferences.json");
+        assert!(matches!(
+            load_mcp_preferences_from(&path),
+            McpPreferencesLoad::Missing
+        ));
+        assert!(load_mcp_preferences_from(&path).file().servers.is_empty());
+
+        std::fs::write(&path, "not json").unwrap();
+        assert!(matches!(
+            load_mcp_preferences_from(&path),
+            McpPreferencesLoad::Corrupt
+        ));
+        let prefs = McpPreferencesFile {
+            version: 1,
+            servers: HashMap::from([(
+                "acme".to_string(),
+                McpServerPreferences {
+                    values: HashMap::from([("site".to_string(), "us5".to_string())]),
+                    source: Some(McpPreferenceSource {
+                        kind: "plugin".to_string(),
+                        plugin: Some("acme".to_string()),
+                        scope: None,
+                    }),
+                    updated_at: Some("2026-06-19T00:00:00Z".to_string()),
+                },
+            )]),
+        };
+        assert!(save_mcp_preferences_to(&path, &prefs).await.is_err());
+
+        std::fs::remove_file(&path).unwrap();
+        save_mcp_preferences_to(&path, &prefs).await.unwrap();
+        let loaded = load_mcp_preferences_from(&path).file();
+        assert_eq!(loaded.servers["acme"].values["site"], "us5");
+        assert_eq!(
+            loaded.servers["acme"]
+                .source
+                .as_ref()
+                .unwrap()
+                .plugin
+                .as_deref(),
+            Some("acme")
         );
     }
 

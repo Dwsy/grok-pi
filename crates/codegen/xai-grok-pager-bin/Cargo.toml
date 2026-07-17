@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager-bin"
-version = "0.1.220-alpha.4"
+version = "0.2.102"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -97,6 +97,5 @@ default-bazel = [
     "sandbox-enforce",
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
-# Forward the sandbox-enforcement feature to the library.
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce"]
 release-dist = ["xai-grok-pager/release-dist"]

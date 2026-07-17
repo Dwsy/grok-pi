@@ -536,12 +536,13 @@ pub(super) async fn run_session(
             respond_to } => { session.events
             .emit(xai_file_utils::events::Event::McpServerToggled { server_name :
             server_name.clone(), enabled, }); let mut mcp_state = session.mcp_state
-            .lock(). await; let mut configs = mcp_state.configs.clone(); if enabled { let
-            already_present = configs.iter().any(| c | crate
-            ::session::mcp_servers::mcp_server_name(c) == server_name); if
+            .lock(). await; let mut configs = mcp_state.configs.clone(); if enabled { if
+            let Some(config) = server_config { configs.retain(| c | { crate
+            ::session::mcp_servers::mcp_server_name(c) != server_name }); configs
+            .push(config); } else { let already_present = configs.iter().any(| c | {
+            crate ::session::mcp_servers::mcp_server_name(c) == server_name }); if
             already_present { drop(mcp_state); let _ = respond_to.send(Ok(())); continue;
-            } if let Some(config) = server_config { configs.push(config); } else {
-            drop(mcp_state); let _ = respond_to.send(Err(acp::Error::invalid_params()
+            } drop(mcp_state); let _ = respond_to.send(Err(acp::Error::invalid_params()
             .data(format!("server '{}' not found in config", server_name)))); continue; }
             } else { configs.retain(| c | crate
             ::session::mcp_servers::mcp_server_name(c) != server_name); } let diff =

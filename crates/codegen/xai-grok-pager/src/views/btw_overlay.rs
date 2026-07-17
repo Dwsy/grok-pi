@@ -463,6 +463,7 @@ pub fn render_btw_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::osc8::resolve_link_target;
 
     fn render_with_model(
         state: &BtwOverlayState,
@@ -693,14 +694,22 @@ mod tests {
             !overlay.is_empty(),
             "expected at least one overlay link for markdown href"
         );
-        let found = overlay.links().iter().any(|l| l.url.as_ref() == url);
+        let found = overlay.links().iter().any(|l| {
+            resolve_link_target(&l.target)
+                .and_then(|resolved| resolved.osc8_url)
+                .as_deref()
+                .unwrap_or("")
+                == url
+        });
         assert!(
             found,
             "overlay should contain {url}, got: {:?}",
             overlay
                 .links()
                 .iter()
-                .map(|l| l.url.as_ref())
+                .filter_map(
+                    |l| resolve_link_target(&l.target).and_then(|resolved| resolved.osc8_url)
+                )
                 .collect::<Vec<_>>()
         );
         // Links live in the body (row >= 1), not the title border.
@@ -720,12 +729,21 @@ mod tests {
         let state = BtwOverlayState::done("q".to_string(), format!("Visit {url} please."));
         let (_model, overlay) = render_with_links(&state, 60, 8);
         assert!(
-            overlay.links().iter().any(|l| l.url.as_ref() == url),
+            overlay
+                .links()
+                .iter()
+                .any(|l| resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .as_deref()
+                    .unwrap_or("")
+                    == url),
             "plain URL should become an overlay link, got: {:?}",
             overlay
                 .links()
                 .iter()
-                .map(|l| l.url.as_ref())
+                .filter_map(
+                    |l| resolve_link_target(&l.target).and_then(|resolved| resolved.osc8_url)
+                )
                 .collect::<Vec<_>>()
         );
     }
@@ -737,7 +755,11 @@ mod tests {
         let path = "/Users/test/project/src/main.rs";
         let state = BtwOverlayState::done("q".to_string(), format!("See {path} for details."));
         let (_model, overlay) = render_with_links(&state, 80, 8);
-        let urls: Vec<&str> = overlay.links().iter().map(|l| l.url.as_ref()).collect();
+        let urls: Vec<_> = overlay
+            .links()
+            .iter()
+            .filter_map(|l| resolve_link_target(&l.target).and_then(|resolved| resolved.osc8_url))
+            .collect();
         assert!(
             urls.iter()
                 .any(|u| u.contains("main.rs") && u.starts_with("file://")),
@@ -767,7 +789,13 @@ mod tests {
         let link = overlay
             .links()
             .iter()
-            .find(|l| l.url.as_ref() == url)
+            .find(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .as_deref()
+                    .unwrap_or("")
+                    == url
+            })
             .expect("scrolled link should still map when visible");
         // Body starts at row 1; clamped offset 17 + 4 visible rows → link at
         // visible index 3 → screen_row = 1 + 3 = 4.

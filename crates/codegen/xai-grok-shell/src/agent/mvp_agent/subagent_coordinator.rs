@@ -74,9 +74,6 @@ impl MvpAgent {
                                             .borrow_mut()
                                             .register_block_wait(&subagent_id, slot.clone());
                                     }
-                                    this.subagent_coordinator
-                                        .borrow_mut()
-                                        .evict_stale_completed();
                                     result
                                 };
                                 let snapshot = resolve_snapshot(lookup).await;

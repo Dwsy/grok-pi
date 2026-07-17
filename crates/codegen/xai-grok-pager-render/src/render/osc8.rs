@@ -13,13 +13,86 @@ use linkify::{LinkFinder, LinkKind};
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
 
+/// Semantic destination of a pager link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    Url(Arc<str>),
+    File(Arc<Path>),
+}
+
+/// Whether the painted text can independently identify its semantic target.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LinkPresentation {
+    #[default]
+    Opaque,
+    SelfResolvingPath,
+}
+
+/// Output and activation policy for a semantic link target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLinkTarget {
+    /// Terminal-owned OSC 8 destination, or `None` when plain text owns discovery.
+    pub osc8_url: Option<Arc<str>>,
+    /// App-owned activation target, or `None` when activation is delegated.
+    pub open_target: Option<LinkTarget>,
+}
+
+/// Resolve one semantic target using the current terminal context.
+pub fn resolve_link_target(target: &LinkTarget) -> Option<ResolvedLinkTarget> {
+    resolve_link_target_with_presentation(target, LinkPresentation::Opaque)
+}
+
+pub fn resolve_link_target_with_presentation(
+    target: &LinkTarget,
+    presentation: LinkPresentation,
+) -> Option<ResolvedLinkTarget> {
+    resolve_link_target_for_context(target, presentation, crate::terminal::terminal_context())
+}
+
+/// Resolve one semantic target for both OSC 8 output and app-owned activation.
+pub fn resolve_link_target_for_context(
+    target: &LinkTarget,
+    presentation: LinkPresentation,
+    terminal: &crate::terminal::TerminalContext,
+) -> Option<ResolvedLinkTarget> {
+    match target {
+        LinkTarget::Url(url) => {
+            let filter = crate::terminal::hyperlinks::SchemeFilter::Standard;
+            crate::link_opener::is_safe_to_open(url, filter).then(|| ResolvedLinkTarget {
+                osc8_url: Some(Arc::clone(url)),
+                open_target: Some(LinkTarget::Url(Arc::clone(url))),
+            })
+        }
+        LinkTarget::File(_)
+            if terminal.brand == crate::terminal::TerminalName::VsCode
+                && terminal.is_official_vscode_remote
+                && presentation == LinkPresentation::SelfResolvingPath =>
+        {
+            Some(ResolvedLinkTarget {
+                osc8_url: None,
+                open_target: None,
+            })
+        }
+        LinkTarget::File(path) => Some(ResolvedLinkTarget {
+            osc8_url: file_path_to_url(path),
+            open_target: Some(LinkTarget::File(Arc::clone(path))),
+        }),
+    }
+}
+
+/// Resolve the target for app-owned activation.
+pub fn resolve_link_open_target(target: &LinkTarget) -> Option<LinkTarget> {
+    resolve_link_target(target).and_then(|resolved| resolved.open_target)
+}
+
 /// A single link region on screen.
 #[derive(Debug, Clone)]
 pub struct OverlayLink {
     pub screen_row: u16,
     pub col_start: u16,
     pub col_end: u16,
-    pub url: Arc<str>,
+    pub target: LinkTarget,
+    pub presentation: LinkPresentation,
     pub id: Option<u32>,
 }
 
@@ -154,10 +227,10 @@ fn quoted_file_path_regex() -> &'static regex::Regex {
     })
 }
 
-/// Turn a display path (`/abs/…` or `~/…`) into a `file://` URL, expanding `~/`.
-/// Relative paths fail — use [`tool_path_file_url`] to join cwd first.
-pub fn path_to_file_url(path: &str) -> Option<Arc<str>> {
-    tool_path_file_url(path, None)
+/// Turn a display path (`/abs/…` or `~/…`) into a semantic filesystem target.
+/// Relative paths fail — use [`tool_path_file_target`] to join cwd first.
+pub fn path_to_file_target(path: &str) -> Option<LinkTarget> {
+    tool_path_file_target(path, None)
 }
 
 fn file_path_to_url(path: &Path) -> Option<Arc<str>> {
@@ -167,24 +240,76 @@ fn file_path_to_url(path: &Path) -> Option<Arc<str>> {
 }
 
 #[cfg(test)]
-fn tool_path_file_url_with_home(
+fn tool_path_file_target_with_home(
     path: &str,
     cwd: Option<&Path>,
     home: Option<&Path>,
-) -> Option<Arc<str>> {
+) -> Option<LinkTarget> {
     let target =
         crate::render::tool_paths::resolve_tool_path_target_with_home(Path::new(path), cwd, home)?;
-    file_path_to_url(&target)
+    Some(LinkTarget::File(Arc::from(target)))
 }
 
-/// `file://` URL for a Read/Edit target, joining ordinary relative paths to `cwd`.
-pub fn tool_path_file_url(path: &str, cwd: Option<&Path>) -> Option<Arc<str>> {
-    let target = crate::render::tool_paths::resolve_tool_path_target(path, cwd)?;
-    file_path_to_url(&target)
+/// Semantic target for a Read/Edit path, joining ordinary relative paths to `cwd`.
+pub fn tool_path_file_target(path: &str, cwd: Option<&Path>) -> Option<LinkTarget> {
+    crate::render::tool_paths::resolve_tool_path_target(path, cwd)
+        .map(|path| LinkTarget::File(Arc::from(path)))
 }
 
-/// Resolve a markdown link destination that names a local file into a `file://`
-/// URL, so paths the model emits (`[videos/1.mp4](videos/1.mp4)`) open on click.
+fn file_link_presentation_for_resolved(
+    painted: &str,
+    target: &LinkTarget,
+    cwd: Option<&Path>,
+    resolved: Option<&Path>,
+) -> LinkPresentation {
+    let LinkTarget::File(target_path) = target else {
+        return LinkPresentation::Opaque;
+    };
+    let painted_path = Path::new(painted);
+    let is_absolute = painted_path.is_absolute()
+        || matches!(
+            painted_path.components().next(),
+            Some(std::path::Component::Prefix(_))
+        );
+    let is_home_relative =
+        painted == "~" || painted.starts_with("~/") || painted.starts_with(r"~\");
+    if !is_absolute && !is_home_relative && (!painted.contains(['/', '\\']) || cwd.is_none()) {
+        return LinkPresentation::Opaque;
+    }
+    resolved
+        .filter(|resolved| *resolved == target_path.as_ref())
+        .map_or(LinkPresentation::Opaque, |_| {
+            LinkPresentation::SelfResolvingPath
+        })
+}
+
+/// Classify painted file text only when it independently resolves to `target`.
+pub fn file_link_presentation(
+    painted: &str,
+    target: &LinkTarget,
+    cwd: Option<&Path>,
+) -> LinkPresentation {
+    let resolved = crate::render::tool_paths::resolve_tool_path_target(painted, cwd);
+    file_link_presentation_for_resolved(painted, target, cwd, resolved.as_deref())
+}
+
+#[cfg(test)]
+fn file_link_presentation_with_home(
+    painted: &str,
+    target: &LinkTarget,
+    cwd: Option<&Path>,
+    home: Option<&Path>,
+) -> LinkPresentation {
+    let resolved = crate::render::tool_paths::resolve_tool_path_target_with_home(
+        Path::new(painted),
+        cwd,
+        home,
+    );
+    file_link_presentation_for_resolved(painted, target, cwd, resolved.as_deref())
+}
+
+/// Resolve a markdown link destination that names a local file into a semantic
+/// filesystem target, so model paths (`[videos/1.mp4](videos/1.mp4)`) open on click.
 ///
 /// Web/scheme URLs, `mailto:`/`tel:`, and anchors return `None`.
 ///
@@ -195,7 +320,7 @@ pub fn tool_path_file_url(path: &str, cwd: Option<&Path>) -> Option<Arc<str>> {
 ///   each short path to the exact file its message produced (correct across
 ///   forks/resumes) and never opens an arbitrary or out-of-session file; an
 ///   ambiguous or absent match is left unlinked.
-pub fn local_link_to_file_url(dest: &str, media_paths: &[PathBuf]) -> Option<Arc<str>> {
+pub fn local_link_to_file_target(dest: &str, media_paths: &[PathBuf]) -> Option<LinkTarget> {
     let dest = dest.trim();
     if dest.is_empty() || dest.starts_with('#') || dest.contains("://") {
         return None;
@@ -222,9 +347,7 @@ pub fn local_link_to_file_url(dest: &str, media_paths: &[PathBuf]) -> Option<Arc
     if !resolved.is_file() {
         return None;
     }
-    url::Url::from_file_path(&resolved)
-        .ok()
-        .map(|u| Arc::from(u.as_str()))
+    Some(LinkTarget::File(Arc::from(resolved)))
 }
 
 /// Convert a display-cell column to a `u16` suitable for overlay coordinates.
@@ -316,7 +439,8 @@ fn push_link_segments(
     rows: &[RowSegment],
     content_x: u16,
     match_range: std::ops::Range<usize>,
-    url: &Arc<str>,
+    target: &LinkTarget,
+    presentation: LinkPresentation,
     overlay: &mut LinkOverlay,
 ) -> bool {
     let mut segments: Vec<(u16, u16, u16)> = Vec::new();
@@ -349,7 +473,8 @@ fn push_link_segments(
             screen_row,
             col_start,
             col_end,
-            url: Arc::clone(url),
+            target: target.clone(),
+            presentation,
             id: None,
         });
     }
@@ -390,13 +515,14 @@ fn scan_logical_line(
             .get_or_insert_with(Vec::new)
             .push(link.start()..link.end());
 
-        let url: Arc<str> = Arc::from(url);
+        let target = LinkTarget::Url(Arc::from(url));
         push_link_segments(
             text,
             rows,
             content_x,
             link.start()..link.end(),
-            &url,
+            &target,
+            LinkPresentation::Opaque,
             overlay,
         );
     }
@@ -419,7 +545,7 @@ fn scan_logical_line(
         if range_overlaps_urls(path_m.start(), path_m.end()) {
             continue;
         }
-        let Some(file_url) = path_to_file_url(path_m.as_str()) else {
+        let Some(file_target) = path_to_file_target(path_m.as_str()) else {
             continue;
         };
 
@@ -429,7 +555,8 @@ fn scan_logical_line(
             rows,
             content_x,
             path_m.start()..path_m.end(),
-            &file_url,
+            &file_target,
+            file_link_presentation(path_m.as_str(), &file_target, None),
             overlay,
         ) {
             path_byte_ranges.push(path_m.start()..path_m.end());
@@ -462,7 +589,7 @@ fn scan_logical_line(
             continue;
         }
         let path_end = m.start() + path.len();
-        let Some(file_url) = path_to_file_url(path) else {
+        let Some(file_target) = path_to_file_target(path) else {
             continue;
         };
 
@@ -471,7 +598,8 @@ fn scan_logical_line(
             rows,
             content_x,
             m.start()..path_end,
-            &file_url,
+            &file_target,
+            file_link_presentation(path, &file_target, None),
             overlay,
         ) {
             path_byte_ranges.push(m.start()..path_end);
@@ -503,7 +631,7 @@ fn scan_logical_line(
             let path = m
                 .as_str()
                 .trim_end_matches(['.', ',', ';', ':', '!', '?', ')']);
-            let Some(file_url) = local_link_to_file_url(path, media_paths) else {
+            let Some(file_target) = local_link_to_file_target(path, media_paths) else {
                 continue;
             };
             let path_end = m.start() + path.len();
@@ -513,7 +641,8 @@ fn scan_logical_line(
                 rows,
                 content_x,
                 m.start()..path_end,
-                &file_url,
+                &file_target,
+                LinkPresentation::Opaque,
                 overlay,
             ) {
                 path_byte_ranges.push(m.start()..path_end);
@@ -541,7 +670,7 @@ mod tests {
         scan_lines_for_url_overlays(rows.into_iter(), content_x, media_paths, overlay);
     }
 
-    // ── local_link_to_file_url ──
+    // ── local_link_to_file_target ──
 
     #[test]
     fn local_link_relative_resolves_to_generated_media() {
@@ -551,7 +680,10 @@ mod tests {
         let media = vec![dir.path().join("images/1.jpg")];
 
         // Short session-relative path matches the generated media by suffix.
-        let url = local_link_to_file_url("images/1.jpg", &media).unwrap();
+        let target = local_link_to_file_target("images/1.jpg", &media).unwrap();
+        assert_eq!(target, LinkTarget::File(Arc::from(media[0].as_path())));
+        let resolved = resolve_link_target(&target).expect("resolved target");
+        let url = resolved.osc8_url.expect("OSC 8 URL");
         assert!(
             url.starts_with("file://") && url.ends_with("/images/1.jpg"),
             "got {url}"
@@ -565,13 +697,13 @@ mod tests {
         std::fs::write(dir.path().join("images/1.jpg"), b"x").unwrap();
         let media = vec![dir.path().join("images/1.jpg")];
 
-        assert!(local_link_to_file_url("https://x.ai", &media).is_none());
-        assert!(local_link_to_file_url("mailto:a@b.c", &media).is_none());
-        assert!(local_link_to_file_url("#section", &media).is_none());
+        assert!(local_link_to_file_target("https://x.ai", &media).is_none());
+        assert!(local_link_to_file_target("mailto:a@b.c", &media).is_none());
+        assert!(local_link_to_file_target("#section", &media).is_none());
         // Relative path that isn't a known generated media file.
-        assert!(local_link_to_file_url("images/2.jpg", &media).is_none());
+        assert!(local_link_to_file_target("images/2.jpg", &media).is_none());
         // No known media at all.
-        assert!(local_link_to_file_url("images/1.jpg", &[]).is_none());
+        assert!(local_link_to_file_target("images/1.jpg", &[]).is_none());
     }
 
     #[test]
@@ -587,49 +719,82 @@ mod tests {
             dir.path().join("a/images/1.jpg"),
             dir.path().join("b/images/1.jpg"),
         ];
-        assert!(local_link_to_file_url("images/1.jpg", &media).is_none());
+        assert!(local_link_to_file_target("images/1.jpg", &media).is_none());
         // A `..` never matches a clean absolute media path, so it can't escape.
-        assert!(local_link_to_file_url("../images/1.jpg", &media).is_none());
+        assert!(local_link_to_file_target("../images/1.jpg", &media).is_none());
     }
 
-    // ── tool_path_file_url ──
+    // ── tool_path_file_target ──
 
     #[test]
-    fn tool_path_file_url_resolves_relative_against_cwd() {
+    fn tool_path_file_target_resolves_relative_against_cwd() {
         let cwd = Path::new("/Users/me/project");
-        let url = tool_path_file_url("src/main.rs", Some(cwd)).expect("url");
-        assert!(url.starts_with("file://"), "got {url}");
-        assert!(url.contains("/Users/me/project/src/main.rs"), "got {url}");
+        let target = tool_path_file_target("src/main.rs", Some(cwd)).expect("target");
+        assert_eq!(
+            target,
+            LinkTarget::File(Arc::from(Path::new("/Users/me/project/src/main.rs")))
+        );
+        assert_eq!(
+            resolve_link_target(&target)
+                .unwrap()
+                .osc8_url
+                .unwrap()
+                .as_ref(),
+            "file:///Users/me/project/src/main.rs"
+        );
     }
 
     #[test]
-    fn tool_path_file_url_accepts_absolute_without_existing_file() {
-        let url = tool_path_file_url("/tmp/does-not-exist-xyz/foo.rs", None).expect("url");
-        assert!(url.starts_with("file://"), "got {url}");
-        assert!(url.contains("foo.rs"), "got {url}");
+    fn tool_path_file_target_accepts_absolute_without_existing_file() {
+        let target = tool_path_file_target("/tmp/does-not-exist-xyz/foo.rs", None).expect("target");
+        assert_eq!(
+            target,
+            LinkTarget::File(Arc::from(Path::new("/tmp/does-not-exist-xyz/foo.rs")))
+        );
+        assert!(
+            resolve_link_target(&target)
+                .unwrap()
+                .osc8_url
+                .unwrap()
+                .contains("foo.rs")
+        );
     }
 
     #[test]
-    fn tool_path_file_url_preserves_parent_segments_for_os_resolution() {
-        let url = tool_path_file_url("/repo/link/../target.rs", None).expect("url");
-        assert!(url.contains("/repo/link/../target.rs"), "got {url}");
+    fn tool_path_file_target_preserves_parent_segments_for_os_resolution() {
+        let target = tool_path_file_target("/repo/link/../target.rs", None).expect("target");
+        let LinkTarget::File(path) = target else {
+            panic!("expected file target");
+        };
+        assert_eq!(&*path, Path::new("/repo/link/../target.rs"));
+        assert!(
+            file_path_to_url(&path)
+                .unwrap()
+                .contains("/repo/link/../target.rs")
+        );
     }
 
     #[test]
     fn unresolved_tilde_never_manufactures_a_cwd_file_url() {
         assert!(
-            tool_path_file_url_with_home("~/target.rs", Some(Path::new("/repo")), None).is_none()
+            tool_path_file_target_with_home("~/target.rs", Some(Path::new("/repo")), None)
+                .is_none()
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn tool_path_file_url_preserves_non_utf8_cwd_bytes() {
+    fn tool_path_file_target_preserves_non_utf8_cwd_bytes() {
         use std::ffi::OsString;
-        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
         let cwd = PathBuf::from(OsString::from_vec(b"/tmp/non-utf8-\x80".to_vec()));
-        let url = tool_path_file_url("main.rs", Some(&cwd)).expect("url");
+        let target = tool_path_file_target("main.rs", Some(&cwd)).expect("target");
+        let LinkTarget::File(path) = &target else {
+            panic!("expected file target");
+        };
+        assert_eq!(path.as_os_str().as_bytes(), b"/tmp/non-utf8-\x80/main.rs");
+        let url = resolve_link_target(&target).unwrap().osc8_url.unwrap();
         assert!(url.contains("/tmp/non-utf8-%80/main.rs"), "got {url}");
         assert!(
             !url.contains("%EF%BF%BD"),
@@ -638,6 +803,205 @@ mod tests {
     }
 
     // ── LinkOverlay ──
+
+    #[test]
+    fn resolve_target_keeps_standard_scheme_filter_and_file_open_path() {
+        let web = LinkTarget::Url(Arc::from("https://example.com/a"));
+        assert_eq!(
+            resolve_link_target(&web).unwrap(),
+            ResolvedLinkTarget {
+                osc8_url: Some(Arc::from("https://example.com/a")),
+                open_target: Some(web.clone()),
+            }
+        );
+        assert_eq!(resolve_link_open_target(&web), Some(web));
+        let unsafe_url = LinkTarget::Url(Arc::from("javascript:alert(1)"));
+        assert!(resolve_link_target(&unsafe_url).is_none());
+        assert!(resolve_link_open_target(&unsafe_url).is_none());
+
+        let file = LinkTarget::File(Arc::from(Path::new("/tmp/a b.rs")));
+        assert_eq!(
+            resolve_link_target(&file).unwrap(),
+            ResolvedLinkTarget {
+                osc8_url: Some(Arc::from("file:///tmp/a%20b.rs")),
+                open_target: Some(file.clone()),
+            }
+        );
+        assert_eq!(resolve_link_open_target(&file), Some(file));
+    }
+
+    #[test]
+    fn official_vscode_remote_file_delegation_is_exact() {
+        use crate::terminal::{TerminalContext, TerminalName};
+
+        struct Case {
+            name: &'static str,
+            terminal: TerminalContext,
+            target: LinkTarget,
+            presentation: LinkPresentation,
+            expected_osc8: Option<&'static str>,
+            expected_open: bool,
+        }
+
+        let file = LinkTarget::File(Arc::from(Path::new("/worktree/src/main.rs")));
+        let web = LinkTarget::Url(Arc::from("https://example.com/docs"));
+        let official_remote = TerminalContext {
+            brand: TerminalName::VsCode,
+            is_ssh: true,
+            is_official_vscode_remote: true,
+            ..Default::default()
+        };
+        let cases = [
+            Case {
+                name: "local VS Code file",
+                terminal: TerminalContext {
+                    brand: TerminalName::VsCode,
+                    ..Default::default()
+                },
+                target: file.clone(),
+                presentation: LinkPresentation::SelfResolvingPath,
+                expected_osc8: Some("file:///worktree/src/main.rs"),
+                expected_open: true,
+            },
+            Case {
+                name: "official VS Code SSH self-resolving file",
+                terminal: official_remote.clone(),
+                target: file.clone(),
+                presentation: LinkPresentation::SelfResolvingPath,
+                expected_osc8: None,
+                expected_open: false,
+            },
+            Case {
+                name: "official VS Code SSH opaque file",
+                terminal: official_remote.clone(),
+                target: file.clone(),
+                presentation: LinkPresentation::Opaque,
+                expected_osc8: Some("file:///worktree/src/main.rs"),
+                expected_open: true,
+            },
+            Case {
+                name: "unproven VS Code SSH file",
+                terminal: TerminalContext {
+                    brand: TerminalName::VsCode,
+                    is_ssh: true,
+                    ..Default::default()
+                },
+                target: file.clone(),
+                presentation: LinkPresentation::SelfResolvingPath,
+                expected_osc8: Some("file:///worktree/src/main.rs"),
+                expected_open: true,
+            },
+            Case {
+                name: "official VS Code SSH web",
+                terminal: official_remote,
+                target: web,
+                presentation: LinkPresentation::Opaque,
+                expected_osc8: Some("https://example.com/docs"),
+                expected_open: true,
+            },
+            Case {
+                name: "Cursor SSH file",
+                terminal: TerminalContext {
+                    brand: TerminalName::Cursor,
+                    is_ssh: true,
+                    ..Default::default()
+                },
+                target: file.clone(),
+                presentation: LinkPresentation::SelfResolvingPath,
+                expected_osc8: Some("file:///worktree/src/main.rs"),
+                expected_open: true,
+            },
+            Case {
+                name: "Kitty SSH file",
+                terminal: TerminalContext {
+                    brand: TerminalName::Kitty,
+                    is_ssh: true,
+                    ..Default::default()
+                },
+                target: file,
+                presentation: LinkPresentation::SelfResolvingPath,
+                expected_osc8: Some("file:///worktree/src/main.rs"),
+                expected_open: true,
+            },
+        ];
+
+        for case in cases {
+            let resolved =
+                resolve_link_target_for_context(&case.target, case.presentation, &case.terminal)
+                    .unwrap_or_else(|| panic!("{} should resolve", case.name));
+            assert_eq!(
+                resolved.osc8_url.as_deref(),
+                case.expected_osc8,
+                "{} OSC 8 policy",
+                case.name
+            );
+            assert_eq!(
+                resolved.open_target.is_some(),
+                case.expected_open,
+                "{} activation policy",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn file_presentation_requires_exact_path_shaped_resolution() {
+        let target = LinkTarget::File(Arc::from(Path::new("/worktree/src/main.rs")));
+        let cwd = Path::new("/worktree");
+
+        assert_eq!(
+            file_link_presentation("/worktree/src/main.rs", &target, Some(cwd)),
+            LinkPresentation::SelfResolvingPath
+        );
+        assert_eq!(
+            file_link_presentation("src/main.rs", &target, Some(cwd)),
+            LinkPresentation::SelfResolvingPath
+        );
+        assert_eq!(
+            file_link_presentation("src/main.rs", &target, None),
+            LinkPresentation::Opaque
+        );
+        let home = Path::new("/home/me");
+        let home_target = LinkTarget::File(Arc::from(home.join("src/main.rs")));
+        assert_eq!(
+            file_link_presentation_with_home("~/src/main.rs", &home_target, None, Some(home)),
+            LinkPresentation::SelfResolvingPath
+        );
+        assert_eq!(
+            file_link_presentation_with_home("~/src/main.rs", &home_target, None, None),
+            LinkPresentation::Opaque
+        );
+        assert_eq!(
+            file_link_presentation_with_home("~/src/other.rs", &home_target, None, Some(home)),
+            LinkPresentation::Opaque
+        );
+        for painted in [
+            "main.rs",
+            "main\u{2026}",
+            "src/other.rs",
+            "\u{2026}/src/main.rs",
+            "src/main.rs (1 of 2)",
+        ] {
+            assert_eq!(
+                file_link_presentation(painted, &target, Some(cwd)),
+                LinkPresentation::Opaque,
+                "{painted}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_target_preserves_a_relative_file_that_cannot_be_encoded_for_osc8() {
+        let file = LinkTarget::File(Arc::from(Path::new("relative.rs")));
+        assert_eq!(
+            resolve_link_target(&file),
+            Some(ResolvedLinkTarget {
+                osc8_url: None,
+                open_target: Some(file.clone()),
+            })
+        );
+        assert_eq!(resolve_link_open_target(&file), Some(file));
+    }
 
     #[test]
     fn overlay_empty_by_default() {
@@ -653,7 +1017,8 @@ mod tests {
             screen_row: 5,
             col_start: 10,
             col_end: 20,
-            url: "https://example.com".into(),
+            target: LinkTarget::Url("https://example.com".into()),
+            presentation: LinkPresentation::Opaque,
             id: Some(1),
         });
         assert!(!overlay.is_empty());
@@ -686,7 +1051,12 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         let link = &overlay.links()[0];
-        assert_eq!(&*link.url, "https://example.com");
+        assert_eq!(
+            &*resolve_link_target(&link.target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "https://example.com"
+        );
         assert_eq!(link.screen_row, 5);
         // "See " = 4 display cols, content_x = 2
         assert_eq!(link.col_start, 6);
@@ -701,8 +1071,18 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 2);
-        assert_eq!(&*overlay.links()[0].url, "https://a.example");
-        assert_eq!(&*overlay.links()[1].url, "https://b.example");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "https://a.example"
+        );
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[1].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "https://b.example"
+        );
         assert!(overlay.links()[0].col_end <= overlay.links()[1].col_start);
     }
 
@@ -717,7 +1097,12 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "https://example.com");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "https://example.com"
+        );
         // "Visit " = 6 display cols (in first span)
         // The URL is in its own span, so col_start = 6
         assert_eq!(overlay.links()[0].col_start, 6);
@@ -765,7 +1150,9 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*overlay.links()[0].url,
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
             "https://example.com",
             "trailing dot should be excluded by linkify"
         );
@@ -779,7 +1166,9 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*overlay.links()[0].url,
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
             "https://example.com/path?key=val#sec"
         );
     }
@@ -804,7 +1193,12 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "file:///Users/foo/src/main.rs");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "file:///Users/foo/src/main.rs"
+        );
     }
 
     #[test]
@@ -828,7 +1222,9 @@ mod tests {
             let mut overlay = LinkOverlay::new();
             scan_unjoined(std::iter::once((0, &line)), 0, &media, &mut overlay);
             assert_eq!(overlay.links().len(), 1, "{line_text}");
-            let url = &*overlay.links()[0].url;
+            let url = resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url");
             assert!(
                 url.starts_with("file://") && url.ends_with(suffix),
                 "got {url}"
@@ -865,7 +1261,9 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*overlay.links()[0].url,
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
             // `%` is itself percent-encoded (`%25`) when building the file URL.
             "file:///Users/alice/.grok/sessions/%252Fabc/00000000/images/1.jpg",
         );
@@ -889,7 +1287,12 @@ mod tests {
         let expected_url = "file:///Users/alice/.grok/sessions/%252FUsers%252Fali\
                             ce%252Fcode%252Fxai/00000000-0000-0000-0000-000000000001/images/1.jpg";
         for link in overlay.links() {
-            assert_eq!(&*link.url, expected_url);
+            assert_eq!(
+                &*resolve_link_target(&link.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url"),
+                expected_url
+            );
         }
         // Row 0: path starts after the prose and runs to the row's end.
         let prose = "Image generated and saved to ";
@@ -928,7 +1331,9 @@ mod tests {
         assert_eq!(overlay.links().len(), 2);
         for link in overlay.links() {
             assert_eq!(
-                &*link.url,
+                &*resolve_link_target(&link.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url"),
                 "file:///Users/me/.grok/sessions/%252Fabc/019f3a86/images/1.jpg"
             );
         }
@@ -958,9 +1363,9 @@ mod tests {
         assert_eq!(overlay.links().len(), 2);
         for link in overlay.links() {
             assert!(
-                link.url.starts_with("file://") && link.url.ends_with("/images/1.png"),
+                resolve_link_target(&link.target).and_then(|resolved| resolved.osc8_url).is_some_and(|url| url.starts_with("file://") && url.ends_with("/images/1.png")),
                 "got {}",
-                link.url
+                resolve_link_target(&link.target).and_then(|resolved| resolved.osc8_url).expect("url")
             );
         }
     }
@@ -976,7 +1381,12 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 2);
         for link in overlay.links() {
-            assert_eq!(&*link.url, "https://example.com/some/long/path?key=val");
+            assert_eq!(
+                &*resolve_link_target(&link.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url"),
+                "https://example.com/some/long/path?key=val"
+            );
         }
     }
 
@@ -994,7 +1404,12 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 2);
         for link in overlay.links() {
-            assert_eq!(&*link.url, "file:///tmp/release/Demo%20App.app");
+            assert_eq!(
+                &*resolve_link_target(&link.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url"),
+                "file:///tmp/release/Demo%20App.app"
+            );
         }
         // Row 1's region covers only `App.app` (the joiner space belongs
         // to no row).
@@ -1017,7 +1432,12 @@ mod tests {
         scan_lines_for_url_overlays(rows.into_iter(), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "file:///Users/alice");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "file:///Users/alice"
+        );
         assert_eq!(overlay.links()[0].screen_row, 0);
     }
 
@@ -1034,7 +1454,12 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "file:///Users/foo/images/1.jpg");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "file:///Users/foo/images/1.jpg"
+        );
         assert_eq!(
             overlay.links()[0].col_start,
             UnicodeWidthStr::width("Saved to ") as u16
@@ -1049,7 +1474,9 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*overlay.links()[0].url,
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
             "file:///Users/foo/bar.rs",
             "colon-delimited line number should be excluded"
         );
@@ -1077,7 +1504,9 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*overlay.links()[0].url,
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
             "https://example.com/foo/bar",
             "URL should be detected, not the path portion"
         );
@@ -1090,9 +1519,20 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 2);
-        let urls: Vec<&str> = overlay.links().iter().map(|l| &*l.url).collect();
-        assert!(urls.contains(&"https://docs.rs/foo"));
-        assert!(urls.contains(&"file:///Users/me/src/lib.rs"));
+        let urls: Vec<Arc<str>> = overlay
+            .links()
+            .iter()
+            .map(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .expect("url")
+            })
+            .collect();
+        assert!(urls.iter().any(|url| url.as_ref() == "https://docs.rs/foo"));
+        assert!(
+            urls.iter()
+                .any(|url| url.as_ref() == "file:///Users/me/src/lib.rs")
+        );
     }
 
     #[test]
@@ -1102,7 +1542,12 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "file:///tmp/grok-impl-summary.md");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "file:///tmp/grok-impl-summary.md"
+        );
     }
 
     #[test]
@@ -1113,7 +1558,9 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*overlay.links()[0].url,
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
             "file:///node_modules/@scope/package/index.js"
         );
     }
@@ -1134,7 +1581,10 @@ mod tests {
         );
         let link = &overlay.links()[0];
         assert_eq!(
-            &*link.url, "file:///Users/alice/src/app/release/mac-arm64/Demo%20App.app",
+            &*resolve_link_target(&link.target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "file:///Users/alice/src/app/release/mac-arm64/Demo%20App.app",
             "space must be percent-encoded in the file URL"
         );
         // Clickable region must cover the *entire* displayed path, including
@@ -1158,7 +1608,9 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*overlay.links()[0].url,
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
             "file:///tmp/release/Demo%20App.app"
         );
         assert_eq!(overlay.links()[0].col_start, 5); // "open "
@@ -1177,7 +1629,12 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, "file:///tmp/foo/bar");
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            "file:///tmp/foo/bar"
+        );
         // "See " = 4 cols; path is 12 cols (`/tmp/foo/bar`).
         assert_eq!(overlay.links()[0].col_start, 4);
         assert_eq!(overlay.links()[0].col_end, 4 + 12);
@@ -1202,9 +1659,12 @@ mod tests {
         assert_eq!(overlay.links().len(), 1);
         let link = &overlay.links()[0];
         // `~` is expanded to the home directory in the file URL.
-        assert_eq!(&*link.url, expected.as_str());
-        assert!(link.url.starts_with("file:///"));
-        assert!(!link.url.contains('~'), "tilde must be expanded in the URL");
+        let url = resolve_link_target(&link.target)
+            .and_then(|resolved| resolved.osc8_url)
+            .expect("url");
+        assert_eq!(&*url, expected.as_str());
+        assert!(url.starts_with("file:///"));
+        assert!(!url.contains('~'), "tilde must be expanded in the URL");
         // The clickable region covers the displayed `~/…` text, tilde included.
         // "Findings report " = 16 display cols.
         assert_eq!(link.col_start, 16);
@@ -1222,7 +1682,12 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(&*overlay.links()[0].url, expected.as_str());
+        assert_eq!(
+            &*resolve_link_target(&overlay.links()[0].target)
+                .and_then(|resolved| resolved.osc8_url)
+                .expect("url"),
+            expected.as_str()
+        );
         assert_eq!(overlay.links()[0].col_start, 0);
     }
 
@@ -1272,7 +1737,8 @@ mod tests {
             screen_row: 5,
             col_start: 10,
             col_end: 20,
-            url: Arc::from("https://a.example"),
+            target: LinkTarget::Url(Arc::from("https://a.example")),
+            presentation: LinkPresentation::Opaque,
             id: None,
         });
         assert!(overlay.overlaps(5, 10, 20));
@@ -1286,7 +1752,8 @@ mod tests {
             screen_row: 0,
             col_start: 10,
             col_end: 20,
-            url: Arc::from("https://a.example"),
+            target: LinkTarget::Url(Arc::from("https://a.example")),
+            presentation: LinkPresentation::Opaque,
             id: None,
         });
         assert!(overlay.overlaps(0, 15, 25)); // right overlap
@@ -1305,7 +1772,8 @@ mod tests {
             screen_row: 0,
             col_start: 4,
             col_end: 23,
-            url: Arc::from("https://example.com"),
+            target: LinkTarget::Url(Arc::from("https://example.com")),
+            presentation: LinkPresentation::Opaque,
             id: None,
         });
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
@@ -1322,7 +1790,8 @@ mod tests {
             screen_row: 0,
             col_start: 50,
             col_end: 70,
-            url: Arc::from("https://first.example"),
+            target: LinkTarget::Url(Arc::from("https://first.example")),
+            presentation: LinkPresentation::Opaque,
             id: None,
         });
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
@@ -1339,7 +1808,8 @@ mod tests {
             screen_row: 0,
             col_start: 9,
             col_end: 31,
-            url: Arc::from("file:///Users/foo/src/main.rs"),
+            target: LinkTarget::File(Arc::from(Path::new("/Users/foo/src/main.rs"))),
+            presentation: LinkPresentation::Opaque,
             id: None,
         });
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
