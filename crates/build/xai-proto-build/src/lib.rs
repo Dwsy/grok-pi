@@ -174,35 +174,55 @@ impl XaiProtoBuilder {
             // protoc dependency files look like:
             //   <descriptor_path>: dep1 dep2 \
             //     dep3
+            // On Windows the target is an absolute path with a drive letter
+            // (`C:\...`), so never split on the first ':'. Prefer ": " (makefile
+            // style), then fall back to stripping the known descriptor path.
             let mut lines = output.lines();
             let first_line = lines.next().context("protoc command output is empty")?;
             let rem = first_line
-                .split_once(':')
+                .split_once(": ")
                 .map(|(_, rest)| rest)
+                .or_else(|| {
+                    let target = desc_path.to_str()?;
+                    first_line
+                        .strip_prefix(&format!("{target}:"))
+                        .or_else(|| {
+                            let alt = target.replace('\\', "/");
+                            first_line
+                                .strip_prefix(&format!("{alt}:"))
+                                .or_else(|| {
+                                    first_line.strip_prefix(&format!(
+                                        "{}:",
+                                        alt.replace('/', "\\")
+                                    ))
+                                })
+                        })
+                })
                 .with_context(|| {
                     format!("protoc dependency output missing target prefix: {output:?}")
                 })?;
             for line in iter::once(rem).chain(lines) {
-                let line = line.trim();
+                // Makefile line continuations end with a trailing '\'.
+                let line = line.trim_end();
                 let line = line.strip_suffix('\\').unwrap_or(line).trim();
                 if line.is_empty() {
                     continue;
                 }
-                // Depending on absolute paths like
-                // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
-                // is valid, but we want to have output more deterministic.
-                if line.contains("/include/google/protobuf/")
-                    || line.contains("\\include\\google\\protobuf\\")
-                    || line.contains("/include\\google\\protobuf/")
-                {
-                    continue;
-                }
+                for dep in line.split_whitespace() {
+                    // Depending on absolute paths like
+                    // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
+                    // is valid, but we want to have output more deterministic.
+                    let normalized = dep.replace('\\', "/");
+                    if normalized.contains("/include/google/protobuf/") {
+                        continue;
+                    }
 
-                if !fs::exists(line)? {
-                    return Err(anyhow::anyhow!("dependency file not found: {line}"));
-                }
+                    if !fs::exists(dep)? {
+                        return Err(anyhow::anyhow!("dependency file not found: {dep}"));
+                    }
 
-                println!("cargo:rerun-if-changed={line}");
+                    println!("cargo:rerun-if-changed={dep}");
+                }
             }
         }
 
