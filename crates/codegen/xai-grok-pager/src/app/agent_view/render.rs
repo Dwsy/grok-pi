@@ -1108,10 +1108,10 @@ impl AgentView {
         if !self.external_statuses.is_empty() {
             status.push(
                 "external_status",
-                Line::from(Span::styled(
-                    self.external_statuses.join(" · "),
-                    Style::default().fg(theme.text_secondary).bg(theme.bg_base),
-                )),
+                crate::views::agent_status::ansi_status_line(
+                    &self.external_statuses.join(" · "),
+                    &theme,
+                ),
             );
         }
         if let Some(url) = self.highlighted_link_url() {

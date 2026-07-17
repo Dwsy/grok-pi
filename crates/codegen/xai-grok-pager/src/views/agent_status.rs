@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use ansi_to_tui::IntoText;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -46,6 +47,32 @@ pub struct AgentStatusBar<'a> {
     theme: &'a Theme,
     /// Padding from the right edge of the status bar area.
     right_pad: u16,
+}
+
+/// Convert ANSI-formatted external status text into a Pager-native status line.
+/// Invalid ANSI falls back to the original text so status updates are never lost.
+pub fn ansi_status_line(ansi: &str, theme: &Theme) -> Line<'static> {
+    let mut line = ansi
+        .as_bytes()
+        .into_text()
+        .ok()
+        .and_then(|text| text.lines.into_iter().next())
+        .unwrap_or_else(|| Line::raw(ansi.to_owned()));
+    for span in &mut line.spans {
+        use ratatui::style::Color;
+        span.style.fg = Some(match span.style.fg {
+            Some(Color::Green) => theme.accent_success,
+            Some(Color::Yellow) => theme.warning,
+            Some(Color::Red) => theme.accent_error,
+            Some(Color::Blue) => theme.accent_system,
+            Some(Color::Magenta) => theme.accent_assistant,
+            Some(Color::Cyan) => theme.running,
+            None | Some(Color::Reset) | Some(Color::White) => theme.text_secondary,
+            _ => theme.gray,
+        });
+        span.style.bg = None;
+    }
+    line
 }
 
 impl<'a> AgentStatusBar<'a> {
@@ -320,6 +347,14 @@ pub fn mcp_status_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ansi_status_line_removes_escape_sequences() {
+        let line = ansi_status_line("\x1b[38;2;118;118;118m-- tok/s\x1b[39m", &Theme::current());
+
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].content, "-- tok/s");
+    }
 
     #[test]
     fn tokens_compact_sub_thousand() {
