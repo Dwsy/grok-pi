@@ -4,20 +4,34 @@
 //! production TUI composition package. The Pi crate is a protocol adapter only;
 //! every terminal surface is created and rendered by `xai-grok-pager`.
 
+#[path = "grok_pi/cli.rs"]
+mod cli;
+#[path = "grok_pi/session_paths.rs"]
+mod session_paths;
+#[path = "grok_pi/recap_extension.rs"]
+mod recap_extension;
+#[path = "grok_pi/subagent_extension.rs"]
+mod subagent_extension;
+#[path = "grok_pi/tree_bridge.rs"]
+mod tree_bridge;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use pi_grok_adapter::{PiAgent, PiBootstrap, PiRpc, SpawnConfig};
-use std::{
-    ffi::{OsStr, OsString},
-    fs::File,
-    io::Write,
-    path::PathBuf,
-    rc::Rc,
-};
-use tempfile::NamedTempFile;
+use std::rc::Rc;
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 use xai_acp_lib::acp_channels;
+use xai_grok_pager::{
+    acp::{AcpConnection, ExternalLogoArt, ExternalUiProfile},
+    app::{ExternalRunConfig, PagerArgs, run_external},
+};
+
+use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_flags};
+use session_paths::pi_session_dir;
+use recap_extension::write_recap_extension;
+use subagent_extension::write_subagent_extension;
+use tree_bridge::write_navigate_tree_extension;
 
 /// Grok pager commands that are meaningful when Pi is the ACP backend.
 ///
@@ -39,6 +53,8 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "tree",
     // Native multi-session overview; idle rows come from pi/session/list.
     "dashboard",
+    // Display-only session recap via injected Pi extension + adapter bridge.
+    "recap",
     // Native Grok transcript/navigation surfaces over the Pi-backed session.
     "copy",
     "find",
@@ -55,11 +71,6 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "toggle-mouse-reporting",
 ];
 
-use xai_grok_pager::{
-    acp::{AcpConnection, ExternalLogoArt, ExternalUiProfile},
-    app::{ExternalRunConfig, PagerArgs, run_external},
-};
-
 /// Block-character π mark for the native Grok welcome / minimal logo surface.
 /// Matches Pi's static logo (`print_static_logo`): two-space indent + block art.
 /// Kept as plain full-block art so it remains legible on terminals that cannot
@@ -75,110 +86,6 @@ const PI_LOGO: &str = "\
 /// Product version for `grok-pi --version` (release tag / git describe).
 /// Not the upstream workspace crate version (`0.1.220-alpha.*`).
 const GROK_PI_VERSION: &str = env!("GROK_PI_VERSION");
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "grok-pi",
-    version = GROK_PI_VERSION,
-    about = "Run the Pi agent core in Grok Build's production TUI",
-    after_help = "Pi-compatible aliases:\n  -ns  Alias for --no-skills\n  -nc  Alias for --no-context-files\n  -ne  Alias for --no-extensions\n  -nt  Alias for --no-tools\n\nUpdate (GitHub releases only):\n  grok-pi update            Install latest from Dwsy/grok-pi\n  grok-pi update --check    Print current vs latest\n  Welcome Ctrl+U            Same install when an update is offered"
-)]
-struct Args {
-    #[command(subcommand)]
-    command: Option<Command>,
-
-    /// Pi executable. Use `node` with --pi-prefix-arg for a local Pi build.
-    #[arg(long, default_value = "pi")]
-    pi_bin: String,
-
-    /// Argument inserted before `--mode rpc` (repeatable).
-    #[arg(long = "pi-prefix-arg")]
-    pi_prefix_args: Vec<String>,
-
-    /// Working directory for both Pi and the native Grok pager.
-    #[arg(long)]
-    pi_cwd: Option<PathBuf>,
-
-    /// Continue previous session.
-    #[arg(short = 'c', long = "continue")]
-    continue_last_session: bool,
-
-    /// System prompt (default: coding assistant prompt).
-    #[arg(long, value_name = "TEXT")]
-    system_prompt: Option<String>,
-
-    /// Append text or file contents to the system prompt (can be used multiple times).
-    #[arg(long = "append-system-prompt", value_name = "TEXT")]
-    append_system_prompts: Vec<String>,
-
-    /// Disable skills discovery and loading.
-    #[arg(long)]
-    no_skills: bool,
-
-    /// Disable AGENTS.md and CLAUDE.md discovery and loading.
-    #[arg(long)]
-    no_context_files: bool,
-
-    /// Load an extension file (can be used multiple times).
-    #[arg(short = 'e', long = "extension", value_name = "PATH")]
-    extensions: Vec<String>,
-
-    /// Disable extension discovery (explicit -e paths still work).
-    #[arg(long)]
-    no_extensions: bool,
-
-    /// Disable all tools by default (built-in and extension).
-    #[arg(long)]
-    no_tools: bool,
-
-    /// Don't save session (ephemeral).
-    #[arg(long)]
-    no_session: bool,
-
-    /// Set session display name.
-    #[arg(short = 'n', long, value_name = "NAME")]
-    name: Option<String>,
-
-    /// Use Grok's native inline terminal mode instead of the alternate screen.
-    #[arg(long)]
-    no_alt_screen: bool,
-
-    /// Start in Grok's native minimal/scrollback renderer.
-    #[arg(long, conflicts_with = "fullscreen")]
-    minimal: bool,
-
-    /// Start in Grok's native fullscreen renderer.
-    #[arg(long, conflicts_with = "minimal")]
-    fullscreen: bool,
-
-    /// Print the protocol boundary and exit without starting a terminal.
-    #[arg(long)]
-    print_capabilities: bool,
-
-    /// Remaining arguments are passed unchanged to Pi after `--mode rpc`.
-    #[arg(last = true, allow_hyphen_values = true)]
-    pi_args: Vec<String>,
-}
-
-#[derive(Debug, clap::Subcommand)]
-enum Command {
-    /// Check for or install grok-pi updates from GitHub Releases only.
-    Update {
-        /// Only report current vs latest; do not install.
-        #[arg(long)]
-        check: bool,
-        /// Machine-readable status (requires `--check`).
-        #[arg(long, requires = "check")]
-        json: bool,
-        /// Reinstall even when already on the latest version.
-        #[arg(long)]
-        force: bool,
-        /// Install a specific version (e.g. `0.0.2` or `v0.0.2`).
-        /// Named `--to` so it does not clash with clap's global `--version`.
-        #[arg(long = "to", value_name = "VERSION")]
-        version: Option<String>,
-    },
-}
 
 fn main() -> Result<()> {
     // Keep the exact production pager process hooks. In particular, Mermaid
@@ -239,20 +146,35 @@ async fn run(mut args: Args) -> Result<()> {
     // `--extension`; drop would unlink the temp path before Pi finishes boot.
     let navigate_tree_extension = write_navigate_tree_extension()
         .context("failed to create Pi navigateTree bridge extension")?;
-    let pi_args = pi_args_with_startup_flags(
+    let subagent_extension = write_subagent_extension()
+        .context("failed to create Pi subagent extension")?;
+    let recap_extension =
+        write_recap_extension().context("failed to create Pi recap extension")?;
+    let mut pi_args = pi_args_with_startup_flags(
         std::mem::take(&mut args.pi_args),
         &args,
         Some(navigate_tree_extension.path()),
     );
+    // Explicit extensions remain active under --no-extensions. The Pi
+    // subagent/recap runtimes are lifecycle-only and never own a terminal surface.
+    pi_args.extend([
+        "--extension".to_string(),
+        subagent_extension.path().to_string_lossy().into_owned(),
+        "--extension".to_string(),
+        recap_extension.path().to_string_lossy().into_owned(),
+    ]);
     let process = PiRpc::spawn(SpawnConfig {
         program: args.pi_bin,
         prefix_args: args.pi_prefix_args,
         cwd: cwd.clone(),
         pi_args,
+        env: vec![("PI_GROK_SUBAGENTS".to_string(), "1".to_string())],
     })
     .await?;
-    // Hold the NamedTempFile so the extension path remains valid.
+    // Hold the NamedTempFiles so the extension paths remain valid.
     let _navigate_tree_extension = navigate_tree_extension;
+    let _subagent_extension = subagent_extension;
+    let _recap_extension = recap_extension;
     let bootstrap = PiBootstrap::load(&process.rpc)
         .await
         .context("failed to bootstrap Pi RPC state")?;
@@ -291,7 +213,10 @@ async fn run(mut args: Args) -> Result<()> {
         .iter()
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
-    let connection = AcpConnection::external(
+    // External ACP skips shell `initialize`, so recap must be enabled here.
+    // Adapter still implements initialize.meta.sessionRecap for non-external
+    // paths; `/recap` stays hidden until this flag is true.
+    let mut connection = AcpConnection::external(
         client_channel.tx,
         client_channel.rx,
         initial_models,
@@ -309,6 +234,7 @@ async fn run(mut args: Args) -> Result<()> {
             changelog_url: Some("https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD"),
         },
     );
+    connection.session_recap_available = true;
 
     let mut pager_args = PagerArgs::parse_from(["grok-pi"]);
     pager_args.cwd = Some(cwd.clone());
@@ -330,295 +256,4 @@ async fn run(mut args: Args) -> Result<()> {
         resume_existing_session: args.continue_last_session,
     })
     .await
-}
-
-fn normalize_compound_short_flags(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
-    let mut parse_options = true;
-    args.into_iter()
-        .map(|arg| {
-            if parse_options && arg.as_os_str() == OsStr::new("--") {
-                parse_options = false;
-                return arg;
-            }
-            if !parse_options {
-                return arg;
-            }
-            match arg.to_str() {
-                Some("-ns") => OsString::from("--no-skills"),
-                Some("-nc") => OsString::from("--no-context-files"),
-                Some("-ne") => OsString::from("--no-extensions"),
-                Some("-nt") => OsString::from("--no-tools"),
-                _ => arg,
-            }
-        })
-        .collect()
-}
-
-fn pi_args_with_startup_flags(
-    mut pi_args: Vec<String>,
-    args: &Args,
-    bridge_extension: Option<&std::path::Path>,
-) -> Vec<String> {
-    if args.continue_last_session {
-        pi_args.push("--continue".to_string());
-    }
-    if let Some(system_prompt) = &args.system_prompt {
-        pi_args.extend(["--system-prompt".to_string(), system_prompt.clone()]);
-    }
-    for append_system_prompt in &args.append_system_prompts {
-        pi_args.extend([
-            "--append-system-prompt".to_string(),
-            append_system_prompt.clone(),
-        ]);
-    }
-    if args.no_skills {
-        pi_args.push("--no-skills".to_string());
-    }
-    if args.no_context_files {
-        pi_args.push("--no-context-files".to_string());
-    }
-    for extension in &args.extensions {
-        pi_args.extend(["--extension".to_string(), extension.clone()]);
-    }
-    // Explicit --extension paths still load under --no-extensions.
-    if let Some(path) = bridge_extension {
-        pi_args.extend([
-            "--extension".to_string(),
-            path.to_string_lossy().into_owned(),
-        ]);
-    }
-    if args.no_extensions {
-        pi_args.push("--no-extensions".to_string());
-    }
-    if args.no_tools {
-        pi_args.push("--no-tools".to_string());
-    }
-    if args.no_session {
-        pi_args.push("--no-session".to_string());
-    }
-    if let Some(name) = &args.name {
-        pi_args.extend(["--name".to_string(), name.clone()]);
-    }
-    pi_args
-}
-
-/// Inject a headless Pi extension that exposes tree control over RPC without
-/// modifying Pi source. Hidden from slash UI by adapter filtering.
-fn write_navigate_tree_extension() -> Result<NamedTempFile> {
-    // NamedTempFile defaults to no suffix; force `.ts` so Pi's loader accepts it.
-    let mut file = tempfile::Builder::new()
-        .prefix("pi-grok-tree-bridge-")
-        .suffix(".ts")
-        .tempfile()
-        .context("create tree bridge extension tempfile")?;
-    // Official ExtensionCommandContext: navigateTree + setLabel (rpc-mode).
-    const SOURCE: &str = r#"export default function (pi) {
-  pi.registerCommand("__pi_navigate_tree", {
-    description: "Internal Pi-Grok bridge: navigate session tree leaf",
-    handler: async (args, ctx) => {
-      const raw = String(args ?? "").trim();
-      if (!raw) throw new Error("entry id required");
-      const summarize = /(?:^|\s)--summarize(?:\s|$)/.test(raw);
-      let customInstructions;
-      const instrMatch = raw.match(/(?:^|\s)--instructions\s+([\s\S]+)$/);
-      if (instrMatch) customInstructions = instrMatch[1].trim();
-      const entryId = raw
-        .replace(/(?:^|\s)--summarize(?:\s|$)/g, " ")
-        .replace(/(?:^|\s)--instructions\s+[\s\S]+$/, " ")
-        .trim()
-        .split(/\s+/)[0];
-      if (!entryId) throw new Error("entry id required");
-      const result = await ctx.navigateTree(entryId, {
-        summarize,
-        customInstructions: customInstructions || undefined,
-      });
-      if (result?.cancelled) throw new Error("tree navigation cancelled");
-    },
-  });
-
-  pi.registerCommand("__pi_tree_label", {
-    description: "Internal Pi-Grok bridge: set/clear session tree label",
-    handler: async (args, ctx) => {
-      const raw = String(args ?? "").trim();
-      if (!raw) throw new Error("entry id required");
-      const tokens = raw.split(/\s+/);
-      const entryId = tokens[0];
-      if (!entryId) throw new Error("entry id required");
-      if (tokens.includes("--clear")) {
-        ctx.setLabel(entryId, undefined);
-        return;
-      }
-      const label = raw.slice(entryId.length).trim();
-      ctx.setLabel(entryId, label || undefined);
-    },
-  });
-}
-"#;
-    file.write_all(SOURCE.as_bytes())
-        .context("write tree bridge extension source")?;
-    file.flush().context("flush tree bridge extension")?;
-    // Ensure the file is durable before Pi spawns.
-    File::open(file.path())
-        .and_then(|f| f.sync_all())
-        .ok();
-    Ok(file)
-}
-
-fn pi_session_dir(pi_args: &[String], cwd: &std::path::Path) -> PathBuf {
-    let configured = pi_args
-        .windows(2)
-        .filter(|args| args[0] == "--session-dir")
-        .map(|args| args[1].as_str())
-        .next_back()
-        .map(|path| resolve_pi_path(path, cwd))
-        .or_else(|| {
-            std::env::var("PI_CODING_AGENT_SESSION_DIR")
-                .ok()
-                .filter(|path| !path.trim().is_empty())
-                .map(|path| resolve_pi_path(&path, cwd))
-        });
-    configured.unwrap_or_else(|| {
-        let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".pi/agent")))
-            .unwrap_or_else(|| PathBuf::from(".pi/agent"));
-        resolve_pi_path(&agent_dir.to_string_lossy(), cwd).join("sessions")
-    })
-}
-
-fn resolve_pi_path(path: &str, cwd: &std::path::Path) -> PathBuf {
-    let path = path.trim();
-    let expanded = path
-        .strip_prefix("~/")
-        .and_then(|suffix| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(suffix)))
-        .unwrap_or_else(|| PathBuf::from(path));
-    if expanded.is_absolute() {
-        expanded
-    } else {
-        cwd.join(expanded)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_dir_uses_the_last_pi_session_dir_argument() {
-        let cwd = PathBuf::from("/project");
-        let args = vec![
-            "--session-dir".to_string(),
-            "old".to_string(),
-            "--session-dir".to_string(),
-            "sessions".to_string(),
-        ];
-        assert_eq!(
-            pi_session_dir(&args, &cwd),
-            PathBuf::from("/project/sessions")
-        );
-    }
-
-    #[test]
-    fn continue_flag_is_forwarded_to_pi() {
-        let args = Args::try_parse_from(["grok-pi", "--continue"]).unwrap();
-        assert!(args.continue_last_session);
-        assert_eq!(
-            pi_args_with_startup_flags(args.pi_args.clone(), &args, None),
-            vec!["--continue"]
-        );
-    }
-
-    #[test]
-    fn short_continue_flag_is_forwarded_to_pi() {
-        let args = Args::try_parse_from(["grok-pi", "-c"]).unwrap();
-        assert!(args.continue_last_session);
-        assert_eq!(
-            pi_args_with_startup_flags(args.pi_args.clone(), &args, None),
-            vec!["--continue"]
-        );
-    }
-
-    #[test]
-    fn pi_startup_flags_are_forwarded_to_pi() {
-        let args = Args::try_parse_from(normalize_compound_short_flags(
-            [
-                "grok-pi",
-                "--system-prompt",
-                "base prompt",
-                "--append-system-prompt",
-                "first addition",
-                "--append-system-prompt",
-                "second addition",
-                "-ns",
-                "-nc",
-                "-e",
-                "first.ts",
-                "--extension",
-                "second.ts",
-                "-ne",
-                "-nt",
-                "--no-session",
-                "-n",
-                "named-session",
-            ]
-            .into_iter()
-            .map(OsString::from),
-        ))
-        .unwrap();
-
-        assert_eq!(
-            pi_args_with_startup_flags(
-                args.pi_args.clone(),
-                &args,
-                Some(std::path::Path::new("/tmp/bridge.ts")),
-            ),
-            vec![
-                "--system-prompt",
-                "base prompt",
-                "--append-system-prompt",
-                "first addition",
-                "--append-system-prompt",
-                "second addition",
-                "--no-skills",
-                "--no-context-files",
-                "--extension",
-                "first.ts",
-                "--extension",
-                "second.ts",
-                "--extension",
-                "/tmp/bridge.ts",
-                "--no-extensions",
-                "--no-tools",
-                "--no-session",
-                "--name",
-                "named-session",
-            ]
-        );
-    }
-
-    #[test]
-    fn navigate_tree_extension_source_is_valid_ts_module() {
-        let file = write_navigate_tree_extension().expect("temp extension");
-        let source = std::fs::read_to_string(file.path()).expect("read extension");
-        assert!(source.contains("registerCommand(\"__pi_navigate_tree\""));
-        assert!(source.contains("registerCommand(\"__pi_tree_label\""));
-        assert!(source.contains("ctx.navigateTree"));
-        assert!(source.contains("ctx.setLabel"));
-        assert!(file.path().extension().and_then(|e| e.to_str()) == Some("ts"));
-    }
-
-    #[test]
-    fn compound_short_flags_after_double_dash_are_not_rewritten() {
-        assert_eq!(
-            normalize_compound_short_flags(
-                ["grok-pi", "--", "-ns", "-nc", "-ne", "-nt"]
-                    .into_iter()
-                    .map(OsString::from),
-            ),
-            ["grok-pi", "--", "-ns", "-nc", "-ne", "-nt"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<_>>(),
-        );
-    }
 }
