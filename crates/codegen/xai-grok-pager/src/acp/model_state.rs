@@ -283,14 +283,90 @@ impl ModelState {
 
     /// Resolve a user-supplied name to a `ModelId` via case-insensitive
     /// ASCII match against the catalog.
+    ///
+    /// Accepts display name, full `provider::id`, `provider/id`, bare model id,
+    /// or the Pi-style `id [provider]` row text (without a trailing `(current)`).
     pub fn resolve_by_name_or_id(&self, query: &str) -> Option<acp::ModelId> {
-        self.available.iter().find_map(|(id, info)| {
-            if info.name.eq_ignore_ascii_case(query) || id.0.as_ref().eq_ignore_ascii_case(query) {
-                Some(id.clone())
-            } else {
-                None
+        let query = query
+            .trim()
+            .trim_end_matches("(current)")
+            .trim()
+            .trim_end_matches('✓')
+            .trim();
+        if query.is_empty() {
+            return None;
+        }
+
+        // Exact full-key hit first (unique by construction).
+        if let Some((id, _)) = self
+            .available
+            .iter()
+            .find(|(id, _)| id.0.as_ref().eq_ignore_ascii_case(query))
+        {
+            return Some(id.clone());
+        }
+
+        // Display name: only when unique across the catalog.
+        let mut name_match: Option<acp::ModelId> = None;
+        for (id, info) in &self.available {
+            if info.name.eq_ignore_ascii_case(query) {
+                if name_match.is_some() {
+                    name_match = None;
+                    break;
+                }
+                name_match = Some(id.clone());
             }
-        })
+        }
+        if let Some(id) = name_match {
+            return Some(id);
+        }
+
+        // Pi-style `model-id [provider]` from the picker row.
+        if let Some((model_part, provider_part)) = query.rsplit_once('[')
+            && let Some(provider) = provider_part.strip_suffix(']')
+        {
+            let model_part = model_part.trim();
+            let provider = provider.trim();
+            if !model_part.is_empty() && !provider.is_empty() {
+                let key = format!("{provider}::{model_part}");
+                if let Some((id, _)) = self
+                    .available
+                    .iter()
+                    .find(|(id, _)| id.0.as_ref().eq_ignore_ascii_case(&key))
+                {
+                    return Some(id.clone());
+                }
+            }
+        }
+
+        // `provider/id` (slash form used in search / CLI).
+        if let Some((provider, model_id)) = query.split_once('/')
+            && !provider.is_empty()
+            && !model_id.is_empty()
+            && !model_id.contains('/')
+        {
+            let key = format!("{provider}::{model_id}");
+            if let Some((id, _)) = self
+                .available
+                .iter()
+                .find(|(id, _)| id.0.as_ref().eq_ignore_ascii_case(&key))
+            {
+                return Some(id.clone());
+            }
+        }
+
+        // Bare model id after `::` — only when unique.
+        let mut bare_match: Option<acp::ModelId> = None;
+        for (id, _) in &self.available {
+            let bare = id.0.as_ref().split_once("::").map(|(_, m)| m).unwrap_or(id.0.as_ref());
+            if bare.eq_ignore_ascii_case(query) {
+                if bare_match.is_some() {
+                    return None;
+                }
+                bare_match = Some(id.clone());
+            }
+        }
+        bare_match
     }
 
     /// Look up the display name for a `ModelId` in the catalog.
@@ -672,6 +748,77 @@ mod tests {
         assert!(
             !state_with_meta(Some(serde_json::json!({ "inputModalities": ["text"] })))
                 .current_model_accepts_images()
+        );
+    }
+
+    #[test]
+    fn resolve_by_name_or_id_accepts_provider_forms() {
+        let mut state = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("anthropic::claude-haiku-4-5"));
+        state.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "Claude Haiku 4.5".to_string()),
+        );
+
+        assert_eq!(
+            state.resolve_by_name_or_id("Claude Haiku 4.5").as_ref(),
+            Some(&id)
+        );
+        assert_eq!(
+            state
+                .resolve_by_name_or_id("anthropic::claude-haiku-4-5")
+                .as_ref(),
+            Some(&id)
+        );
+        assert_eq!(
+            state
+                .resolve_by_name_or_id("anthropic/claude-haiku-4-5")
+                .as_ref(),
+            Some(&id)
+        );
+        assert_eq!(
+            state
+                .resolve_by_name_or_id("claude-haiku-4-5 [anthropic]")
+                .as_ref(),
+            Some(&id)
+        );
+        assert_eq!(
+            state
+                .resolve_by_name_or_id("claude-haiku-4-5 [anthropic] (current)")
+                .as_ref(),
+            Some(&id)
+        );
+        assert_eq!(
+            state.resolve_by_name_or_id("claude-haiku-4-5").as_ref(),
+            Some(&id)
+        );
+    }
+
+    #[test]
+    fn resolve_by_name_or_id_rejects_ambiguous_bare_id() {
+        let mut state = ModelState::default();
+        let a = acp::ModelId::new(Arc::from("anthropic::claude-haiku-4-5"));
+        let b = acp::ModelId::new(Arc::from("openrouter::claude-haiku-4-5"));
+        state.available.insert(
+            a.clone(),
+            acp::ModelInfo::new(a.clone(), "Claude Haiku 4.5".to_string()),
+        );
+        state.available.insert(
+            b.clone(),
+            acp::ModelInfo::new(b.clone(), "Claude Haiku 4.5".to_string()),
+        );
+
+        assert!(state.resolve_by_name_or_id("claude-haiku-4-5").is_none());
+        assert!(
+            state.resolve_by_name_or_id("Claude Haiku 4.5").is_none(),
+            "duplicate display names must not resolve ambiguously"
+        );
+        assert_eq!(
+            state
+                .resolve_by_name_or_id("openrouter/claude-haiku-4-5")
+                .map(|id| id.0.to_string())
+                .as_deref(),
+            Some("openrouter::claude-haiku-4-5")
         );
     }
 }

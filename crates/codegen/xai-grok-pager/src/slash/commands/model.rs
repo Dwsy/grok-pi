@@ -132,23 +132,23 @@ pub(crate) fn uses_pi_model_picker_search(models: &ModelState, args_query: &str)
 }
 
 /// Returns the matched model id when `args_query` is `"<reasoning-model> ..."`.
-/// Longest-name-first to disambiguate names that share a prefix.
+/// Longest-token-first so `provider/id` and multi-word names disambiguate.
 fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::ModelId> {
-    let mut candidates: Vec<(&acp::ModelId, &str)> = models
+    let mut candidates: Vec<(acp::ModelId, String)> = models
         .available
         .iter()
         .filter(|(_, info)| supports_reasoning_effort(info))
-        .map(|(id, info)| (id, info.name.as_str()))
+        .map(|(id, info)| (id.clone(), model_insert_token(models, id, info)))
         .collect();
-    candidates.sort_by_key(|(_, name)| std::cmp::Reverse(name.len()));
+    candidates.sort_by_key(|(_, token)| std::cmp::Reverse(token.len()));
 
-    for (id, name) in candidates {
-        if args_query.len() > name.len()
-            && args_query.is_char_boundary(name.len())
-            && args_query[..name.len()].eq_ignore_ascii_case(name)
-            && args_query[name.len()..].starts_with(char::is_whitespace)
+    for (id, token) in candidates {
+        if args_query.len() > token.len()
+            && args_query.is_char_boundary(token.len())
+            && args_query[..token.len()].eq_ignore_ascii_case(&token)
+            && args_query[token.len()..].starts_with(char::is_whitespace)
         {
-            return Some(id.clone());
+            return Some(id);
         }
     }
     None
@@ -162,61 +162,302 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
     for (id, info) in &models.available {
         let is_current = current_id == Some(id);
         let supports = supports_reasoning_effort(info);
+        let (provider, model_id) = split_provider_model_id(id, info);
+        let token = model_insert_token(models, id, info);
 
-        let display = if is_current {
-            format!("{} (current)", info.name)
-        } else {
-            info.name.clone()
+        // Pi TUI: `model-id [provider]`; keep friendly name when id is opaque.
+        let mut display = match provider {
+            Some(provider) if !provider.is_empty() => {
+                format!("{model_id} [{provider}]")
+            }
+            _ => info.name.clone(),
         };
+        if is_current {
+            display.push_str(" (current)");
+        }
 
         // Trailing space on reasoning models: signals "more input
         // expected" to the prompt widget so Enter advances to effort
         // phase instead of submitting.
         let insert_text = if supports {
-            format!("{} ", info.name)
+            format!("{token} ")
         } else {
-            info.name.clone()
+            token
         };
 
         items.push(ArgItem {
             display,
             match_text: model_selector_search_text(id, info),
             insert_text,
-            description: info.description.clone().unwrap_or_default(),
+            // Metadata belongs in the modal bottom detail pane (pi-model-selector-x),
+            // not as a right-column list label.
+            description: String::new(),
         });
     }
     items
+}
+
+/// Stable commit token for `/model`. Prefer display name when unique; otherwise
+/// use `provider/id` so same-label models from different providers stay distinct.
+fn model_insert_token(
+    models: &ModelState,
+    id: &acp::ModelId,
+    info: &acp::ModelInfo,
+) -> String {
+    let name_collisions = models
+        .available
+        .values()
+        .filter(|other| other.name.eq_ignore_ascii_case(&info.name))
+        .count();
+    if name_collisions <= 1 {
+        return info.name.clone();
+    }
+    let (provider, model_id) = split_provider_model_id(id, info);
+    match provider {
+        Some(provider) if !provider.is_empty() => format!("{provider}/{model_id}"),
+        _ => id.0.to_string(),
+    }
+}
+
+/// Bottom detail pane for the selected `/model` row (pi-model-selector-x style).
+/// Returns 1..=4 short lines: title, capabilities, cost, base URL.
+pub(crate) fn model_picker_detail_lines(info: &acp::ModelInfo) -> Vec<String> {
+    let meta = info.meta.as_ref();
+    let (provider, model_id) = split_provider_model_id(&info.model_id, info);
+    let mut lines = Vec::new();
+
+    let mut title = info.name.clone();
+    if let Some(provider) = provider.filter(|p| !p.is_empty()) {
+        title.push_str(&format!("  [{provider}]"));
+    }
+    if model_id != info.name {
+        title.push_str(&format!("  ·  {model_id}"));
+    }
+    lines.push(title);
+
+    let mut caps = Vec::new();
+    if let Some(tokens) = meta_u64(meta, "totalContextTokens") {
+        caps.push(format!("Context {}", format_token_count(tokens)));
+    }
+    if let Some(tokens) = meta_u64(meta, "maxTokens") {
+        caps.push(format!("MaxOut {}", format_token_count(tokens)));
+    }
+    if let Some(api) = meta_str(meta, "api").and_then(format_protocol_short) {
+        caps.push(format!("API {api}"));
+    }
+    let input = format_input_short(meta);
+    if !input.is_empty() {
+        caps.push(format!("Input {input}"));
+    }
+    if meta_bool(meta, "reasoning").unwrap_or(false)
+        || supports_reasoning_effort(info)
+    {
+        caps.push("⚡ reasoning".into());
+    }
+    if !caps.is_empty() {
+        lines.push(caps.join("  ·  "));
+    }
+
+    if let Some(cost_line) = format_cost_line(meta) {
+        lines.push(cost_line);
+    }
+    if let Some(base_url) = meta_str(meta, "baseUrl").filter(|s| !s.is_empty()) {
+        lines.push(format!("BaseURL {base_url}"));
+    }
+
+    // Fall back to adapter description if meta was sparse.
+    if lines.len() == 1
+        && let Some(description) = info
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    {
+        lines.push(description.to_string());
+    }
+    lines
+}
+
+fn meta_str<'a>(meta: Option<&'a serde_json::Map<String, serde_json::Value>>, key: &str) -> Option<&'a str> {
+    meta.and_then(|m| m.get(key)).and_then(|v| v.as_str())
+}
+
+fn meta_u64(meta: Option<&serde_json::Map<String, serde_json::Value>>, key: &str) -> Option<u64> {
+    meta.and_then(|m| m.get(key)).and_then(|v| match v {
+        serde_json::Value::Number(n) => n.as_u64(),
+        _ => None,
+    })
+}
+
+fn meta_bool(meta: Option<&serde_json::Map<String, serde_json::Value>>, key: &str) -> Option<bool> {
+    meta.and_then(|m| m.get(key)).and_then(|v| v.as_bool())
+}
+
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let millions = tokens as f64 / 1_000_000.0;
+        if millions.fract() == 0.0 {
+            format!("{}M", millions as u64)
+        } else {
+            format!("{millions:.1}M")
+        }
+    } else if tokens >= 1_000 {
+        let thousands = tokens as f64 / 1_000.0;
+        if thousands.fract() == 0.0 {
+            format!("{}k", thousands as u64)
+        } else {
+            format!("{thousands:.0}k")
+        }
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn format_protocol_short(api: &str) -> Option<&'static str> {
+    match api {
+        "openai-responses" | "openai-codex-responses" => Some("resp"),
+        "openai-completions" => Some("comp"),
+        "anthropic-messages" => Some("anth"),
+        "google-generative-ai" => Some("goog"),
+        _ => None,
+    }
+}
+
+fn format_input_short(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> String {
+    if let Some(modalities) = meta
+        .and_then(|m| m.get("inputModalities"))
+        .and_then(|v| v.as_array())
+    {
+        let mut parts = Vec::new();
+        if modalities.iter().any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("text"))) {
+            parts.push("txt");
+        }
+        if modalities.iter().any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("image"))) {
+            parts.push("img");
+        }
+        if modalities.iter().any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("audio"))) {
+            parts.push("aud");
+        }
+        if !parts.is_empty() {
+            return parts.join("+");
+        }
+    }
+    match meta_bool(meta, "acceptsImages") {
+        Some(true) => "txt+img".into(),
+        Some(false) => "txt".into(),
+        None => String::new(),
+    }
+}
+
+fn format_cost_num(value: f64) -> String {
+    if value == 0.0 {
+        "0".into()
+    } else if value < 0.01 {
+        format!("{value:.3}")
+    } else if value < 1.0 {
+        format!("{value:.2}")
+    } else if (value - value.round()).abs() < f64::EPSILON {
+        format!("{}", value.round() as i64)
+    } else if value < 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{}", value.round() as i64)
+    }
+}
+
+fn format_cost_line(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Option<String> {
+    let cost = meta.and_then(|m| m.get("cost")).and_then(|v| v.as_object())?;
+    let input = cost.get("input").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let output = cost.get("output").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let mut line = if input == 0.0 && output == 0.0 {
+        "Cost free".to_string()
+    } else {
+        format!(
+            "Cost ${} / ${}",
+            format_cost_num(input),
+            format_cost_num(output)
+        )
+    };
+    if let Some(cache_read) = cost.get("cacheRead").and_then(|v| v.as_f64()).filter(|v| *v > 0.0) {
+        line.push_str(&format!("  ·  cache read ${}", format_cost_num(cache_read)));
+    }
+    if let Some(cache_write) = cost
+        .get("cacheWrite")
+        .and_then(|v| v.as_f64())
+        .filter(|v| *v > 0.0)
+    {
+        line.push_str(&format!("  ·  cache write ${}", format_cost_num(cache_write)));
+    }
+    Some(line)
+}
+
+/// Resolve the catalog model for an ArgPicker row.
+pub(crate) fn resolve_model_for_arg_item(
+    models: &ModelState,
+    item: &crate::slash::command::ArgItem,
+) -> Option<acp::ModelId> {
+    let token = item.insert_text.trim_end();
+    models
+        .resolve_by_name_or_id(token)
+        .or_else(|| models.resolve_by_name_or_id(item.display.trim_end_matches("(current)").trim()))
+}
+
+fn split_provider_model_id<'a>(
+    id: &'a acp::ModelId,
+    info: &'a acp::ModelInfo,
+) -> (Option<&'a str>, &'a str) {
+    let raw = id.0.as_ref();
+    if let Some((provider, model_id)) = raw.split_once("::") {
+        return (Some(provider), model_id);
+    }
+    let provider = info
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("provider"))
+        .and_then(|v| v.as_str());
+    let model_id = info
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("modelId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(raw);
+    (provider, model_id)
 }
 
 /// Search text mirrors Pi TUI's model selector: provider-prefixed text comes
 /// first so `provider/model` queries rank direct provider models ahead of proxy
 /// IDs that only contain the same provider later in their identifier.
 fn model_selector_search_text(id: &acp::ModelId, info: &acp::ModelInfo) -> String {
-    let model_id = id.0.as_ref();
-    let Some((provider, model_id)) = model_id.split_once("::") else {
-        return format!("{model_id} {}", info.name);
-    };
-    format!(
-        "{provider} {provider}/{model_id} {provider} {model_id} {}",
-        info.name
-    )
+    let (provider, model_id) = split_provider_model_id(id, info);
+    match provider {
+        Some(provider) if !provider.is_empty() => format!(
+            "{provider} {provider}/{model_id} {provider} {model_id} {} {}",
+            info.name,
+            info.description.as_deref().unwrap_or("")
+        ),
+        _ => format!(
+            "{model_id} {} {}",
+            info.name,
+            info.description.as_deref().unwrap_or("")
+        ),
+    }
 }
 
 /// One row per effort level for the `/model` chained effort phase.
-/// `insert_text` is `"ModelName high"` so selecting a row completes both tokens.
+/// `insert_text` is `"ModelToken high"` so selecting a row completes both tokens.
 fn build_effort_items(models: &ModelState, model_id: &acp::ModelId) -> Vec<ArgItem> {
     let info = match models.available.get(model_id) {
         Some(info) => info,
         None => return Vec::new(),
     };
-    let model_name = info.name.clone();
+    let model_token = model_insert_token(models, model_id, info);
     let is_current_model = models.current.as_ref() == Some(model_id);
     let options = models.reasoning_effort_options_for(model_id);
     build_effort_arg_items(
         &options,
         models.reasoning_effort,
         is_current_model,
-        |option| format!("{model_name} {}", option.id),
+        |option| format!("{model_token} {}", option.id),
     )
 }
 
@@ -306,13 +547,89 @@ mod tests {
         // Enter so the effort sub-menu can render.
         let reasoning = items
             .iter()
-            .find(|i| i.match_text == "Reasoning X")
+            .find(|i| i.insert_text.starts_with("Reasoning X"))
             .unwrap();
         assert_eq!(reasoning.insert_text, "Reasoning X ");
 
         // Plain model has no trailing space -- Enter commits immediately.
-        let plain = items.iter().find(|i| i.match_text == "Grok 4.5").unwrap();
+        let plain = items
+            .iter()
+            .find(|i| i.insert_text == "Grok 4.5")
+            .unwrap();
         assert_eq!(plain.insert_text, "Grok 4.5");
+    }
+
+    #[test]
+    fn model_rows_show_provider_and_disambiguate_duplicate_names() {
+        let mut state = ModelState::default();
+        let a = acp::ModelId::new(Arc::from("anthropic::claude-haiku-4-5"));
+        let b = acp::ModelId::new(Arc::from("openrouter::claude-haiku-4-5"));
+        let a_info = acp::ModelInfo::new(a.clone(), "Claude Haiku 4.5".to_string()).meta(
+            serde_json::json!({
+                "provider": "anthropic",
+                "modelId": "claude-haiku-4-5",
+                "totalContextTokens": 200000,
+                "maxTokens": 64000,
+                "api": "anthropic-messages",
+                "acceptsImages": true,
+                "inputModalities": ["text", "image"],
+                "reasoning": true,
+                "cost": { "input": 1.0, "output": 5.0, "cacheRead": 0.1 }
+            })
+            .as_object()
+            .cloned(),
+        );
+        let b_info = acp::ModelInfo::new(b.clone(), "Claude Haiku 4.5".to_string()).meta(
+            serde_json::json!({
+                "provider": "openrouter",
+                "modelId": "claude-haiku-4-5",
+                "totalContextTokens": 200000,
+                "maxTokens": 64000,
+                "api": "openai-completions",
+                "acceptsImages": false,
+                "cost": { "input": 0.25, "output": 1.25 }
+            })
+            .as_object()
+            .cloned(),
+        );
+        state.available.insert(a, a_info.clone());
+        state.available.insert(b, b_info);
+
+        let cmd = ModelCommand;
+        let ctx = AppCtx {
+            models: &state,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+        };
+        let items = cmd.suggest_args(&ctx, "").unwrap();
+        assert_eq!(items.len(), 2);
+
+        let anthropic = items
+            .iter()
+            .find(|i| i.display.contains("[anthropic]"))
+            .unwrap();
+        assert_eq!(anthropic.display, "claude-haiku-4-5 [anthropic]");
+        assert!(
+            anthropic.description.is_empty(),
+            "list rows stay clean; detail goes to bottom pane"
+        );
+        assert_eq!(anthropic.insert_text, "anthropic/claude-haiku-4-5");
+
+        let openrouter = items
+            .iter()
+            .find(|i| i.display.contains("[openrouter]"))
+            .unwrap();
+        assert_eq!(openrouter.display, "claude-haiku-4-5 [openrouter]");
+        assert_eq!(openrouter.insert_text, "openrouter/claude-haiku-4-5");
+
+        let detail = model_picker_detail_lines(&a_info);
+        assert!(detail[0].contains("Claude Haiku 4.5"));
+        assert!(detail[0].contains("[anthropic]"));
+        assert!(detail.iter().any(|l| l.contains("Context 200k")), "{detail:?}");
+        assert!(detail.iter().any(|l| l.contains("API anth")), "{detail:?}");
+        assert!(detail.iter().any(|l| l.contains("Cost $1 / $5")), "{detail:?}");
+        assert!(detail.iter().any(|l| l.contains("cache read")), "{detail:?}");
     }
 
     #[test]
@@ -389,7 +706,7 @@ mod tests {
         let info = acp::ModelInfo::new(id.clone(), "GPT 5.5".to_string());
         assert_eq!(
             model_selector_search_text(&id, &info),
-            "openai-codex openai-codex/gpt-5.5 openai-codex gpt-5.5 GPT 5.5"
+            "openai-codex openai-codex/gpt-5.5 openai-codex gpt-5.5 GPT 5.5 "
         );
     }
 
