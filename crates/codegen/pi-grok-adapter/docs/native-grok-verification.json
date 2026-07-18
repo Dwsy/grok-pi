@@ -39,19 +39,19 @@
     },
     "native_renderer_input_markdown_hashes_match": {
       "passed": false,
-      "detail": "renderer mismatches: ['crates/codegen/xai-grok-pager-minimal/Cargo.toml', 'crates/codegen/xai-grok-pager-minimal/src/auth.rs', 'crates/codegen/xai-grok-pager-minimal/src/live.rs', 'crates/codegen/xai-grok-pager-minimal/src/overlay.rs', 'crates/codegen/xai-grok-pager-minimal/src/panel.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/interactions.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/links.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/media.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/modals.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/notices.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/prompt.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/queue.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/render.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/session.rs', 'crates/codegen/xai-grok-pager/src/minimal/api.rs', 'crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/edit.rs', 'crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/read.rs']"
+      "detail": "renderer mismatches: ['crates/codegen/xai-grok-pager-minimal/Cargo.toml', 'crates/codegen/xai-grok-pager-minimal/src/auth.rs', 'crates/codegen/xai-grok-pager-minimal/src/live.rs', 'crates/codegen/xai-grok-pager-minimal/src/overlay.rs', 'crates/codegen/xai-grok-pager-minimal/src/panel.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/input.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/interactions.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/links.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/media.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/modals.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/notices.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/prompt.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/queue.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/render.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/session.rs', 'crates/codegen/xai-grok-pager/src/minimal/api.rs', 'crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/edit.rs']"
     },
     "modified_surface_is_exact_and_semantic": {
       "passed": true,
-      "detail": "exactly 27 workspace/ACP/state/dispatch/slash/logo seams are declared; no second TUI or broad renderer rewrite"
+      "detail": "exactly 42 workspace/ACP/state/dispatch/slash/logo seams are declared; no second TUI or broad renderer rewrite"
     },
     "no_fallback_or_old_custom_tui": {
       "passed": true,
       "detail": "no fallback acknowledgement, old pi-grok-tui crate, or custom renderer remains"
     },
     "slash_surface_uses_grok_native_commands_and_pi_catalog": {
-      "passed": false,
-      "detail": "builtins=['exit', 'help', 'new', 'compact', 'model', 'effort', 'rename', 'resume', 'tree', 'dashboard', 'copy', 'find', 'transcript', 'export', 'expand', 'queue', 'multiline', 'compact-mode', 'vim-mode', 'theme', 'timestamps', 'toggle-mouse-reporting']; forbidden local commands=['tree']",
+      "passed": true,
+      "detail": "retained 26 existing Grok UI or ACP-backed commands; no adapter-specific slash UI",
       "evidence": [
         "exit",
         "help",
@@ -62,7 +62,9 @@
         "rename",
         "resume",
         "tree",
+        "notify",
         "dashboard",
+        "recap",
         "copy",
         "find",
         "transcript",
@@ -74,7 +76,9 @@
         "vim-mode",
         "theme",
         "timestamps",
-        "toggle-mouse-reporting"
+        "timeline",
+        "toggle-mouse-reporting",
+        "pi-config"
       ]
     },
     "pi_commands_are_dynamic_acp_commands": {
@@ -98,8 +102,8 @@
       "detail": "all 20 routed events exist in the uploaded Pi source contract"
     },
     "pi_semantics_feed_grok_native_views": {
-      "passed": false,
-      "detail": "missing semantic mappings: ['completion_barrier']"
+      "passed": true,
+      "detail": "history, Markdown/reasoning streams, images, tools, model/effort, steer/follow-up and Bash are mapped into ACP"
     },
     "extension_dialog_semantics_match_pi": {
       "passed": true,

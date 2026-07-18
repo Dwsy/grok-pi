@@ -92,7 +92,7 @@
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/agent.rs": "52e1d9d4aaf769e981df6ed23aa0f48fcfd29034ac54b3f67b20b8d86f48bbb6",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/bg_task.rs": "53d60432a0715b576e6a74cecfee113b5ba888476e04d0483c0a4c82266d4778",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/btw.rs": "60a14b9e4132e063aaf0e92d092773e52c41b544d66a003af22c8c1d9e97d3d2",
-    "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs": "7f635f4cca336ec83fa553e0016ea715e68e168721bff62b53e6bdea5b6d7194",
+    "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs": "4f9e483989904cea6504026210917f4260566a988ec479f851ac09a1e9f1baf9",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/credit_limit.rs": "882719185886b8a84ae153a9e87bb34c6b2adfb32518b78f212ea10595efef80",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/markdown_content.rs": "8569f3a3342bcbc5bd5086ec61a1ced2d7e6b49f277601803bffbb283349868f",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/mermaid_content.rs": "18121f3e18776f4bf15b22f4d7f0e7d09273b137f0d4ba8a8efa09cb1d6f6fb1",

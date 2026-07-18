@@ -43,7 +43,7 @@
 | Session recap (`/recap` + auto away) | 适配 | initialize `meta.sessionRecap`；`x.ai/recap` → 注入 extension `__pi_grok_recap`（`complete` 侧调用，不写会话历史）→ custom `pi-grok-recap/v1` → `SessionRecap`。仅使用 F2 显式配置的 `recap_model`，不回退当前会话模型；auto：≥3 turn、最后完成 turn ≥3 分钟、终端失焦期间后台生成、成功后无新 turn 不重复；manual：有 user turn即可；输入限最近 6 turn/12k 字符；正文语言优先 macOS `AppleLanguages`，再回退 locale |
 | Queue pane / count | 适配 | Pi `queue_update` 全文数组 → `x.ai/queue/changed`（稳定 id + 出队）+ status；`/queue` 面板镜像 Pi steering/follow-up。Pi RPC 无 clear/remove/edit，对应操作 rebroadcast + toast |
 | Context bar used tokens | 适配 | Pi `contextUsage` / message usage → ACP `_meta.totalTokens` → 右上角 bar |
-| Context click / `/context` | 适配 | Grok `x.ai/session/info` → Pi stats + messages + `__pi_context_breakdown` extension（system/tools/AGENTS/append/skills）→ 原生 `ContextInfoBlock` |
+| Context click / `/context` | 原生+适配 | Grok `x.ai/session/info` → Pi stats + messages + `__pi_context_breakdown` extension（system/tools/AGENTS/append/skills）→ 原生 `ModalWindow` 中复用 `ContextInfoBlock` 图表；运行中即时刷新、不写 scrollback |
 
 ## Model、session 与命令
 
@@ -67,7 +67,7 @@
 
 | 方法 | 状态 | Grok 组件 |
 |---|---|---|
-| `notify` | 原生+适配 | 原生 toast；显式 `info` 同时追加原生 SystemMessage scrollback，供命令查询结果回看 |
+| `notify` | 原生+适配 | 原生 toast；显式 `info` 同时追加原生 SystemMessage scrollback；`/notify` 用原生可搜索 modal 查看当前进程内、按 Pi session 隔离的全部 info/warning/error 事件（不持久化） |
 | `setStatus` | 原生+适配 | sticky banner/status |
 | `setWidget` | 原生+适配 | persistent native banner surface |
 | `setTitle` | 原生+适配 | terminal title |
@@ -87,7 +87,7 @@
 
 ### 保留的 Grok 原生命令
 
-`exit`、`help`、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`dashboard`、`copy`、`find`、`transcript`、`export`、`expand`、`queue`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`toggle-mouse-reporting`。
+`exit`、`help`、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`dashboard`、`copy`、`find`、`transcript`、`export`、`expand`、`queue`、`notify`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`toggle-mouse-reporting`。
 
 ### 动态 Pi 命令
 

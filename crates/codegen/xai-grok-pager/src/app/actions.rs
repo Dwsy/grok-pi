@@ -158,6 +158,8 @@ pub enum Action {
     ShowSessionPicker,
     /// Open the Pi session entry tree picker (`/tree`).
     ShowSessionTree,
+    /// Open the process-local Pi notification list for the active session (`/notify`).
+    ShowNotifications,
     /// Navigate the active Pi session leaf to `entry_id` (`ctx.navigateTree`).
     NavigateSessionTree {
         entry_id: String,

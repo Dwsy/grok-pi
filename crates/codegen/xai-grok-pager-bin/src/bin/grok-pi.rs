@@ -10,6 +10,8 @@ mod bash_extension;
 mod cli;
 #[path = "grok_pi/context_extension.rs"]
 mod context_extension;
+#[path = "grok_pi/native_commands_extension.rs"]
+mod native_commands_extension;
 #[path = "grok_pi/recap_extension.rs"]
 mod recap_extension;
 #[path = "grok_pi/remote_tui_extension.rs"]
@@ -36,6 +38,7 @@ use xai_grok_pager::{
 use bash_extension::write_bash_extension;
 use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_flags};
 use context_extension::write_context_extension;
+use native_commands_extension::write_native_commands_extension;
 use recap_extension::write_recap_extension;
 use remote_tui_extension::write_remote_tui_extension;
 use session_paths::pi_session_dir;
@@ -60,6 +63,8 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "resume",
     // Pi session entry tree via native ArgPicker + adapter navigate.
     "tree",
+    // Process-local Pi extension notifications in a searchable native modal.
+    "notify",
     // Native multi-session overview; idle rows come from pi/session/list.
     "dashboard",
     // Display-only session recap via injected Pi extension + adapter bridge.
@@ -176,6 +181,8 @@ async fn run(mut args: Args) -> Result<()> {
     let recap_extension = write_recap_extension().context("failed to create Pi recap extension")?;
     let context_extension =
         write_context_extension().context("failed to create Pi context breakdown extension")?;
+    let native_commands_extension = write_native_commands_extension()
+        .context("failed to create Pi native commands extension")?;
     // Experimental Remote TUI — default ON. Disable with PI_GROK_REMOTE_TUI=0.
     let remote_tui_enabled = env_flag_default_on("PI_GROK_REMOTE_TUI");
     let remote_tui_extension = if remote_tui_enabled {
@@ -198,6 +205,11 @@ async fn run(mut args: Args) -> Result<()> {
         "--extension".to_string(),
         context_extension
             .source_path()
+            .to_string_lossy()
+            .into_owned(),
+        "--extension".to_string(),
+        native_commands_extension
+            .path()
             .to_string_lossy()
             .into_owned(),
     ]);
@@ -265,6 +277,7 @@ async fn run(mut args: Args) -> Result<()> {
     let _subagent_extension = subagent_extension;
     let _recap_extension = recap_extension;
     let _context_extension = context_extension;
+    let _native_commands_extension = native_commands_extension;
     let _remote_tui_extension = remote_tui_extension;
     let bootstrap = PiBootstrap::load(&process.rpc)
         .await

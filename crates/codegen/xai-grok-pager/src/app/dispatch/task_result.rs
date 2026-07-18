@@ -816,14 +816,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::ContextInfoComplete { agent_id, info } => {
             handle_context_info_complete(app, agent_id, info)
         }
-        TaskResult::ContextInfoFailed { agent_id, error } => {
-            if let Some(agent) = app.agents.get_mut(&agent_id) {
-                agent
-                    .scrollback
-                    .push_block(crate::scrollback::block::RenderBlock::system(format!(
-                        "Couldn't load context info: {error}"
-                    )));
-            }
+        TaskResult::ContextInfoFailed { agent_id: _, error } => {
+            app.show_toast(&format!("Couldn't load context info: {error}"));
             vec![]
         }
         TaskResult::FeedbackComplete { .. } => vec![],

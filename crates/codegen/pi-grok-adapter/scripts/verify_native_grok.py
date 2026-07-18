@@ -252,12 +252,15 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/app/acp_handler/interactions.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs",
         "crates/codegen/xai-grok-pager/src/app/app_view.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/queue.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/session/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/status.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/router.rs",
         "crates/codegen/xai-grok-pager/src/app/modals.rs",
         "crates/codegen/xai-grok-pager/src/lib.rs",
@@ -280,6 +283,7 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/slash/mod.rs",
         # Narrow branding seam: process-wide logo override for external hosts
         # (e.g. grok-pi π art). Layout/shimmer still use the native renderer.
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs",
         "crates/codegen/xai-grok-pager/src/views/welcome/logo.rs",
         # Welcome menu policy for external hosts: hide New worktree, Changelog URL.
         "crates/codegen/xai-grok-pager/src/views/welcome/mod.rs",
@@ -333,7 +337,10 @@ def main() -> int:
         "effort",
         "rename",
         "resume",
+        "tree",
+        "notify",
         "dashboard",
+        "recap",
         "copy",
         "find",
         "transcript",
@@ -345,7 +352,9 @@ def main() -> int:
         "vim-mode",
         "theme",
         "timestamps",
+        "timeline",
         "toggle-mouse-reporting",
+        "pi-config",
     ]
     # Product/session-store commands must not leak into the Pi composition.
     # Pi extension/prompt/skill commands arrive dynamically over get_commands.
@@ -354,7 +363,6 @@ def main() -> int:
         "diagnostics",
         "capabilities",
         "stats",
-        "tree",
         "fork",
         "history",
         "login",
@@ -529,7 +537,7 @@ def main() -> int:
         "steer": '"streamingBehavior": "steer"',
         "follow_up": '"followUp"',
         "direct_bash": '"type": "bash"',
-        "completion_barrier": '"agent_settled" => self.finish_prompts',
+        "completion_barrier": '"agent_settled" => {',
     }
     missing_behavior = [name for name, token in behavior_tokens.items() if token not in adapter_sources]
     check(

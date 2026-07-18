@@ -273,6 +273,12 @@ impl ContextInfoBlock {
     /// (5×20) is the default; `output()` switches to the narrow layout
     /// (10×10) when terminal width drops below `BarLayout::NARROW_BREAKPOINT`
     /// so the bar still fits on column-constrained terminals.
+    /// Build the native graphical context rows for both scrollback and the
+    /// transient Context modal. Keeping this shared avoids a second renderer.
+    pub(crate) fn modal_lines(&self, theme: &Theme, width: u16) -> Vec<Line<'static>> {
+        self.build_lines(theme, BarLayout::for_width(width))
+    }
+
     fn build_lines(&self, theme: &Theme, bar: BarLayout) -> Vec<Line<'static>> {
         let snapshot = &self.snapshot;
         let model = &self.model;
@@ -716,6 +722,16 @@ mod tests {
         // Percent now shows 2 decimal places (36.7k / 1m = 3.67%).
         assert!(l2.contains("(3.67%)"), "got: {l2:?}");
         assert_eq!(line_text(&lines, 3), "grok-4");
+    }
+
+    #[test]
+    fn modal_lines_reuse_the_native_graphical_breakdown() {
+        let block = ContextInfoBlock::new(snapshot(), "grok-4");
+        let lines = block.modal_lines(&test_theme(), 120);
+        let text = all_text(&lines);
+        assert!(text.contains("◆ System prompt"));
+        assert!(text.contains("◇ Free"));
+        assert!(text.contains("◈ Tool definitions"));
     }
 
     #[test]

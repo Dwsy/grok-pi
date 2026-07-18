@@ -2727,6 +2727,7 @@
     "crates/codegen/xai-grok-pager/src/app/acp_handler/interactions.rs",
     "crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs",
     "crates/codegen/xai-grok-pager/src/app/actions.rs",
+    "crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs",
     "crates/codegen/xai-grok-pager/src/app/app_view.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs",
@@ -2737,6 +2738,7 @@
     "crates/codegen/xai-grok-pager/src/app/dispatch/session/mod.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/settings/setters.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/settings/ui.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/status.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/tests/router.rs",
@@ -2745,18 +2747,20 @@
     "crates/codegen/xai-grok-pager/src/app/mod.rs",
     "crates/codegen/xai-grok-pager/src/app/modals.rs",
     "crates/codegen/xai-grok-pager/src/lib.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs",
     "crates/codegen/xai-grok-pager/src/settings/defs.rs",
     "crates/codegen/xai-grok-pager/src/slash/acp_command.rs",
     "crates/codegen/xai-grok-pager/src/slash/command.rs",
     "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
     "crates/codegen/xai-grok-pager/src/slash/mod.rs",
-    "crates/codegen/xai-grok-pager/src/views/modal.rs",
     "crates/codegen/xai-grok-pager/src/views/mod.rs",
+    "crates/codegen/xai-grok-pager/src/views/modal.rs",
     "crates/codegen/xai-grok-pager/src/views/settings_modal/input.rs",
     "crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs",
     "crates/codegen/xai-grok-pager/src/views/welcome/logo.rs",
     "crates/codegen/xai-grok-pager/src/views/welcome/mod.rs",
-    "crates/codegen/xai-grok-update/src/lib.rs"
+    "crates/codegen/xai-grok-update/src/lib.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs"
   ],
   "allowedAddedPrefixes": [
     "crates/codegen/pi-grok-adapter/"
@@ -2768,6 +2772,8 @@
     "crates/codegen/xai-grok-pager/src/views/session_tree.rs",
     "crates/codegen/xai-grok-pager/src/views/pi_config.rs",
     "crates/codegen/xai-grok-pager/src/pi_resource_config.rs",
-    "crates/codegen/xai-grok-update/src/pi_update.rs"
+    "crates/codegen/xai-grok-update/src/pi_update.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/notifications.rs",
+    "crates/codegen/xai-grok-pager/src/slash/commands/notify.rs"
   ]
 }

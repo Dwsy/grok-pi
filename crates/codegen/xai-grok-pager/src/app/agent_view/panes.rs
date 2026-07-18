@@ -497,6 +497,7 @@ impl AgentView {
                     return;
                 }
                 ActiveModal::DocViewer { scroll, .. }
+                | ActiveModal::ContextInfo { scroll, .. }
                 | ActiveModal::RememberNoteReview { scroll, .. } => {
                     crate::views::modal::apply_doc_scroll_delta(scroll, lines);
                     return;

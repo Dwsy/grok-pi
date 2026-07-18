@@ -81,6 +81,9 @@ impl NewWorktreeDialogState {
 #[derive(Debug, Default)]
 pub struct ExternalUiState {
     pub statuses: std::collections::BTreeMap<String, String>,
+    /// Pi extension notifications retained by active session for `/notify`.
+    /// This is process-local UI state and deliberately not persisted to Pi.
+    pub notifications: std::collections::HashMap<String, Vec<ExternalNotification>>,
     pub widgets: std::collections::BTreeMap<String, ExternalWidget>,
     pub pending_toasts: std::collections::VecDeque<String>,
     /// Session metadata from the external agent, rendered by the existing
@@ -105,6 +108,12 @@ pub enum ExternalWidgetPlacement {
 pub struct ExternalWidget {
     pub lines: Vec<String>,
     pub placement: ExternalWidgetPlacement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalNotification {
+    pub message: String,
+    pub kind: Option<String>,
 }
 
 fn append_external_widgets(
@@ -1819,6 +1828,16 @@ impl AppView {
     /// Explicit information notices are also written to scrollback: they are
     /// command results such as `/grok-cli-vision:status`, not transient alerts.
     pub fn show_external_notification(&mut self, message: &str, kind: Option<&str>) {
+        if let Some(session_id) = self.active_external_session_id() {
+            self.external_ui
+                .notifications
+                .entry(session_id)
+                .or_default()
+                .push(ExternalNotification {
+                    message: message.to_string(),
+                    kind: kind.map(str::to_owned),
+                });
+        }
         let rendered = match kind {
             Some("warning") => format!("Warning: {message}"),
             Some("error") => format!("Error: {message}"),
@@ -1836,6 +1855,45 @@ impl AppView {
                 .scrollback
                 .push_block(crate::scrollback::block::RenderBlock::system(message));
         }
+    }
+
+    fn active_external_session_id(&self) -> Option<String> {
+        if !self.external_agent {
+            return None;
+        }
+        let ActiveView::Agent(id) = self.active_view else {
+            return None;
+        };
+        self.agents
+            .get(&id)?
+            .session
+            .session_id
+            .as_ref()
+            .map(ToString::to_string)
+    }
+
+    pub(crate) fn external_notifications_for_active_session(&self) -> &[ExternalNotification] {
+        self.active_external_session_id()
+            .and_then(|session_id| self.external_ui.notifications.get(&session_id))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_external_notification_for_test(
+        &mut self,
+        session_id: impl Into<String>,
+        message: impl Into<String>,
+        kind: Option<&str>,
+    ) {
+        self.external_ui
+            .notifications
+            .entry(session_id.into())
+            .or_default()
+            .push(ExternalNotification {
+                message: message.into(),
+                kind: kind.map(str::to_owned),
+            });
     }
 
     /// Project an external session catalog into the native picker and/or the

@@ -9,6 +9,7 @@
 //!
 //! `ModalConfirmation<R>` is a small dialog that blocks all input until
 //! the user presses one of the listed keys.
+use crate::app::app_view::ExternalNotification;
 use crate::docs::{DocEntry, default_howto_entries};
 use crate::theme::Theme;
 use crate::views::modal_window::ModalWindowState;
@@ -170,6 +171,76 @@ pub fn howto_list_modal(previous_palette: Option<PaletteSnapshot>) -> ActiveModa
 ///
 /// Each variant wraps a `ModalConfirmation<R>` with its concrete result
 /// type plus any context needed for resolution (e.g., pending focus target).
+pub struct NotificationListState {
+    pub notifications: Vec<ExternalNotification>,
+    pub picker: crate::views::picker::PickerState,
+}
+
+impl NotificationListState {
+    pub fn new(notifications: Vec<ExternalNotification>) -> Self {
+        Self {
+            notifications,
+            picker: crate::views::picker::PickerState::input_active(),
+        }
+    }
+
+    pub fn filtered_notifications(&self) -> Vec<&ExternalNotification> {
+        let query = self.picker.query.to_lowercase();
+        self.notifications
+            .iter()
+            .rev()
+            .filter(|notification| {
+                query.is_empty()
+                    || notification.message.to_lowercase().contains(&query)
+                    || notification
+                        .kind
+                        .as_deref()
+                        .unwrap_or("info")
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod notification_list_tests {
+    use super::*;
+
+    fn notification(message: &str, kind: Option<&str>) -> ExternalNotification {
+        ExternalNotification {
+            message: message.into(),
+            kind: kind.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn filters_by_message_or_kind_and_shows_newest_first() {
+        let mut state = NotificationListState::new(vec![
+            notification("cached response", Some("info")),
+            notification("permission denied", Some("error")),
+            notification("rate limit", Some("warning")),
+        ]);
+        assert_eq!(
+            state
+                .filtered_notifications()
+                .iter()
+                .map(|notification| notification.message.as_str())
+                .collect::<Vec<_>>(),
+            ["rate limit", "permission denied", "cached response"]
+        );
+
+        state.picker.query = "error".into();
+        assert_eq!(
+            state.filtered_notifications()[0].message,
+            "permission denied"
+        );
+
+        state.picker.query = "limit".into();
+        assert_eq!(state.filtered_notifications()[0].message, "rate limit");
+    }
+}
+
 pub enum ActiveModal {
     /// Confirmation for leaving a dirty queued-prompt edit.
     EditConfirm {
@@ -206,6 +277,11 @@ pub enum ActiveModal {
     /// Pi session entry tree (`/tree`) with filters, search, detail pane.
     SessionTree {
         state: crate::views::session_tree::SessionTreeState,
+        window: ModalWindowState,
+    },
+    /// Process-local Pi extension notification events for the active session.
+    Notifications {
+        state: NotificationListState,
         window: ModalWindowState,
     },
     /// Session picker (opened from /resume command or command palette).
@@ -267,6 +343,13 @@ pub enum ActiveModal {
         /// When true, Esc closes the modal directly instead of returning
         /// to the DocPicker list (used for /release-notes).
         standalone: bool,
+    },
+    /// Transient graphical context snapshot. It reuses ContextInfoBlock's
+    /// native bar and legend renderer but never enters conversation history.
+    ContextInfo {
+        block: crate::scrollback::blocks::ContextInfoBlock,
+        scroll: u16,
+        window: ModalWindowState,
     },
     /// All-shortcuts cheatsheet for the current view/state.
     /// Rendered via the unified picker (same look as CommandPalette).
@@ -616,9 +699,11 @@ impl ActiveModal {
             ActiveModal::CommandPalette { .. }
             | ActiveModal::ArgPicker { .. }
             | ActiveModal::SessionTree { .. }
+            | ActiveModal::Notifications { .. }
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
             | ActiveModal::DocViewer { .. }
+            | ActiveModal::ContextInfo { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
@@ -637,6 +722,7 @@ impl ActiveModal {
             }
             ActiveModal::CommandPalette { .. } => "Commands",
             ActiveModal::SessionTree { .. } => "Session tree",
+            ActiveModal::Notifications { .. } => "Notifications",
             ActiveModal::SessionPicker { .. } => "Resume session",
             ActiveModal::ArgPicker {
                 command,
@@ -650,6 +736,7 @@ impl ActiveModal {
             },
             ActiveModal::DocPicker { .. } => "How-to Guides",
             ActiveModal::DocViewer { title, .. } => title.as_str(),
+            ActiveModal::ContextInfo { .. } => "Context",
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",
             ActiveModal::Settings { .. } => crate::views::settings_modal::MODAL_TITLE,
@@ -1140,6 +1227,64 @@ pub fn render_doc_picker_overlay(
         false,
     );
 }
+/// Render a graphical ContextInfoBlock inside a native ModalWindow.
+pub fn render_context_info_overlay(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    window: &mut super::modal_window::ModalWindowState,
+    block: &crate::scrollback::blocks::ContextInfoBlock,
+    scroll: &mut u16,
+    compact: bool,
+    theme: &Theme,
+) {
+    use ratatui::widgets::{Paragraph, Widget, Wrap};
+    let shortcuts = [
+        super::modal_window::Shortcut {
+            label: "↑/↓ scroll",
+            clickable: false,
+            id: 0,
+        },
+        super::modal_window::Shortcut {
+            label: "Esc close",
+            clickable: false,
+            id: 0,
+        },
+    ];
+    let modal_config = super::modal_window::ModalWindowConfig {
+        title: "Context",
+        tabs: None,
+        shortcuts: &shortcuts,
+        sizing: super::modal_window::ModalSizing {
+            width_pct: 0.80,
+            max_width: 120,
+            min_width: 44,
+            v_margin: 3,
+            h_pad: 2,
+            v_pad: 1,
+            footer_lines: 2,
+        }
+        .with_compact(compact),
+        fold_info: None,
+    };
+    if let Some(super::modal_window::ModalContentArea {
+        content: content_area,
+        ..
+    }) = super::modal_window::render_modal_window(buf, area, window, &modal_config, theme)
+    {
+        let lines = block.modal_lines(theme, content_area.width);
+        let max_scroll = lines.len().saturating_sub(content_area.height as usize);
+        *scroll = (*scroll as usize).min(max_scroll) as u16;
+        let visible: Vec<ratatui::text::Line> = lines
+            .into_iter()
+            .skip(*scroll as usize)
+            .take(content_area.height as usize)
+            .collect();
+        Paragraph::new(visible)
+            .wrap(Wrap { trim: false })
+            .render(content_area, buf);
+    }
+}
+
 /// Render a DocViewer overlay: modal window chrome + cached markdown content.
 #[allow(clippy::too_many_arguments)]
 pub fn render_doc_viewer_overlay(

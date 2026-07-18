@@ -389,14 +389,29 @@ impl PiAgent {
         Ok(tree)
     }
 
-    /// Run a hidden bridge extension command (`/__pi_*`) and wait for the
-    /// non-agent preflight probe to complete.
+    /// Run a read-only bridge command without entering `active_prompts`.
+    ///
+    /// Pi executes extension commands immediately even during streaming and
+    /// acknowledges RPC `prompt` only after their handler finishes. Tracking
+    /// this as a normal prompt would instead bind it to the current turn's
+    /// `agent_settled`, delaying `/context` until the agent becomes idle.
+    async fn run_immediate_bridge_command(
+        &self,
+        command: &str,
+        args: &str,
+    ) -> Result<(), acp::Error> {
+        let message = bridge_command_message(command, args);
+        self.rpc
+            .request(json!({ "type": "prompt", "message": message }))
+            .await
+            .map_err(acp_internal)?;
+        Ok(())
+    }
+
+    /// Run a stateful hidden bridge extension command (`/__pi_*`) and wait for
+    /// the non-agent preflight probe to complete.
     async fn run_bridge_command(&self, command: &str, args: &str) -> Result<(), acp::Error> {
-        let message = if args.trim().is_empty() {
-            format!("/{command}")
-        } else {
-            format!("/{command} {args}")
-        };
+        let message = bridge_command_message(command, args);
         let (completion_tx, completion_rx) = oneshot::channel();
         let prompt_id = {
             let mut state = self.state.borrow_mut();
@@ -800,7 +815,10 @@ impl PiAgent {
         &self,
     ) -> Option<crate::context_projection::ContextBreakdownRaw> {
         let path = self.context_breakdown.as_ref()?;
-        if let Err(error) = self.run_bridge_command(CONTEXT_BREAKDOWN_COMMAND, "").await {
+        if let Err(error) = self
+            .run_immediate_bridge_command(CONTEXT_BREAKDOWN_COMMAND, "")
+            .await
+        {
             tracing::debug!(?error, "context breakdown bridge failed");
             return None;
         }
@@ -2482,6 +2500,14 @@ fn is_bridge_command(name: &str) -> bool {
         || name.eq_ignore_ascii_case(SUBAGENT_CANCEL_COMMAND)
         || name.eq_ignore_ascii_case(RECAP_COMMAND)
         || name.eq_ignore_ascii_case(CONTEXT_BREAKDOWN_COMMAND)
+}
+
+fn bridge_command_message(command: &str, args: &str) -> String {
+    if args.trim().is_empty() {
+        format!("/{command}")
+    } else {
+        format!("/{command} {args}")
+    }
 }
 
 /// Operating-system language for recap output.

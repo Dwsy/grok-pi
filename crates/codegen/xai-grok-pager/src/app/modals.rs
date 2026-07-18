@@ -127,6 +127,9 @@ impl AgentView {
                 ActiveModal::ArgPicker { window, state, .. } => {
                     (window, state.query.is_empty(), false, false)
                 }
+                ActiveModal::Notifications { window, state } => {
+                    (window, state.picker.query.is_empty(), true, false)
+                }
                 ActiveModal::SessionTree { window, state, .. } => (
                     window,
                     state.search_query.is_empty()
@@ -186,27 +189,34 @@ impl AgentView {
                                 state.selected = 0;
                                 state.scroll_offset = None;
                             }
+                            ActiveModal::Notifications { state, .. } => {
+                                state.picker.clear_query();
+                            }
                             _ => {}
                         }
                         return InputOutcome::Changed;
                     }
                     // Otherwise delegate close to the picker handler which
                     // knows about palette snapshots / restore logic.
+                    let ev = crossterm::event::Event::Key(*key);
                     if matches!(self.active_modal, Some(ActiveModal::DocPicker { .. })) {
-                        let ev = crossterm::event::Event::Key(*key);
                         return self.handle_doc_input(&ev);
                     }
-                    let ev = crossterm::event::Event::Key(*key);
+                    if matches!(self.active_modal, Some(ActiveModal::Notifications { .. })) {
+                        return self.handle_notifications_input(&ev);
+                    }
                     return self.handle_palette_or_arg_input(&ev);
                 }
                 ModalWindowOutcome::Unhandled => {
                     // Non-Esc key (including Left/Right/h/l):
                     // forward to picker input handler.
+                    let ev = crossterm::event::Event::Key(*key);
                     if matches!(self.active_modal, Some(ActiveModal::DocPicker { .. })) {
-                        let ev = crossterm::event::Event::Key(*key);
                         return self.handle_doc_input(&ev);
                     }
-                    let ev = crossterm::event::Event::Key(*key);
+                    if matches!(self.active_modal, Some(ActiveModal::Notifications { .. })) {
+                        return self.handle_notifications_input(&ev);
+                    }
                     return self.handle_palette_or_arg_input(&ev);
                 }
                 _ => return InputOutcome::Changed,
@@ -276,7 +286,32 @@ impl AgentView {
             }
         }
 
-        // DocViewer: route through ModalWindow chrome, then handle scroll.
+        // DocViewer / ContextInfo: route through ModalWindow chrome, then handle scroll.
+        if matches!(modal, ActiveModal::ContextInfo { .. }) {
+            let ActiveModal::ContextInfo { window, scroll, .. } = modal else {
+                unreachable!();
+            };
+            let chrome_cfg = mw::ModalWindowConfig {
+                title: "",
+                tabs: None,
+                shortcuts: &[],
+                sizing: mw::ModalSizing::default(),
+                fold_info: None,
+            };
+            match mw::handle_modal_key(window, key, &chrome_cfg) {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    return InputOutcome::Changed;
+                }
+                ModalWindowOutcome::Unhandled => {
+                    if crate::views::modal::apply_doc_scroll(key.code, scroll) {
+                        return InputOutcome::Changed;
+                    }
+                    return InputOutcome::Unchanged;
+                }
+                _ => return InputOutcome::Changed,
+            }
+        }
         if let ActiveModal::DocViewer {
             window,
             previous_palette,
@@ -507,10 +542,12 @@ impl AgentView {
             } => self.handle_edit_confirm_choice(confirm, pending_target, ch),
             ActiveModal::CommandPalette { .. }
             | ActiveModal::ArgPicker { .. }
+            | ActiveModal::Notifications { .. }
             | ActiveModal::SessionTree { .. }
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
             | ActiveModal::DocViewer { .. }
+            | ActiveModal::ContextInfo { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
@@ -1232,6 +1269,44 @@ impl AgentView {
         }
     }
 
+    fn handle_notifications_input(&mut self, ev: &crossterm::event::Event) -> InputOutcome {
+        use crate::views::picker::{PickerConfig, PickerOutcome, handle_picker_input};
+
+        let Some(ActiveModal::Notifications { state, .. }) = self.active_modal.as_mut() else {
+            return InputOutcome::Changed;
+        };
+        let entry_count = state.filtered_notifications().len();
+        let config = PickerConfig {
+            title: None,
+            show_search_hint: false,
+            expandable: false,
+            esc_clears_query: true,
+            shortcuts: Some(crate::views::picker::picker_shortcuts()),
+            pending_hint: None,
+            non_selectable: &[],
+            non_selectable_clickable: &[],
+            shortcuts_area: None,
+            tabs: None,
+            active_tab: 0,
+            filter_label: None,
+            filter_key_hint: None,
+            filter_active: false,
+            action_keys: &[],
+            disable_search: false,
+            compact_bottom_bar: false,
+            search_only_on_slash: false,
+            vim_normal_first: crate::appearance::cache::load_vim_mode(),
+        };
+        match handle_picker_input(ev, &mut state.picker, entry_count, &config) {
+            PickerOutcome::Closed => {
+                self.active_modal = None;
+                InputOutcome::Changed
+            }
+            PickerOutcome::Unchanged => InputOutcome::Unchanged,
+            _ => InputOutcome::Changed,
+        }
+    }
+
     /// Basic input handler for documentation modals (DocPicker list / DocViewer panel).
     fn handle_doc_input(&mut self, ev: &crossterm::event::Event) -> InputOutcome {
         use crate::views::modal::ActiveModal;
@@ -1377,9 +1452,11 @@ impl AgentView {
             Some(
                 ActiveModal::CommandPalette { .. }
                     | ActiveModal::ArgPicker { .. }
+                    | ActiveModal::Notifications { .. }
                     | ActiveModal::SessionPicker { .. }
                     | ActiveModal::DocPicker { .. }
                     | ActiveModal::DocViewer { .. }
+                    | ActiveModal::ContextInfo { .. }
                     | ActiveModal::ShortcutsHelp { .. }
                     | ActiveModal::RememberNoteReview { .. }
             )
@@ -1388,9 +1465,11 @@ impl AgentView {
             let window = match self.active_modal.as_mut() {
                 Some(ActiveModal::CommandPalette { window, .. }) => window,
                 Some(ActiveModal::ArgPicker { window, .. }) => window,
+                Some(ActiveModal::Notifications { window, .. }) => window,
                 Some(ActiveModal::SessionPicker { window, .. }) => window,
                 Some(ActiveModal::DocPicker { window, .. }) => window,
                 Some(ActiveModal::DocViewer { window, .. }) => window,
+                Some(ActiveModal::ContextInfo { window, .. }) => window,
                 Some(ActiveModal::ShortcutsHelp { window, .. }) => window,
                 Some(ActiveModal::RememberNoteReview { window, .. }) => window,
                 _ => unreachable!(),
@@ -1433,6 +1512,7 @@ impl AgentView {
                                     Some(crate::views::modal::howto_list_modal(previous_palette));
                             }
                         }
+                        Some(ActiveModal::ContextInfo { .. }) => {}
                         Some(
                             ActiveModal::ArgPicker {
                                 previous_palette: Some(snap),
@@ -1470,6 +1550,7 @@ impl AgentView {
                     // DocViewer / RememberNoteReview: wheel scrolls the markdown body.
                     if let Some(
                         ActiveModal::DocViewer { scroll, .. }
+                        | ActiveModal::ContextInfo { scroll, .. }
                         | ActiveModal::RememberNoteReview { scroll, .. },
                     ) = self.active_modal.as_mut()
                     {
@@ -1479,9 +1560,12 @@ impl AgentView {
                         return InputOutcome::Changed;
                     }
                     // Content area events — delegate to picker input.
+                    let ev = crossterm::event::Event::Mouse(*mouse);
                     if matches!(self.active_modal, Some(ActiveModal::DocPicker { .. })) {
-                        let ev = crossterm::event::Event::Mouse(*mouse);
                         return self.handle_doc_input(&ev);
+                    }
+                    if matches!(self.active_modal, Some(ActiveModal::Notifications { .. })) {
+                        return self.handle_notifications_input(&ev);
                     }
                     if let Some(ActiveModal::ShortcutsHelp {
                         entries,
@@ -1903,6 +1987,71 @@ impl AgentView {
                         render_model_picker_detail(buf, detail_area, &detail_lines, &theme);
                     }
                 }
+            } else if let modal::ActiveModal::Notifications { state, window } = active_modal {
+                let notifications: Vec<(String, String)> = state
+                    .filtered_notifications()
+                    .into_iter()
+                    .map(|notification| {
+                        (
+                            notification.message.clone(),
+                            notification.kind.clone().unwrap_or_else(|| "info".into()),
+                        )
+                    })
+                    .collect();
+                let picker_entries: Vec<PickerEntry> = notifications
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (label, kind))| {
+                        PickerEntry::Row(PickerRow {
+                            label,
+                            right_label: kind,
+                            selected: state.picker.hovered == Some(index)
+                                || (state.picker.hovered.is_none()
+                                    && index == state.picker.selected),
+                            expanded: false,
+                            fields: &[],
+                            description_lines: &[],
+                            summary_lines: &[],
+                            dimmed: false,
+                            indent: 0,
+                            badge: "",
+                            badge_color: None,
+                            collapsible: false,
+                            underline_last_desc: false,
+                        })
+                    })
+                    .collect();
+                mw::push_vim_nav_search_hint(&mut picker_shortcuts, state.picker.search_active);
+                let modal_config = ModalWindowConfig {
+                    title: "Notifications",
+                    tabs: None,
+                    shortcuts: &picker_shortcuts,
+                    sizing: ModalSizing {
+                        width_pct: 0.60,
+                        max_width: 100,
+                        min_width: 44,
+                        v_margin: 6,
+                        h_pad: 2,
+                        v_pad: 1,
+                        footer_lines: 2,
+                    }
+                    .with_compact(compact),
+                    fold_info: None,
+                };
+                if let Some(mca) = mw::render_modal_window(buf, area, window, &modal_config, &theme)
+                {
+                    picker::render_picker_in_modal(
+                        buf,
+                        mca.content,
+                        mca.inner_x,
+                        mca.inner_width,
+                        &theme,
+                        &mut state.picker,
+                        &picker_entries,
+                        &[],
+                        false,
+                    );
+                }
             } else if let modal::ActiveModal::SessionTree { state, window } = active_modal {
                 use crate::views::session_tree::render_session_tree;
                 let shortcuts = [
@@ -2279,6 +2428,16 @@ impl AgentView {
                     cached_lines,
                     compact,
                     &theme,
+                );
+            } else if let modal::ActiveModal::ContextInfo {
+                block,
+                scroll,
+                window,
+            } = active_modal
+            {
+                let compact = self.scrollback.appearance().prompt.compact;
+                modal::render_context_info_overlay(
+                    buf, area, window, block, scroll, compact, &theme,
                 );
             } else if let modal::ActiveModal::RememberNoteReview {
                 ref raw_content,

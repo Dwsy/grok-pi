@@ -38,6 +38,7 @@ pub mod mcps;
 pub mod model;
 pub mod multiline;
 pub mod new;
+pub mod notify;
 pub mod personas;
 pub mod pi_config;
 pub mod plan;
@@ -115,6 +116,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(view_plan::ViewPlanCommand),
         Arc::new(resume::ResumeCommand),
         Arc::new(tree::TreeCommand),
+        Arc::new(notify::NotifyCommand),
         Arc::new(mcps::McpsCommand),
         Arc::new(btw::BtwCommand),
         Arc::new(recap::RecapCommand),

@@ -36,6 +36,7 @@ use super::notes::{
     dispatch_save_remember_note_from_modal, dispatch_send_btw, dispatch_send_feedback,
     dispatch_send_recap, dispatch_send_remember_note,
 };
+use super::notifications::dispatch_show_notifications;
 use super::permissions::{
     dispatch_permission_cancel, dispatch_permission_followup, dispatch_permission_select,
 };
@@ -209,6 +210,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RefreshExternalSessionCatalog => dispatch_refresh_external_session_catalog(app),
         Action::ShowSessionPicker => dispatch_show_session_picker(app),
         Action::ShowSessionTree => dispatch_show_session_tree(app),
+        Action::ShowNotifications => dispatch_show_notifications(app),
         Action::NavigateSessionTree {
             entry_id,
             summarize,

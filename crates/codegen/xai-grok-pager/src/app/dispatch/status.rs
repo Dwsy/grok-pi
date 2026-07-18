@@ -8,6 +8,8 @@ use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView};
 use crate::notifications::{NotificationEvent, NotificationEventKind};
 use crate::scrollback::block::RenderBlock;
+use crate::views::modal::ActiveModal;
+use crate::views::modal_window::ModalWindowState;
 
 /// Toggle YOLO mode (auto-approve all permissions).
 ///
@@ -425,19 +427,16 @@ pub(super) fn handle_context_info_complete(
 ) -> Vec<Effect> {
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         let model = info.data.model.as_deref().unwrap_or("unknown").to_string();
-        // Take ownership of the snapshot once, hand a clone to the
-        // agent's running counters, then move the original into the
-        // scrollback block (which keeps it for theme-reactive
-        // re-rendering). This still costs one clone but reads as
-        // "the agent needs a copy" rather than "the block needs a
-        // copy", which matches the lifetime story.
         let snapshot = info.data.context;
         agent.apply_full_context_info(snapshot.clone());
-        agent
-            .scrollback
-            .push_block(crate::scrollback::block::RenderBlock::context_info(
-                snapshot, model,
-            ));
+        // Context is a transient inspection surface, not conversation history.
+        // Replacing this native modal makes repeated clicks refresh one snapshot
+        // instead of appending duplicate blocks to scrollback.
+        agent.active_modal = Some(ActiveModal::ContextInfo {
+            block: crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model),
+            scroll: 0,
+            window: ModalWindowState::new(),
+        });
     }
     vec![]
 }

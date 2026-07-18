@@ -22,6 +22,7 @@ mod import_claude;
 mod interject;
 mod modes;
 mod notes;
+mod notifications;
 mod permissions;
 mod prompt;
 mod queue;
