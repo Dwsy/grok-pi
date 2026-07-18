@@ -3,8 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GROK_ROOT="$ROOT"
 BIN="${GROK_PI_BIN:-$GROK_ROOT/target/debug/grok-pi}"
-# Prefer the repo-bundled Pi (pi-main). System `pi` (npm global) does not include
-# experimental patches such as Remote TUI host.
+# Prefer the repo-bundled Pi (pi-main). System `pi` still works for extension-host
+# Remote TUI (no Pi source patch required).
 BUNDLED_PI="$GROK_ROOT/pi-main/packages/coding-agent/dist/cli.js"
 if [[ -n "${PI_BIN:-}" ]]; then
   :
@@ -31,16 +31,14 @@ if [[ ! -e "$PI_BIN" ]] && ! command -v "$PI_BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ "${PI_GROK_REMOTE_TUI:-}" == "1" ]]; then
-  if ! rg -q "isRemoteTuiEnabled|remote-tui-host" "$PI_BIN" 2>/dev/null \n    && ! rg -q "isRemoteTuiEnabled|remote-tui-host" "$(dirname "$PI_BIN")/modes/rpc" 2>/dev/null; then
-    # cli.js is a thin entry; check sibling main/rpc dist
-    if ! rg -q "isRemoteTuiEnabled" "$GROK_ROOT/pi-main/packages/coding-agent/dist/modes/rpc" 2>/dev/null; then
-      echo "warning: PI_GROK_REMOTE_TUI=1 but Pi binary may lack Remote TUI host" >&2
-      echo "  rebuild: (cd pi-main/packages/coding-agent && npm run build)" >&2
-      echo "  PI_BIN=$PI_BIN" >&2
-    fi
+# Remote TUI / Bash default ON inside grok-pi (disable with =0).
+# Shell-level unset is fine; binary treats missing as enabled.
+if [[ "${PI_GROK_REMOTE_TUI:-1}" != "0" ]]; then
+  if [[ ! -f "$GROK_ROOT/extensions/pi-grok-remote-tui/index.ts" ]]; then
+    echo "warning: Remote TUI enabled but extensions/pi-grok-remote-tui/index.ts missing" >&2
+  else
+    echo "Remote TUI: ON (extension host; set PI_GROK_REMOTE_TUI=0 to disable) PI_BIN=$PI_BIN" >&2
   fi
-  echo "Remote TUI: PI_BIN=$PI_BIN" >&2
 fi
 
 ui_args=()

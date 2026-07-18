@@ -4,14 +4,16 @@
 //! production TUI composition package. The Pi crate is a protocol adapter only;
 //! every terminal surface is created and rendered by `xai-grok-pager`.
 
+#[path = "grok_pi/bash_extension.rs"]
+mod bash_extension;
 #[path = "grok_pi/cli.rs"]
 mod cli;
-#[path = "grok_pi/session_paths.rs"]
-mod session_paths;
 #[path = "grok_pi/recap_extension.rs"]
 mod recap_extension;
 #[path = "grok_pi/remote_tui_extension.rs"]
 mod remote_tui_extension;
+#[path = "grok_pi/session_paths.rs"]
+mod session_paths;
 #[path = "grok_pi/subagent_extension.rs"]
 mod subagent_extension;
 #[path = "grok_pi/tree_bridge.rs"]
@@ -29,10 +31,11 @@ use xai_grok_pager::{
     app::{ExternalRunConfig, PagerArgs, run_external},
 };
 
+use bash_extension::write_bash_extension;
 use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_flags};
-use session_paths::pi_session_dir;
 use recap_extension::write_recap_extension;
 use remote_tui_extension::write_remote_tui_extension;
+use session_paths::pi_session_dir;
 use subagent_extension::write_subagent_extension;
 use tree_bridge::write_navigate_tree_extension;
 
@@ -71,7 +74,10 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "vim-mode",
     "theme",
     "timestamps",
+    "timeline",
     "toggle-mouse-reporting",
+    // Pager-native Pi resource manager (`/pi-config`, `/pi-resources`).
+    "pi-config",
 ];
 
 /// Block-character π mark for the native Grok welcome / minimal logo surface.
@@ -149,13 +155,20 @@ async fn run(mut args: Args) -> Result<()> {
     // `--extension`; drop would unlink the temp path before Pi finishes boot.
     let navigate_tree_extension = write_navigate_tree_extension()
         .context("failed to create Pi navigateTree bridge extension")?;
-    let subagent_extension = write_subagent_extension()
-        .context("failed to create Pi subagent extension")?;
-    let recap_extension =
-        write_recap_extension().context("failed to create Pi recap extension")?;
-    // Experimental Remote TUI probe — only when PI_GROK_REMOTE_TUI=1.
-    let remote_tui_enabled =
-        std::env::var_os("PI_GROK_REMOTE_TUI").is_some_and(|value| value == "1");
+    // Default ON. Disable with PI_GROK_BASH=0 (or false/off/no).
+    // Note: re-registers tool "bash" and can conflict with user packages
+    // such as pi-tool-display — set PI_GROK_BASH=0 if bootstrap fails on tool clash.
+    let bash_enabled = env_flag_default_on("PI_GROK_BASH");
+    let bash_extension = if bash_enabled {
+        Some(write_bash_extension().context("failed to create Pi Bash extension")?)
+    } else {
+        None
+    };
+    let subagent_extension =
+        write_subagent_extension().context("failed to create Pi subagent extension")?;
+    let recap_extension = write_recap_extension().context("failed to create Pi recap extension")?;
+    // Experimental Remote TUI — default ON. Disable with PI_GROK_REMOTE_TUI=0.
+    let remote_tui_enabled = env_flag_default_on("PI_GROK_REMOTE_TUI");
     let remote_tui_extension = if remote_tui_enabled {
         Some(write_remote_tui_extension().context("failed to create Pi remote-tui extension")?)
     } else {
@@ -174,15 +187,41 @@ async fn run(mut args: Args) -> Result<()> {
         "--extension".to_string(),
         recap_extension.path().to_string_lossy().into_owned(),
     ]);
+    if let Some(path) = bash_extension.as_ref().map(|extension| extension.source_path()) {
+        pi_args.extend([
+            "--extension".to_string(),
+            path.to_string_lossy().into_owned(),
+        ]);
+    }
     if let Some(path) = remote_tui_extension.as_ref().map(|file| file.path()) {
         pi_args.extend([
             "--extension".to_string(),
             path.to_string_lossy().into_owned(),
         ]);
     }
-    let mut env = vec![("PI_GROK_SUBAGENTS".to_string(), "1".to_string())];
+    // Identifies this Pi child as running under the grok-pi host for user extensions.
+    let mut env = vec![
+        ("PI_GROK".to_string(), "1".to_string()),
+        ("PI_GROK_SUBAGENTS".to_string(), "1".to_string()),
+    ];
+    if let Some(extension) = bash_extension.as_ref() {
+        env.push(("PI_GROK_BASH".to_string(), "1".to_string()));
+        env.push((
+            "PI_GROK_BASH_CONTROL_META".to_string(),
+            extension.control_meta_path().to_string_lossy().into_owned(),
+        ));
+    }
     if remote_tui_enabled {
+        // Extension host gates on this exact value.
         env.push(("PI_GROK_REMOTE_TUI".to_string(), "1".to_string()));
+        // Pi RPC child has no real TTY; pass host size so Remote TUI is full-width
+        // like interactive Pi (not a fixed 72-col probe box).
+        if let Some((cols, rows)) = host_terminal_size() {
+            env.push(("COLUMNS".to_string(), cols.to_string()));
+            env.push(("LINES".to_string(), rows.to_string()));
+            env.push(("PI_GROK_REMOTE_TUI_WIDTH".to_string(), cols.to_string()));
+            env.push(("PI_GROK_REMOTE_TUI_ROWS".to_string(), rows.to_string()));
+        }
     }
     let process = PiRpc::spawn(SpawnConfig {
         program: args.pi_bin,
@@ -192,8 +231,12 @@ async fn run(mut args: Args) -> Result<()> {
         env,
     })
     .await?;
+    let bash_control_meta = bash_extension
+        .as_ref()
+        .map(|extension| extension.control_meta_path().to_path_buf());
     // Hold the NamedTempFiles so the extension paths remain valid.
     let _navigate_tree_extension = navigate_tree_extension;
+    let _bash_extension = bash_extension;
     let _subagent_extension = subagent_extension;
     let _recap_extension = recap_extension;
     let _remote_tui_extension = remote_tui_extension;
@@ -215,6 +258,7 @@ async fn run(mut args: Args) -> Result<()> {
         agent_channel.tx.clone(),
         bootstrap,
         pi_session_dir,
+        bash_control_meta,
     ));
 
     let event_adapter = adapter.clone();
@@ -278,4 +322,68 @@ async fn run(mut args: Args) -> Result<()> {
         resume_existing_session: args.continue_last_session,
     })
     .await
+}
+
+/// Best-effort host terminal size for Remote TUI viewport (Pi child has no TTY).
+fn host_terminal_size() -> Option<(u16, u16)> {
+    #[cfg(unix)]
+    {
+        // SAFETY: ioctl(TIOCGWINSZ) on stdout; fails cleanly when not a TTY.
+        unsafe {
+            let mut ws: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0
+                && ws.ws_col > 0
+                && ws.ws_row > 0
+            {
+                return Some((ws.ws_col, ws.ws_row));
+            }
+        }
+    }
+    None
+}
+
+/// Feature flags that default to ON. Explicit `0`/`false`/`off`/`no` disables.
+/// Unset or any other value (including `1`) enables.
+fn env_flag_default_on(name: &str) -> bool {
+    match std::env::var(name) {
+        Err(_) => true,
+        Ok(value) => {
+            let v = value.trim();
+            !(v.eq_ignore_ascii_case("0")
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("off")
+                || v.eq_ignore_ascii_case("no"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod env_flag_tests {
+    use super::env_flag_default_on;
+
+    #[test]
+    fn default_on_when_unset() {
+        // SAFETY: test-only env mutation in this unit test process.
+        unsafe {
+            std::env::remove_var("PI_GROK_TEST_FLAG_DEFAULT_ON");
+        }
+        assert!(env_flag_default_on("PI_GROK_TEST_FLAG_DEFAULT_ON"));
+    }
+
+    #[test]
+    fn off_values_disable() {
+        for value in ["0", "false", "OFF", "No"] {
+            unsafe {
+                std::env::set_var("PI_GROK_TEST_FLAG_DEFAULT_ON", value);
+            }
+            assert!(!env_flag_default_on("PI_GROK_TEST_FLAG_DEFAULT_ON"), "{value}");
+        }
+        unsafe {
+            std::env::set_var("PI_GROK_TEST_FLAG_DEFAULT_ON", "1");
+        }
+        assert!(env_flag_default_on("PI_GROK_TEST_FLAG_DEFAULT_ON"));
+        unsafe {
+            std::env::remove_var("PI_GROK_TEST_FLAG_DEFAULT_ON");
+        }
+    }
 }

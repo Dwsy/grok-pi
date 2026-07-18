@@ -5,11 +5,12 @@
 //! RPC protocol into standard ACP messages. The production `xai-grok-pager`
 //! consumes those messages in the `grok-pi` composition binary.
 
+mod background_bash_bridge;
 mod context_projection;
 mod model;
 mod pi_adapter;
-mod prompt_bridge;
 mod pi_rpc;
+mod prompt_bridge;
 mod queue_bridge;
 mod recap_bridge;
 mod subagent_projection;

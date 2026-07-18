@@ -23,6 +23,19 @@ pub(crate) struct BridgeProjection {
     pub operations: Vec<BridgeOperation>,
 }
 
+pub(crate) fn bridge_parent_session_id(event: &Value) -> Result<Option<&str>> {
+    let message = event.get("message").unwrap_or(event);
+    if field_str(message, "role") != Some("custom")
+        || field_str(message, "customType") != Some(BRIDGE_TYPE)
+    {
+        return Ok(None);
+    }
+    let details = message
+        .get("details")
+        .ok_or_else(|| anyhow::anyhow!("subagent bridge custom message has no details"))?;
+    Ok(Some(required_str(details, "parentSessionId")?))
+}
+
 pub(crate) fn parse_bridge_message(
     event: &Value,
     root_session_id: &str,
@@ -44,7 +57,7 @@ pub(crate) fn parse_bridge_message(
         .get("replay")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let parent_session_id = required_str(details, "parentSessionId")?;
+    let parent_session_id = bridge_parent_session_id(event)?.expect("validated subagent bridge");
     if parent_session_id != root_session_id {
         bail!("subagent bridge parentSessionId does not match active Pi session");
     }
@@ -363,6 +376,16 @@ mod tests {
             panic!("expected text content");
         };
         assert_eq!(text.text, "hello");
+    }
+
+    #[test]
+    fn bridge_parent_session_id_identifies_only_subagent_events() {
+        let event = bridge_message("progress", json!({}));
+        assert_eq!(bridge_parent_session_id(&event).unwrap(), Some("parent-1"));
+        assert_eq!(
+            bridge_parent_session_id(&json!({ "type": "turn_end" })).unwrap(),
+            None
+        );
     }
 
     #[test]

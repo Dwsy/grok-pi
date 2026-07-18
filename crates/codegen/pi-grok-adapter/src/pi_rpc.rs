@@ -63,8 +63,14 @@ impl PiRpc {
             )
         })?;
         let mut stdin = child.stdin.take().context("Pi RPC stdin is unavailable")?;
-        let stdout = child.stdout.take().context("Pi RPC stdout is unavailable")?;
-        let stderr = child.stderr.take().context("Pi RPC stderr is unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Pi RPC stdout is unavailable")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Pi RPC stderr is unavailable")?;
 
         let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<Value>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<Value>();
@@ -101,8 +107,8 @@ impl PiRpc {
                                 .get("id")
                                 .and_then(Value::as_str)
                                 .map(ToOwned::to_owned);
-                            let is_response = value.get("type").and_then(Value::as_str)
-                                == Some("response");
+                            let is_response =
+                                value.get("type").and_then(Value::as_str) == Some("response");
                             if is_response
                                 && let Some(id) = response_id
                                 && let Some(sender) = pending_stdout
@@ -201,7 +207,10 @@ impl PiRpc {
                         .lock()
                         .expect("Pi pending map poisoned")
                         .remove(&id);
-                    bail!("Pi RPC request timed out after {} seconds: {id}", timeout.as_secs());
+                    bail!(
+                        "Pi RPC request timed out after {} seconds: {id}",
+                        timeout.as_secs()
+                    );
                 }
             }
         } else {
@@ -334,7 +343,11 @@ mod tests {
             let value = value;
             move || crate::model::parse_session_tree(&value["data"])
         });
-        eprintln!("fixture flatten nodes={} elapsed_ms_total={}", tree.rows.len(), start.elapsed().as_millis());
+        eprintln!(
+            "fixture flatten nodes={} elapsed_ms_total={}",
+            tree.rows.len(),
+            start.elapsed().as_millis()
+        );
         assert!(!tree.rows.is_empty());
         assert!(start.elapsed().as_secs() < 30);
     }
@@ -342,7 +355,8 @@ mod tests {
     #[test]
     fn parse_pi_rpc_json_accepts_deeply_nested_trees() {
         // Build a chain deeper than serde_json's default recursion limit.
-        let mut node = String::from("{\"entry\":{\"id\":\"leaf\",\"type\":\"message\"},\"children\":[]}");
+        let mut node =
+            String::from("{\"entry\":{\"id\":\"leaf\",\"type\":\"message\"},\"children\":[]}");
         for i in 0..200 {
             node = format!(
                 "{{\"entry\":{{\"id\":\"n{i}\",\"type\":\"message\"}},\"children\":[{node}]}}"

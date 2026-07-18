@@ -85,8 +85,25 @@ function cleanRecapText(raw: string): string {
 	return text;
 }
 
+function branchToAgentMessages(branch: Array<Record<string, unknown>>): unknown[] {
+	return branch.flatMap((entry) => {
+		if (entry.type === "message" && entry.message) return [entry.message];
+		if (entry.type === "compaction") {
+			return [
+				{
+					role: "compactionSummary",
+					summary: String(entry.summary ?? ""),
+					tokensBefore: Number(entry.tokensBefore ?? 0),
+					timestamp: new Date(String(entry.timestamp ?? "")).getTime(),
+				},
+			];
+		}
+		return [];
+	});
+}
+
 function countMainTurns(messages: Array<{ role?: string }>): number {
-	// Count user turns as a cheap proxy for "main turns".
+	// Count persisted user messages only; custom bridge entries are not turns.
 	return messages.filter((m) => m.role === "user").length;
 }
 
@@ -151,8 +168,9 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const branch = ctx.sessionManager.getBranch();
-				const llmMessages = convertToLlm(branch as any);
-				const mainTurns = countMainTurns(llmMessages as Array<{ role?: string }>);
+				const sessionMessages = branchToAgentMessages(branch as Array<Record<string, unknown>>);
+				const mainTurns = countMainTurns(sessionMessages as Array<{ role?: string }>);
+				const llmMessages = convertToLlm(sessionMessages as any);
 				if (mainTurns === 0) {
 					emit({ ok: false, auto, reason: "no main turns yet" });
 					return;

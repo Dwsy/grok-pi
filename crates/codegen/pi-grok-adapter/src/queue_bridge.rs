@@ -82,9 +82,11 @@ impl QueueMirror {
         let mut used_prev = vec![false; previous.len()];
 
         for (text, lane) in &desired {
-            if let Some((idx, entry)) = previous.iter().enumerate().find(|(idx, entry)| {
-                !used_prev[*idx] && entry.lane == *lane && entry.text == *text
-            }) {
+            if let Some((idx, entry)) = previous
+                .iter()
+                .enumerate()
+                .find(|(idx, entry)| !used_prev[*idx] && entry.lane == *lane && entry.text == *text)
+            {
                 used_prev[idx] = true;
                 next.push(entry.clone());
                 continue;
@@ -116,9 +118,9 @@ impl QueueMirror {
 
         // Drop reservations that already landed or were superseded by Pi.
         self.reserved.retain(|item| {
-            !next
-                .iter()
-                .any(|entry| entry.id == item.id || (entry.lane == item.lane && entry.text == item.text))
+            !next.iter().any(|entry| {
+                entry.id == item.id || (entry.lane == item.lane && entry.text == item.text)
+            })
         });
 
         let removed: Vec<String> = previous
@@ -201,11 +203,7 @@ mod tests {
     #[test]
     fn prefers_reserved_client_prompt_id() {
         let mut mirror = QueueMirror::default();
-        mirror.reserve(
-            "client-1".into(),
-            "hello".into(),
-            QueueLane::FollowUp,
-        );
+        mirror.reserve("client-1".into(), "hello".into(), QueueLane::FollowUp);
         let snap = mirror.apply_queue_update(&[], &["hello".into()]);
         assert_eq!(snap.entries.len(), 1);
         assert_eq!(snap.entries[0]["id"], "client-1");

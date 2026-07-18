@@ -324,17 +324,11 @@ fn tree_entry_display(
             ("custom".into(), preview.clone(), preview, false)
         }
         "label" => {
-            let text = format!(
-                "[label: {}]",
-                string(entry, &["label"]).unwrap_or("")
-            );
+            let text = format!("[label: {}]", string(entry, &["label"]).unwrap_or(""));
             ("label".into(), text.clone(), text, false)
         }
         "session_info" => {
-            let text = format!(
-                "[session: {}]",
-                string(entry, &["name"]).unwrap_or("")
-            );
+            let text = format!("[session: {}]", string(entry, &["name"]).unwrap_or(""));
             ("session".into(), text.clone(), text, false)
         }
         other => {
@@ -520,7 +514,9 @@ fn session_paths(session_dir: &Path, include_project_dirs: bool) -> Vec<PathBuf>
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
                 vec![path]
-            } else if include_project_dirs && entry.file_type().ok().is_some_and(|kind| kind.is_dir()) {
+            } else if include_project_dirs
+                && entry.file_type().ok().is_some_and(|kind| kind.is_dir())
+            {
                 session_paths(&path, false)
             } else {
                 Vec::new()
@@ -558,7 +554,9 @@ fn parse_session_file(path: &Path) -> Option<PiSessionInfo> {
             header = Some((
                 string(&value, &["id"])?.to_owned(),
                 string(&value, &["cwd"]).unwrap_or_default().to_owned(),
-                string(&value, &["timestamp"]).unwrap_or_default().to_owned(),
+                string(&value, &["timestamp"])
+                    .unwrap_or_default()
+                    .to_owned(),
             ));
             continue;
         }
@@ -752,10 +750,7 @@ pub enum PiHistoryItem {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PiToolContent {
     Text(String),
-    Image {
-        data: String,
-        mime_type: String,
-    },
+    Image { data: String, mime_type: String },
 }
 
 pub fn parse_state(value: &Value) -> PiState {
@@ -837,8 +832,7 @@ pub fn parse_model(value: &Value) -> Option<PiModel> {
     let id = string(value, &["id", "modelId", "model_id"])?;
     // `api` is the protocol (openai-completions / anthropic-messages / …),
     // not the provider id — keep them separate so the picker can show both.
-    let provider = string(value, &["provider", "providerId", "provider_id"])
-        .unwrap_or_default();
+    let provider = string(value, &["provider", "providerId", "provider_id"]).unwrap_or_default();
     let api = string(value, &["api", "protocol"]).map(ToOwned::to_owned);
     let label = string(value, &["name", "label", "displayName", "display_name"])
         .map(ToOwned::to_owned)
@@ -851,11 +845,7 @@ pub fn parse_model(value: &Value) -> Option<PiModel> {
         });
     let context_window = number(
         value,
-        &[
-            "contextWindow",
-            "context_window",
-            "contextWindowTokens",
-        ],
+        &["contextWindow", "context_window", "contextWindowTokens"],
     );
     let max_tokens = number(value, &["maxTokens", "max_tokens", "maxOutputTokens"]);
     let base_url = string(value, &["baseUrl", "base_url"]).map(ToOwned::to_owned);
@@ -975,12 +965,7 @@ pub fn parse_messages(value: &Value) -> Vec<PiHistoryItem> {
         .or_else(|| value.get("history"))
         .unwrap_or(value);
     let mut history = Vec::new();
-    for (message_index, message) in source
-        .as_array()
-        .into_iter()
-        .flatten()
-        .enumerate()
-    {
+    for (message_index, message) in source.as_array().into_iter().flatten().enumerate() {
         parse_message(message, message_index, &mut history);
     }
     history
@@ -1445,7 +1430,12 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].modified_at, "2026-07-01T00:00:02.000Z");
         // Must be parseable RFC3339, never a bare millis digit string.
-        assert!(sessions[0].modified_at.parse::<chrono::DateTime<chrono::Utc>>().is_ok());
+        assert!(
+            sessions[0]
+                .modified_at
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .is_ok()
+        );
         assert!(!sessions[0].modified_at.chars().all(|c| c.is_ascii_digit()));
     }
 
@@ -1508,7 +1498,9 @@ mod tests {
         let items = parse_messages(&json!({
             "messages": [{ "role": "assistant", "errorMessage": "request failed" }]
         }));
-        assert!(matches!(items.as_slice(), [PiHistoryItem::AgentText(text)] if text == "**Pi error:** request failed"));
+        assert!(
+            matches!(items.as_slice(), [PiHistoryItem::AgentText(text)] if text == "**Pi error:** request failed")
+        );
     }
 
     #[test]

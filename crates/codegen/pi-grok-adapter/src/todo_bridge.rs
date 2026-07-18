@@ -37,7 +37,8 @@ impl TodoSource for RpivTodoSource {
             return None;
         }
         let tasks = details.get("tasks")?.as_array()?;
-        let entries: Vec<acp::PlanEntry> = tasks.iter().filter_map(rpiv_task_to_plan_entry).collect();
+        let entries: Vec<acp::PlanEntry> =
+            tasks.iter().filter_map(rpiv_task_to_plan_entry).collect();
         Some(acp::Plan::new(entries))
     }
 }
@@ -93,7 +94,10 @@ fn rpiv_details(result: &Value) -> Option<&Value> {
 }
 
 fn rpiv_task_to_plan_entry(task: &Value) -> Option<acp::PlanEntry> {
-    let status = task.get("status").and_then(Value::as_str).unwrap_or("pending");
+    let status = task
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("pending");
     // Tombstones stay out of the native pane (matches rpiv list defaults).
     if status == "deleted" {
         return None;
@@ -250,12 +254,14 @@ mod tests {
             }
         });
         assert!(plan_update_for_tool("todo", &result, false).is_none());
-        assert!(plan_update_for_tool(
-            "todo",
-            &json!({ "details": { "tasks": sample_tasks() } }),
-            true
-        )
-        .is_none());
+        assert!(
+            plan_update_for_tool(
+                "todo",
+                &json!({ "details": { "tasks": sample_tasks() } }),
+                true
+            )
+            .is_none()
+        );
     }
 
     #[test]

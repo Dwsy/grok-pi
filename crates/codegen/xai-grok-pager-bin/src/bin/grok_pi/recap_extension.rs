@@ -30,6 +30,7 @@ mod tests {
         assert!(source.contains("registerCommand(COMMAND"));
         assert!(source.contains("pi-grok-recap/v1"));
         assert!(source.contains("from \"@earendil-works/pi-ai/compat\""));
+        assert!(source.contains("entry.type === \"message\" && entry.message"));
         assert!(file.path().extension().and_then(|e| e.to_str()) == Some("ts"));
     }
 }

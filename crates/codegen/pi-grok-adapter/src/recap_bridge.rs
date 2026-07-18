@@ -1,6 +1,6 @@
 //! Project Pi custom `pi-grok-recap/v1` messages into Grok SessionRecap updates.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const BRIDGE_TYPE: &str = "pi-grok-recap/v1";
 
@@ -48,10 +48,7 @@ pub(crate) fn parse_recap_message(event: &Value) -> Option<RecapProjection> {
     }
 }
 
-pub(crate) fn session_recap_notification(
-    session_id: &str,
-    projection: &RecapProjection,
-) -> Value {
+pub(crate) fn session_recap_notification(session_id: &str, projection: &RecapProjection) -> Value {
     match projection {
         RecapProjection::Available { summary, auto } => json!({
             "sessionId": session_id,
@@ -168,9 +165,6 @@ mod tests {
 
         let miss =
             session_recap_notification("sess-1", &RecapProjection::Unavailable { auto: false });
-        assert_eq!(
-            miss["update"]["sessionUpdate"],
-            "session_recap_unavailable"
-        );
+        assert_eq!(miss["update"]["sessionUpdate"], "session_recap_unavailable");
     }
 }

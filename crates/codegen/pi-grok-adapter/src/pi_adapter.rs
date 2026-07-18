@@ -1,4 +1,8 @@
 use crate::{
+    background_bash_bridge::{
+        background_bash_notification, background_bash_output_update, parse_background_bash_message,
+        parse_background_bash_tool_result,
+    },
     context_projection::{
         build_session_info_response, context_tokens_from_stats, context_tokens_from_usage,
         entries_to_messages_value,
@@ -15,7 +19,7 @@ use crate::{
     pi_rpc::PiRpc,
     queue_bridge::{QueueLane, QueueMirror, queue_changed_params, string_list},
     recap_bridge::{parse_recap_message, session_recap_notification},
-    subagent_projection::{BridgeOperation, parse_bridge_message},
+    subagent_projection::{BridgeOperation, bridge_parent_session_id, parse_bridge_message},
     todo_bridge::plan_update_for_tool,
     tool_projection::{
         bash_tool_output, edit_diff_content, history_tool_content, normalize_tool_raw_input,
@@ -23,7 +27,7 @@ use crate::{
     },
 };
 use agent_client_protocol as acp;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::{
@@ -31,7 +35,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
 use xai_acp_lib::{AcpClientMessage, acp_send};
@@ -114,6 +118,57 @@ struct StreamSeen {
     thought: bool,
 }
 
+#[derive(Default)]
+struct PendingSubagentBridge {
+    target_session_id: Option<String>,
+    events: Vec<Value>,
+}
+
+impl PendingSubagentBridge {
+    fn begin(&mut self, target_session_id: &str) -> Result<()> {
+        if let Some(existing) = &self.target_session_id {
+            bail!("Pi session transition to {existing} is already in progress");
+        }
+        self.target_session_id = Some(target_session_id.to_string());
+        self.events.clear();
+        Ok(())
+    }
+
+    fn defer_if_targeted(&mut self, event: &Value) -> Result<bool> {
+        let Some(parent_session_id) = bridge_parent_session_id(event)? else {
+            return Ok(false);
+        };
+        let Some(target_session_id) = &self.target_session_id else {
+            return Ok(false);
+        };
+        if parent_session_id != target_session_id {
+            return Ok(false);
+        }
+        self.events.push(event.clone());
+        Ok(true)
+    }
+
+    fn commit_if_target(&mut self, target_session_id: &str) -> Result<Vec<Value>> {
+        match self.target_session_id.as_deref() {
+            None => Ok(Vec::new()),
+            Some(current) if current == target_session_id => {
+                self.target_session_id = None;
+                Ok(std::mem::take(&mut self.events))
+            }
+            Some(current) => bail!(
+                "Pi session transition to {current} is still pending while {target_session_id} loads"
+            ),
+        }
+    }
+
+    fn abandon(&mut self, target_session_id: &str) {
+        if self.target_session_id.as_deref() == Some(target_session_id) {
+            self.target_session_id = None;
+            self.events.clear();
+        }
+    }
+}
+
 struct AdapterState {
     bootstrap: PiBootstrap,
     acp_session_id: String,
@@ -130,12 +185,19 @@ struct AdapterState {
     /// Latest Pi context-window usage (tokens used). Stamped on ACP session
     /// updates as `_meta.totalTokens` so Grok's native context bar can render.
     last_context_tokens: Option<u64>,
+    /// Local timing only; Pi owns compaction itself and reports its token result.
+    compaction_started_at: Option<Instant>,
     /// Pi steering / follow-up queue mirrored as Grok `x.ai/queue/changed`.
     queue_mirror: QueueMirror,
     /// Last accepted live bridge sequence per child. The adapter uses this only
     /// to reject duplicate/out-of-order transport events; child lifecycle stays
     /// owned by the Pi extension.
     subagent_bridge_sequences: HashMap<String, u64>,
+    /// Pi emits extension `session_start` events before its `switch_session`
+    /// response reaches ACP. Buffer target-session subagent replay until ACP
+    /// commits the matching session load, rather than validating it against the
+    /// still-active Pager session.
+    pending_subagent_bridge: PendingSubagentBridge,
 }
 
 #[derive(Clone)]
@@ -143,6 +205,7 @@ pub struct PiAgent {
     rpc: PiRpc,
     client_tx: mpsc::UnboundedSender<AcpClientMessage>,
     state: Rc<RefCell<AdapterState>>,
+    bash_control_meta: Option<PathBuf>,
 }
 
 impl PiAgent {
@@ -151,6 +214,7 @@ impl PiAgent {
         client_tx: mpsc::UnboundedSender<AcpClientMessage>,
         bootstrap: PiBootstrap,
         session_dir: PathBuf,
+        bash_control_meta: Option<PathBuf>,
     ) -> Self {
         let acp_session_id = bootstrap.state.session_id.clone();
         let model_map = bootstrap
@@ -162,6 +226,7 @@ impl PiAgent {
         Self {
             rpc,
             client_tx,
+            bash_control_meta,
             state: Rc::new(RefCell::new(AdapterState {
                 bootstrap,
                 acp_session_id,
@@ -174,8 +239,10 @@ impl PiAgent {
                 session_paths: HashMap::new(),
                 tool_args: HashMap::new(),
                 last_context_tokens: None,
+                compaction_started_at: None,
                 queue_mirror: QueueMirror::default(),
                 subagent_bridge_sequences: HashMap::new(),
+                pending_subagent_bridge: PendingSubagentBridge::default(),
             })),
         }
     }
@@ -240,19 +307,60 @@ impl PiAgent {
     /// Request Pi to replace its active session. The adapter publishes the new
     /// session identity only after Pi accepts the switch and its replacement
     /// state can be loaded successfully.
-    pub async fn switch_session(&self, session_path: &Path) -> Result<PiSessionSwitch> {
-        let response = self
+    pub async fn switch_session(
+        &self,
+        session_path: &Path,
+        expected_session_id: &str,
+    ) -> Result<PiSessionSwitch> {
+        self.state
+            .borrow_mut()
+            .pending_subagent_bridge
+            .begin(expected_session_id)?;
+        let response = match self
             .rpc
             .request(json!({
                 "type": "switch_session",
                 "sessionPath": session_path,
             }))
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.state
+                    .borrow_mut()
+                    .pending_subagent_bridge
+                    .abandon(expected_session_id);
+                return Err(error);
+            }
+        };
         let result = parse_session_switch(&response);
         if result.cancelled {
+            self.state
+                .borrow_mut()
+                .pending_subagent_bridge
+                .abandon(expected_session_id);
             return Ok(result);
         }
-        let bootstrap = PiBootstrap::load(&self.rpc).await?;
+        let bootstrap = match PiBootstrap::load(&self.rpc).await {
+            Ok(bootstrap) => bootstrap,
+            Err(error) => {
+                self.state
+                    .borrow_mut()
+                    .pending_subagent_bridge
+                    .abandon(expected_session_id);
+                return Err(error);
+            }
+        };
+        if bootstrap.state.session_id != expected_session_id {
+            self.state
+                .borrow_mut()
+                .pending_subagent_bridge
+                .abandon(expected_session_id);
+            bail!(
+                "Pi switched to {}, not requested session {expected_session_id}",
+                bootstrap.state.session_id
+            );
+        }
         self.replace_bootstrap(bootstrap);
         Ok(result)
     }
@@ -443,6 +551,14 @@ impl PiAgent {
     }
 
     async fn handle_subagent_bridge_message(&self, event: &Value) -> Result<bool> {
+        if self
+            .state
+            .borrow_mut()
+            .pending_subagent_bridge
+            .defer_if_targeted(event)?
+        {
+            return Ok(true);
+        }
         let root_session_id = self.session_id().0.to_string();
         let Some(projection) = parse_bridge_message(event, &root_session_id)? else {
             return Ok(false);
@@ -555,6 +671,55 @@ impl PiAgent {
             json!({ "message": message, "notifyType": kind }),
         )
         .await;
+    }
+
+    async fn handle_compaction_start(&self, event: &Value) {
+        self.refresh_context_usage().await;
+        let notification = (|| {
+            let mut state = self.state.borrow_mut();
+            state.compaction_started_at = Some(Instant::now());
+            let tokens_used = state.last_context_tokens?;
+            let context_window = state
+                .bootstrap
+                .state
+                .model
+                .as_ref()
+                .and_then(|model| model.context_window)
+                .filter(|window| *window > 0)?;
+            Some(compaction_start_notification(
+                &state.acp_session_id,
+                event,
+                tokens_used,
+                context_window,
+            ))
+        })();
+        if let Some(notification) = notification {
+            self.send_ext_notification("x.ai/session/update", notification)
+                .await;
+        }
+        self.send_status("compaction", Some("Compacting context…"))
+            .await;
+    }
+
+    async fn handle_compaction_end(&self, event: &Value) {
+        let (session_id, elapsed_ms) = {
+            let mut state = self.state.borrow_mut();
+            let elapsed_ms = state
+                .compaction_started_at
+                .take()
+                .and_then(|started| started.elapsed().as_millis().try_into().ok());
+            (state.acp_session_id.clone(), elapsed_ms)
+        };
+        if let Some(notification) = compaction_end_notification(&session_id, event, elapsed_ms) {
+            self.send_ext_notification("x.ai/session/update", notification)
+                .await;
+        }
+        self.send_status("compaction", None).await;
+        if let Some(error) = string(event, &["errorMessage", "error"])
+            && !error.is_empty()
+        {
+            self.send_ui_notification(error, Some("error")).await;
+        }
     }
 
     /// Build Grok-native `x.ai/session/info` from Pi session stats.
@@ -821,7 +986,9 @@ impl PiAgent {
             "message_start" => self.handle_message_start(&event),
             "message_update" => self.handle_message_update(&event).await,
             "message_end" => {
-                if self.handle_recap_bridge_message(&event).await? {
+                if self.handle_recap_bridge_message(&event).await?
+                    || self.handle_background_bash_bridge_message(&event).await?
+                {
                     // Recap custom messages are display-only bridge traffic.
                 } else if !self.handle_subagent_bridge_message(&event).await? {
                     self.handle_message_end(&event).await;
@@ -841,16 +1008,10 @@ impl PiAgent {
                 self.send_ui_notification(&message, Some("error")).await;
             }
             "compaction_start" | "auto_compaction_start" => {
-                self.send_status("compaction", Some("Compacting context…"))
-                    .await;
+                self.handle_compaction_start(&event).await;
             }
             "compaction_end" | "auto_compaction_end" => {
-                self.send_status("compaction", None).await;
-                if let Some(error) = string(&event, &["errorMessage", "error"])
-                    && !error.is_empty()
-                {
-                    self.send_ui_notification(error, Some("error")).await;
-                }
+                self.handle_compaction_end(&event).await;
             }
             "auto_retry_start" => {
                 let attempt = event.get("attempt").and_then(Value::as_u64).unwrap_or(0);
@@ -1222,6 +1383,8 @@ impl PiAgent {
         } else {
             fields = fields.content(Some(tool_content(&output)));
         }
+        self.handle_background_bash_tool_end(name, id, args.as_ref(), &output)
+            .await;
         // Live path: rpiv-todo (and future TodoSource plugins) publish a full
         // task snapshot under tool result details → native TodoPane via Plan.
         if let Some(plan) = plan_update_for_tool(name, &output, is_error) {
@@ -1231,6 +1394,44 @@ impl PiAgent {
             acp::ToolCallUpdate::new(acp::ToolCallId::new(id.to_string()), fields),
         ))
         .await;
+    }
+
+    async fn handle_background_bash_bridge_message(&self, event: &Value) -> Result<bool> {
+        let Some(projection) = parse_background_bash_message(event) else {
+            return Ok(false);
+        };
+        if let Some(output) = background_bash_output_update(&projection) {
+            self.send_update(acp::SessionUpdate::ToolCallUpdate(
+                acp::ToolCallUpdate::new(
+                    acp::ToolCallId::new(output["toolCallId"].as_str().unwrap_or_default()),
+                    acp::ToolCallUpdateFields::new()
+                        .status(Some(acp::ToolCallStatus::InProgress))
+                        .raw_output(Some(output["rawOutput"].clone())),
+                ),
+            ))
+            .await;
+        }
+        let session_id = self.session_id().0.to_string();
+        let (method, notification) = background_bash_notification(&session_id, &projection);
+        self.send_ext_notification(method, notification).await;
+        Ok(true)
+    }
+
+    async fn handle_background_bash_tool_end(
+        &self,
+        tool_name: &str,
+        tool_call_id: &str,
+        args: Option<&Value>,
+        result: &Value,
+    ) {
+        let Some(projection) =
+            parse_background_bash_tool_result(tool_name, tool_call_id, args, result)
+        else {
+            return;
+        };
+        let session_id = self.session_id().0.to_string();
+        let (method, notification) = background_bash_notification(&session_id, &projection);
+        self.send_ext_notification(method, notification).await;
     }
 
     async fn handle_extension_ui(&self, event: Value) -> Result<()> {
@@ -1523,7 +1724,7 @@ impl acp::Agent for PiAgent {
                     ))
                 })?;
             let result = self
-                .switch_session(&session_path)
+                .switch_session(&session_path, &requested)
                 .await
                 .map_err(acp_internal)?;
             if result.cancelled {
@@ -1537,10 +1738,27 @@ impl acp::Agent for PiAgent {
                 bootstrap.state.session_id
             )));
         }
-        self.state.borrow_mut().acp_session_id = requested;
-        self.replay_history().await.map_err(acp_internal)?;
+        self.state.borrow_mut().acp_session_id = requested.clone();
+        if let Err(error) = self.replay_history().await {
+            self.state
+                .borrow_mut()
+                .pending_subagent_bridge
+                .abandon(&requested);
+            return Err(acp_internal(error));
+        }
         self.publish_bootstrap(&bootstrap).await;
         self.refresh_context_usage().await;
+        let replay_events = self
+            .state
+            .borrow_mut()
+            .pending_subagent_bridge
+            .commit_if_target(&requested)
+            .map_err(acp_internal)?;
+        for event in replay_events {
+            self.handle_subagent_bridge_message(&event)
+                .await
+                .map_err(acp_internal)?;
+        }
         let mut response = acp::LoadSessionResponse::new();
         if let Some(models) = bootstrap.acp_models() {
             response = response.models(Some(models));
@@ -1726,6 +1944,9 @@ impl acp::Agent for PiAgent {
     async fn ext_method(&self, arguments: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
         match arguments.method.as_ref() {
             "x.ai/interject" => self.handle_steer_message(arguments.params.get()).await,
+            "x.ai/terminal/background" => {
+                self.handle_bash_background_request(arguments.params.get()).await
+            }
             "x.ai/recap" => self.handle_recap_request(arguments.params.get()).await,
             "x.ai/compact_conversation" => {
                 let params: Value =
@@ -1860,29 +2081,42 @@ impl acp::Agent for PiAgent {
 
     async fn ext_notification(&self, arguments: acp::ExtNotification) -> Result<(), acp::Error> {
         match arguments.method.as_ref() {
-            // Experimental Remote TUI key / cancel path (Pager → Pi process).
+            "pi/extension_command" => {
+                let params: Value = serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let command = string(&params, &["command"])
+                    .map(str::trim)
+                    .filter(|command| command.starts_with('/'));
+                if let Some(command) = command {
+                    if let Err(error) = self
+                        .rpc
+                        .request(json!({ "type": "prompt", "message": command }))
+                        .await
+                    {
+                        tracing::warn!(%error, "failed to invoke Pi extension command");
+                    }
+                } else {
+                    tracing::warn!("ignored malformed Pi extension command notification");
+                }
+                Ok(())
+            }
+            // Experimental Remote TUI: keys go to extension host via keyfile
+            // (no Pi source patch / no custom stdin RPC types).
             "pi/ui/remote_tui/input" => {
                 let params: Value =
                     serde_json::from_str(arguments.params.get()).unwrap_or_default();
-                if let Some(id) = string(&params, &["id"]) {
-                    if let Some(data) = string(&params, &["data"]) {
-                        let _ = self.rpc.notify(json!({
-                            "type": "remote_tui_input",
-                            "id": id,
-                            "data": data,
-                        }));
+                if let Some(data) = string(&params, &["data"]) {
+                    if let Err(error) = append_remote_tui_key_event(json!({
+                        "op": "input",
+                        "data": data,
+                    })) {
+                        tracing::debug!(%error, "remote_tui keyfile input failed");
                     }
                 }
                 Ok(())
             }
             "pi/ui/remote_tui/cancel" => {
-                let params: Value =
-                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
-                if let Some(id) = string(&params, &["id"]) {
-                    let _ = self.rpc.notify(json!({
-                        "type": "remote_tui_cancel",
-                        "id": id,
-                    }));
+                if let Err(error) = append_remote_tui_key_event(json!({ "op": "cancel" })) {
+                    tracing::debug!(%error, "remote_tui keyfile cancel failed");
                 }
                 Ok(())
             }
@@ -1914,9 +2148,8 @@ impl acp::Agent for PiAgent {
                     let state = self.state.borrow();
                     state.queue_mirror.text_for_id(id).map(str::to_string)
                 };
-                let text = text.or_else(|| {
-                    string(&params, &["newText", "text"]).map(str::to_string)
-                });
+                let text =
+                    text.or_else(|| string(&params, &["newText", "text"]).map(str::to_string));
                 if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
                     let _ = self
                         .rpc
@@ -1936,6 +2169,24 @@ impl acp::Agent for PiAgent {
 }
 
 impl PiAgent {
+    async fn handle_bash_background_request(
+        &self,
+        params_raw: &str,
+    ) -> Result<acp::ExtResponse, acp::Error> {
+        let params: Value = serde_json::from_str(params_raw).map_err(acp_internal)?;
+        let tool_call_id = string(&params, &["terminalId", "toolCallId"])
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| acp::Error::invalid_params().data("terminalId is required"))?;
+        let control_meta = self
+            .bash_control_meta
+            .as_deref()
+            .ok_or_else(|| acp::Error::invalid_params().data("Pi Bash background control is disabled"))?;
+        append_bash_background_control(control_meta, tool_call_id).map_err(acp_internal)?;
+        ext_response(json!({ "accepted": true, "terminalId": tool_call_id }))
+            .map_err(acp_internal)
+    }
+
     /// Fire-and-forget session recap via injected `__pi_grok_recap` extension.
     ///
     /// Params: `{ sessionId?, auto?, model? }`. Language is taken from process locale.
@@ -2226,9 +2477,7 @@ fn command_catalog(commands: &[PiCommand]) -> Vec<acp::AvailableCommand> {
         .iter()
         .filter_map(|command| {
             let name = command.name.trim().trim_start_matches('/');
-            if name.is_empty()
-                || is_bridge_command(name)
-                || !seen.insert(name.to_ascii_lowercase())
+            if name.is_empty() || is_bridge_command(name) || !seen.insert(name.to_ascii_lowercase())
             {
                 return None;
             }
@@ -2241,7 +2490,14 @@ fn command_catalog(commands: &[PiCommand]) -> Vec<acp::AvailableCommand> {
             } else {
                 command.description.clone()
             };
-            Some(acp::AvailableCommand::new(name.to_string(), description))
+            let mut available = acp::AvailableCommand::new(name.to_string(), description);
+            if !command.source.trim().is_empty() {
+                available = available.meta(serde_json::Map::from_iter([(
+                    "piCommandSource".to_string(),
+                    Value::String(command.source.clone()),
+                )]));
+            }
+            Some(available)
         })
         .collect()
 }
@@ -2315,6 +2571,112 @@ fn pi_effort_to_acp(level: &str) -> &str {
         "xhigh" | "max" => "xhigh",
         _ => "medium",
     }
+}
+
+fn compaction_start_notification(
+    session_id: &str,
+    event: &Value,
+    tokens_used: u64,
+    context_window: u64,
+) -> Value {
+    let percentage = tokens_used
+        .saturating_mul(100)
+        .checked_div(context_window)
+        .unwrap_or(100)
+        .min(100) as u8;
+    json!({
+        "sessionId": session_id,
+        "update": {
+            "sessionUpdate": "auto_compact_started",
+            "tokens_used": tokens_used,
+            "context_window": context_window,
+            "percentage": percentage,
+            "reason": string(event, &["reason"]).unwrap_or("unknown"),
+        }
+    })
+}
+
+fn compaction_end_notification(
+    session_id: &str,
+    event: &Value,
+    elapsed_ms: Option<i64>,
+) -> Option<Value> {
+    let update = if let Some(error) =
+        string(event, &["errorMessage", "error"]).filter(|error| !error.is_empty())
+    {
+        json!({ "sessionUpdate": "auto_compact_failed", "error": error })
+    } else if event.get("aborted").and_then(Value::as_bool) == Some(true) {
+        json!({
+            "sessionUpdate": "auto_compact_cancelled",
+            "reason": string(event, &["reason"]).unwrap_or("Compaction cancelled"),
+        })
+    } else {
+        let result = event.get("result")?;
+        let tokens_after = result.get("estimatedTokensAfter").and_then(Value::as_u64)?;
+        json!({
+            "sessionUpdate": "auto_compact_completed",
+            "tokens_before": result.get("tokensBefore").and_then(Value::as_u64),
+            "tokens_after": tokens_after,
+            "elapsed_ms": elapsed_ms,
+            "summary_preview": result.get("summary").and_then(Value::as_str),
+        })
+    };
+    Some(json!({ "sessionId": session_id, "update": update }))
+}
+
+/// Send a Pager foreground-to-background request to the injected Bash extension.
+///
+/// The per-process metadata path is minted by the composition binary and passed
+/// to both Pi and this adapter. The extension publishes only live foreground
+/// tool IDs, so the adapter cannot create a background task for an arbitrary
+/// or already completed tool call.
+fn append_bash_background_control(meta_path: &Path, tool_call_id: &str) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let meta: Value = serde_json::from_str(&std::fs::read_to_string(meta_path)?)?;
+    let active = meta
+        .get("activeToolCallIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(tool_call_id)));
+    if !active {
+        bail!("Pi Bash tool is not promotable: {tool_call_id}");
+    }
+    let control_path = meta
+        .get("controlPath")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| anyhow!("Pi Bash control metadata missing controlPath"))?;
+    let mut file = OpenOptions::new().append(true).open(control_path)?;
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&json!({ "op": "background", "toolCallId": tool_call_id }))?
+    )?;
+    Ok(())
+}
+
+/// Experimental Remote TUI: extension host watches a keyfile under tmp.
+/// Meta written by the injected extension: `{id, keysPath}`.
+fn append_remote_tui_key_event(event: Value) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let meta_path = std::env::temp_dir().join("pi-grok-remote-tui-active.json");
+    if !meta_path.exists() {
+        bail!("remote_tui meta missing ({})", meta_path.display());
+    }
+    let meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path)?)?;
+    let keys_path = meta
+        .get("keysPath")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("remote_tui meta missing keysPath"))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(keys_path)?;
+    writeln!(file, "{}", serde_json::to_string(&event)?)?;
+    Ok(())
 }
 
 fn extension_tool_call_id(id: &Value) -> String {
@@ -2395,6 +2757,82 @@ fn acp_internal(error: impl std::fmt::Display) -> acp::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_subagent_bridge_defers_only_the_target_session_replay() {
+        let replay = json!({
+            "message": {
+                "role": "custom",
+                "customType": "pi-grok-subagent/v1",
+                "details": { "parentSessionId": "session-next" },
+            },
+        });
+        let other_session = json!({
+            "message": {
+                "role": "custom",
+                "customType": "pi-grok-subagent/v1",
+                "details": { "parentSessionId": "session-other" },
+            },
+        });
+        let mut pending = PendingSubagentBridge::default();
+        pending.begin("session-next").expect("begin transition");
+        assert!(pending.defer_if_targeted(&replay).expect("defer target replay"));
+        assert!(!pending
+            .defer_if_targeted(&other_session)
+            .expect("leave unrelated event live"));
+        assert_eq!(
+            pending
+                .commit_if_target("session-next")
+                .expect("commit")
+                .len(),
+            1
+        );
+        assert!(pending
+            .commit_if_target("session-next")
+            .expect("no transition")
+            .is_empty());
+    }
+
+    #[test]
+    fn pending_subagent_bridge_discards_replay_when_transition_is_cancelled() {
+        let replay = json!({
+            "message": {
+                "role": "custom",
+                "customType": "pi-grok-subagent/v1",
+                "details": { "parentSessionId": "session-next" },
+            },
+        });
+        let mut pending = PendingSubagentBridge::default();
+        pending.begin("session-next").expect("begin transition");
+        assert!(pending.defer_if_targeted(&replay).expect("defer target replay"));
+        pending.abandon("session-next");
+        assert!(pending.events.is_empty());
+        assert!(pending.target_session_id.is_none());
+    }
+
+    #[test]
+    fn appends_background_control_only_for_an_active_tool() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let control_path = directory.path().join("control.jsonl");
+        let meta_path = directory.path().join("control.json");
+        std::fs::write(&control_path, "").expect("control file");
+        std::fs::write(
+            &meta_path,
+            json!({
+                "controlPath": control_path,
+                "activeToolCallIds": ["tool-1"],
+            })
+            .to_string(),
+        )
+        .expect("metadata file");
+
+        append_bash_background_control(&meta_path, "tool-1").expect("append control event");
+        assert_eq!(
+            std::fs::read_to_string(&control_path).expect("read control file"),
+            "{\"op\":\"background\",\"toolCallId\":\"tool-1\"}\n"
+        );
+        assert!(append_bash_background_control(&meta_path, "tool-2").is_err());
+    }
 
     #[test]
     fn session_file_discovers_a_settings_configured_session_directory() {
@@ -2490,6 +2928,8 @@ mod tests {
         assert!(text.contains("Review changes"));
         assert!(text.contains("brief"));
         assert!(text.contains("Pi skill command"));
+        assert!(text.contains("piCommandSource"));
+        assert!(text.contains("extension"));
         assert!(!text.contains(NAVIGATE_TREE_COMMAND));
         assert!(!text.contains(LABEL_TREE_COMMAND));
     }
@@ -2539,5 +2979,54 @@ mod tests {
             "pi-extension-ui:dialog-7"
         );
         assert_eq!(extension_tool_call_id(&json!(17)), "pi-extension-ui:17");
+    }
+
+    #[test]
+    fn compaction_events_project_to_native_session_updates() {
+        let start = compaction_start_notification(
+            "session-1",
+            &json!({ "reason": "threshold" }),
+            85_000,
+            100_000,
+        );
+        assert_eq!(start["update"]["sessionUpdate"], "auto_compact_started");
+        assert_eq!(start["update"]["percentage"], 85);
+
+        let success = compaction_end_notification(
+            "session-1",
+            &json!({
+                "result": {
+                    "tokensBefore": 100_000,
+                    "estimatedTokensAfter": 20_000,
+                    "summary": "Retained recent work"
+                }
+            }),
+            Some(500),
+        )
+        .expect("success projection");
+        assert_eq!(success["sessionId"], "session-1");
+        assert_eq!(success["update"]["sessionUpdate"], "auto_compact_completed");
+        assert_eq!(success["update"]["tokens_before"], 100_000);
+        assert_eq!(success["update"]["tokens_after"], 20_000);
+        assert_eq!(success["update"]["elapsed_ms"], 500);
+
+        let failure = compaction_end_notification(
+            "session-1",
+            &json!({ "errorMessage": "compaction failed" }),
+            None,
+        )
+        .expect("failure projection");
+        assert_eq!(failure["update"]["sessionUpdate"], "auto_compact_failed");
+
+        let cancelled = compaction_end_notification(
+            "session-1",
+            &json!({ "aborted": true, "reason": "user" }),
+            None,
+        )
+        .expect("cancelled projection");
+        assert_eq!(
+            cancelled["update"]["sessionUpdate"],
+            "auto_compact_cancelled"
+        );
     }
 }
