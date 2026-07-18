@@ -126,6 +126,7 @@ crossterm = "0.28"
 cryptify = "3.2"
 dashmap = "6"
 derive_more = { version = "2", features = ["add", "add_assign", "debug", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_into"] }
+dhat = "0.3"
 dirs = "5.0"
 documented = "0.9"
 dunce = "1"

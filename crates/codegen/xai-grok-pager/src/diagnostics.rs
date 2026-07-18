@@ -651,33 +651,6 @@ pub fn diagnose_wayland_data_control_live() -> Option<TerminalWarning> {
     )
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Osc52Capability {
-    Supported,
-    Unsupported,
-    Unknown,
-}
-
-impl Osc52Capability {
-    fn from_brand(brand: TerminalName) -> Self {
-        if brand.supports_osc52_clipboard() {
-            Self::Supported
-        } else if brand == TerminalName::Unknown {
-            Self::Unknown
-        } else {
-            Self::Unsupported
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Supported => "supported",
-            Self::Unsupported => "unsupported",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct ClipboardDiagnosticsInput<'a> {
     pub route_native: bool,
@@ -703,27 +676,27 @@ pub struct ClipboardDiagnostics {
 /// Format preflight clipboard routes without claiming that a copy already happened.
 pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> ClipboardDiagnostics {
     use crate::clipboard::{
-        ClipboardDelivery, NativeClipboardPreflight, expected_delivery, native_clipboard_preflight,
+        ClipboardDelivery, ClipboardEnvironment, NativeClipboardPreflight, expected_delivery,
+        native_clipboard_preflight,
     };
 
-    let capability = Osc52Capability::from_brand(input.brand);
-    let native_preflight = native_clipboard_preflight(
-        input.route_native,
-        input.host_os,
-        input.display_server,
-        input.is_ssh,
-        input.container_no_display,
-        input.wayland_data_control,
-        input.wl_copy_available,
-    );
+    let environment = ClipboardEnvironment {
+        brand: input.brand,
+        host_os: input.host_os,
+        display_server: input.display_server,
+        remote: input.is_ssh,
+        container: input.container_no_display,
+        osc52_sink: input.osc52_sink,
+        wayland_data_control: input.wayland_data_control,
+        wl_copy_available: input.wl_copy_available,
+    };
+    let capability = environment.osc52_capability();
+    let native_preflight = native_clipboard_preflight(input.route_native, environment);
     let delivery = expected_delivery(
         native_preflight,
         input.route_tmux,
         input.route_osc52,
-        input.brand,
-        input.is_ssh,
-        input.container_no_display,
-        input.osc52_sink,
+        environment,
     );
     let native = match native_preflight {
         NativeClipboardPreflight::LocalAvailable => format!("local ({})", input.native_tool),
@@ -735,12 +708,10 @@ pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> Cli
         NativeClipboardPreflight::Disabled => "off".to_owned(),
     };
     let tmux = if input.route_tmux { "on" } else { "off" };
-    let osc52 = if !input.route_osc52 {
-        "off"
-    } else if input.osc52_sink || capability == Osc52Capability::Supported {
-        "supported"
-    } else {
+    let osc52 = if input.route_osc52 {
         capability.label()
+    } else {
+        "off"
     };
     let wrap = if input.osc52_sink { "on" } else { "off" };
     let status = match delivery {
@@ -785,7 +756,7 @@ pub fn format_clipboard_diagnostics(input: ClipboardDiagnosticsInput<'_>) -> Cli
     }
     ClipboardDiagnostics {
         text: out,
-        has_issue: delivery != ClipboardDelivery::Confirmed,
+        has_issue: !delivery.is_confirmed(),
     }
 }
 
@@ -1076,6 +1047,22 @@ mod tests {
                 .contains("fix          grok wrap <ssh command> or /minimal")
         );
         assert!(unsupported.has_issue);
+
+        let unsupported_container = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+            is_ssh: false,
+            container_no_display: true,
+            ..clipboard_input(TerminalName::Vte)
+        });
+        assert!(
+            unsupported_container
+                .text
+                .contains("osc 52       unsupported")
+        );
+        assert!(
+            unsupported_container
+                .text
+                .contains("status       unavailable")
+        );
     }
 
     #[test]
@@ -1095,7 +1082,7 @@ mod tests {
                 wl_copy_available: wl_copy,
                 ..clipboard_input(TerminalName::Vte)
             });
-            assert_eq!(diagnostics.has_issue, expected.is_failed());
+            assert_eq!(diagnostics.has_issue, !expected.is_confirmed());
             assert!(diagnostics.text.contains(if data_control {
                 "data-control on"
             } else {
@@ -1118,6 +1105,7 @@ mod tests {
             osc52_sink: true,
             ..clipboard_input(TerminalName::Unknown)
         });
+        assert!(wrapped.text.contains("osc 52       supported"));
         assert!(wrapped.text.contains("wrap         on"));
         assert!(wrapped.text.contains("status       confirmed"));
 
@@ -1132,6 +1120,21 @@ mod tests {
             container
                 .text
                 .contains("fix          grok wrap <command> or /minimal")
+        );
+
+        let remote_container = format_clipboard_diagnostics(ClipboardDiagnosticsInput {
+            container_no_display: true,
+            ..clipboard_input(TerminalName::Unknown)
+        });
+        assert!(
+            remote_container
+                .text
+                .contains("native       container (arboard)")
+        );
+        assert!(
+            remote_container
+                .text
+                .contains("fix          grok wrap <ssh command> or /minimal")
         );
     }
 

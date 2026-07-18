@@ -913,6 +913,14 @@ impl SessionActor {
         }
     }
     /// Proactively refresh the auth token if near expiry.
+    ///
+    /// Session-token path is best-effort: on success, update credentials and
+    /// return. On failure, do **not** fall through to the JWT/config.toml
+    /// branch when the session gate was active — that path is for BYOK JWTs
+    /// only. Falling through after a failed session refresh left hard-expired
+    /// opaque tokens (External/OIDC) on the wire and guaranteed a 401.
+    /// Soft failures with a still-usable access token still return here
+    /// (grace / optimistic send); 401 recovery remains the safety net.
     pub(super) async fn refresh_token_if_expired(&self) {
         if let Some(ref am) = self.auth_manager {
             let creds = self.chat_state_handle.get_credentials().await;
@@ -922,15 +930,33 @@ impl SessionActor {
                 .await
                 .map(|c| (c.model, c.base_url))
                 .unwrap_or_default();
-            if self.auth_gate(&model_id, &base_url).active()
-                && let Ok(key) = am.get_valid_token().await
-            {
-                if creds.api_key.as_deref() != Some(&key) {
-                    let mut creds = creds;
-                    creds.api_key = Some(key);
-                    self.chat_state_handle.update_credentials(creds);
+            if self.auth_gate(&model_id, &base_url).active() {
+                match am.get_valid_token().await {
+                    Ok(key) => {
+                        if creds.api_key.as_deref() != Some(&key) {
+                            let mut creds = creds;
+                            creds.api_key = Some(key);
+                            self.chat_state_handle.update_credentials(creds);
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        let hard_expired = !am.has_usable_token();
+                        tracing::warn!(
+                            error = % e, hard_expired, model = % model_id,
+                            "auth: preflight get_valid_token failed"
+                        );
+                        xai_grok_telemetry::unified_log::warn(
+                            "auth.preflight.refresh_failed",
+                            Some(self.session_info.id.0.as_ref()),
+                            Some(serde_json::json!(
+                                { "error" : format!("{e}"), "hard_expired" : hard_expired,
+                                "model" : model_id, }
+                            )),
+                        );
+                        return;
+                    }
                 }
-                return;
             }
         } else {
             xai_grok_telemetry::unified_log::debug(

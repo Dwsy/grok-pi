@@ -15,7 +15,7 @@ use crate::app::dispatch::ctx::{
 };
 use crate::app::dispatch::modes::inherit_auto_mode;
 use crate::app::dispatch::prompt::{defer_to_open_reload_window, supersede_open_reload_window};
-use crate::app::dispatch::queue::{maybe_drain_queue, note_peek_page_flip_after_drain};
+use crate::app::dispatch::queue::{maybe_drain_queue, note_peek_page_flip};
 use crate::app::dispatch::router::dispatch;
 use crate::app::dispatch::status::notify_session_ready;
 use crate::app::dispatch::transcript::extensions_modal_tab_fetches;
@@ -57,7 +57,7 @@ pub(in crate::app::dispatch) fn clear_stale_session_id(
     let sid = acp::SessionId::new(session_id);
     for agent in app.agents.values_mut() {
         if agent.session.session_id.as_ref() == Some(&sid) {
-            agent.session.session_id = None;
+            agent.unbind_session_id();
         }
     }
     sid
@@ -282,8 +282,7 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
             };
             let d = (entry.id.clone(), entry.source.clone(), entry.cwd.clone());
             app.session_picker_loading = false;
-            app.session_picker_state.query.clear();
-            app.session_picker_state.query_cursor = 0;
+            app.session_picker_state.set_query("");
             app.session_picker_state.search_active = false;
             app.session_picker_state.expanded.clear();
             app.session_picker_content_results = None;
@@ -402,8 +401,7 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
             };
             let d = (entry.id.clone(), entry.source.clone());
             app.session_picker_loading = false;
-            app.session_picker_state.query.clear();
-            app.session_picker_state.query_cursor = 0;
+            app.session_picker_state.set_query("");
             app.session_picker_state.search_active = false;
             app.session_picker_state.expanded.clear();
             d
@@ -460,7 +458,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
             entries.as_deref(),
             content_results.as_deref(),
             crate::views::session_picker::effective_filter_query(
-                &state.query,
+                state.query(),
                 entries_query.as_deref(),
             ),
             true,
@@ -482,7 +480,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
         app.session_picker_entries.as_deref(),
         app.session_picker_content_results.as_deref(),
         crate::views::session_picker::effective_filter_query(
-            &app.session_picker_state.query,
+            app.session_picker_state.query(),
             app.session_picker_entries_query.as_deref(),
         ),
         app.session_picker_grouped,
@@ -586,7 +584,7 @@ pub(in crate::app::dispatch) fn dispatch_trigger_deep_search(
             state.expanded.clear();
             return vec![];
         }
-        let query = state.query.trim().to_string();
+        let query = state.query().trim().to_string();
         *deep_search_seq += 1;
         let seq = *deep_search_seq;
         if query.len() < 2 {
@@ -607,7 +605,7 @@ pub(in crate::app::dispatch) fn dispatch_trigger_deep_search(
         app.session_picker_state.expanded.clear();
         return vec![];
     }
-    let query = app.session_picker_state.query.trim().to_string();
+    let query = app.session_picker_state.query().trim().to_string();
     app.session_picker_deep_search_seq += 1;
     let seq = app.session_picker_deep_search_seq;
     if query.len() < 2 {
@@ -633,9 +631,9 @@ fn dispatch_chat_search_refetch(app: &mut AppView, force: bool) -> Vec<Effect> {
     let query = if let Some(agent) = get_active_agent(app)
         && let Some(ActiveModal::SessionPicker { state, .. }) = agent.active_modal.as_ref()
     {
-        state.query.trim().to_string()
+        state.query().trim().to_string()
     } else {
-        app.session_picker_state.query.trim().to_string()
+        app.session_picker_state.query().trim().to_string()
     };
     app.session_picker_list_seq += 1;
     let seq = app.session_picker_list_seq;
@@ -952,7 +950,9 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         if let Some(directive) = agent.pending_first_prompt.take() {
             agent.session.enqueue_prompt_front(directive);
         }
-        effects.extend(maybe_drain_queue(agent));
+        let drain = maybe_drain_queue(agent);
+        let page_flip_entry = drain.page_flip_entry;
+        effects.extend(drain.effects);
         let cwd = agent.session.cwd.clone();
         effects.push(Effect::HydrateSessionTitleFromDisk {
             agent_id,
@@ -998,7 +998,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         });
         notify_session_ready(&app.notification_service, agent);
         crate::memory_release::release_retained_memory_with("session-load-replay");
-        note_peek_page_flip_after_drain(app, agent_id);
+        note_peek_page_flip(app, agent_id, page_flip_entry);
         return effects;
     }
     vec![]
@@ -1251,11 +1251,7 @@ fn dispatch_refresh_external_session_catalog_welcome(app: &mut AppView) -> Vec<E
     app.session_picker_detail_generation += 1;
     app.session_picker_loading = true;
     app.session_picker_entries = None;
-    app.session_picker_state.selected = 0;
-    app.session_picker_state.query.clear();
-    app.session_picker_state.query_cursor = 0;
-    app.session_picker_state.search_active = false;
-    app.session_picker_state.expanded.clear();
+    app.session_picker_state.reset();
     app.session_picker_content_results = None;
     app.session_picker_content_loading = false;
     app.session_picker_entries_query = None;

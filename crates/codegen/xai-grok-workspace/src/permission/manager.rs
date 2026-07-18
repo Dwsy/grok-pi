@@ -14,16 +14,19 @@ use crate::permission::bash_command_splitting::{
 use crate::permission::policy::CompiledPolicy;
 use crate::permission::prompter::{AcpPrompter, PromptOutcome};
 use crate::permission::shell_access::{
-    combine_decisions, command_write_paths_in_tree, is_safe_write_sink,
+    combine_decisions, command_write_paths_in_tree, edit_target_requires_prompt, is_safe_write_sink,
 };
 use crate::permission::state::{PermissionState, load_state_from_disk, persist_state};
 use crate::permission::types::{
-    AccessKind, ClientType, Decision, EditPolicy, PermissionCommand, PermissionEvent, PromptPolicy,
+    AccessKind, ClientType, Decision, EditPathContext, EditPolicy, PermissionCommand,
+    PermissionEvent, PromptPolicy,
 };
+use xai_grok_mcp::servers::parse_mcp_qualified_name;
 use xai_grok_paths::AbsPathBuf;
 use xai_grok_tools::implementations::grok_build::web_fetch::{
     DomainMatcher, domain::normalize_domain,
 };
+use xai_grok_tools::types::resources::resolve_model_path;
 
 /// Canonical `decision_reason` triggers for the uploaded artifact. Single source
 /// so the emit sites can't drift or misspell (the field doc lists these values).
@@ -97,17 +100,11 @@ pub enum PermissionHandle {
     AllowAll,
 }
 
-/// True iff `name` is an MCP tool whose server prefix (everything before the
-/// first `__`) is in `servers`. The empty-prefix guard rejects corrupt entries
-/// such as `{""}` or names like `"__tool"`.
+/// True iff `name` is a valid qualified MCP ID whose server is in `servers`.
+/// Malformed names fail closed, including `{""}` or names like `"__tool"`.
 fn mcp_server_prefix_allowed(name: &str, servers: &HashSet<String>) -> bool {
-    if servers.is_empty() {
-        return false;
-    }
-    let Some((server, _)) = name.split_once("__") else {
-        return false;
-    };
-    !server.is_empty() && servers.contains(server)
+    !servers.is_empty()
+        && parse_mcp_qualified_name(name).is_some_and(|(_, server, _)| servers.contains(server))
 }
 
 /// Pre-decision lookup for an MCP tool. Returns `Some(Decision::Allow)`
@@ -670,6 +667,28 @@ impl PermissionHandle {
         subagent_type: Option<String>,
         subagent_description: Option<String>,
     ) -> Decision {
+        self.request_with_edit_path_context(
+            access,
+            tool_call_update,
+            None,
+            session_id,
+            subagent_type,
+            subagent_description,
+        )
+        .await
+    }
+
+    /// Request permission with the edit tool's per-session execution cwd.
+    /// Shared parent/subagent managers must use this for `AccessKind::Edit`.
+    pub async fn request_with_edit_path_context(
+        &self,
+        access: AccessKind,
+        tool_call_update: acp::ToolCallUpdate,
+        edit_path_context: Option<EditPathContext>,
+        session_id: Option<String>,
+        subagent_type: Option<String>,
+        subagent_description: Option<String>,
+    ) -> Decision {
         match self {
             PermissionHandle::AllowAll => Decision::Allow,
             PermissionHandle::Actor {
@@ -682,6 +701,7 @@ impl PermissionHandle {
                 let msg = PermissionCommand::Request {
                     access,
                     tool_call_update,
+                    edit_path_context,
                     respond_to: tx,
                     session_id,
                     subagent_type,
@@ -708,6 +728,16 @@ impl PermissionHandle {
 /// enable always-approve while it is set.
 fn clamp_yolo(requested: bool, yolo_pin: Option<&'static str>) -> bool {
     requested && yolo_pin.is_none()
+}
+
+const MAX_RECORDED_PERMISSION_DECISIONS: usize = 12;
+
+fn prompted_decision_approved(decision: &Decision, outcome_str: &str) -> Option<bool> {
+    match decision {
+        Decision::Allow => Some(true),
+        Decision::Reject(_) if outcome_str != "error" => Some(false),
+        _ => None,
+    }
 }
 
 /// Whether an auto-forced prompt must neutralize a pre-decided `Allow`. True for
@@ -1034,6 +1064,8 @@ fn spawn_permission_manager_with_pin(
             Some(crate::permission::auto_mode::default_auto_mode_classifier());
         // Recent turns + project AGENTS.md for classifier context (set by session).
         let mut classifier_turns: Vec<crate::permission::auto_mode::ClassifierTurn> = Vec::new();
+        let mut recorded_permission_decisions: Vec<crate::permission::auto_mode::ClassifierTurn> =
+            Vec::new();
         let mut project_instructions: Option<String> = None;
         // Log a refused yolo-enable once per session, not per SetYoloMode.
         let mut pin_refusal_logged = false;
@@ -1100,7 +1132,8 @@ fn spawn_permission_manager_with_pin(
                 PermissionCommand::Request {
                     access,
                     tool_call_update,
-                    respond_to,
+                    edit_path_context,
+                    mut respond_to,
                     session_id: request_session_id,
                     subagent_type: request_subagent_type,
                     subagent_description: request_subagent_description,
@@ -1201,6 +1234,23 @@ fn spawn_permission_manager_with_pin(
                         AccessKind::Bash(cmd) => Some(evaluate_bash(cmd, &state, true)),
                         _ => None,
                     };
+                    let protected_edit = match (&access, edit_path_context.as_ref()) {
+                        (AccessKind::Edit(path), Some(context)) => {
+                            let resolved = resolve_model_path(
+                                &context.real_cwd,
+                                context.display_cwd.as_deref(),
+                                path,
+                            );
+                            edit_target_requires_prompt(&resolved)
+                        }
+                        // Direct workspace callers predate per-request context and execute
+                        // against the manager cwd; the shell always supplies context.
+                        (AccessKind::Edit(path), None) => {
+                            let resolved = resolve_model_path(cwd.as_path(), None, path);
+                            edit_target_requires_prompt(&resolved)
+                        }
+                        _ => false,
+                    };
 
                     // Evaluate managed policy (direct access + per-segment Bash command
                     // rules + Bash shell-file args) up front so the YOLO/sandbox fast
@@ -1262,6 +1312,7 @@ fn spawn_permission_manager_with_pin(
                     // Ask floors fall through so managed Ask / shell-file Ask stay binding.
                     if !policy_forced_prompt
                         && !shell_forced_prompt
+                        && !protected_edit
                         && let Some((decision, reason)) = session_grant_pre_decision(
                             &access,
                             bash_evaluation.as_ref(),
@@ -1295,7 +1346,8 @@ fn spawn_permission_manager_with_pin(
                             AutoFastPath, ClassifierVerdict, access_requires_user_interaction,
                             auto_mode_fast_path,
                         };
-                        let needs_user = access_requires_user_interaction(&tool_name, &access);
+                        let needs_user =
+                            protected_edit || access_requires_user_interaction(&tool_name, &access);
                         let fast = auto_mode_fast_path(&access, &tool_name, needs_user);
                         match fast {
                             AutoFastPath::Allow => {
@@ -1322,20 +1374,36 @@ fn spawn_permission_manager_with_pin(
                             AutoFastPath::Classify => {
                                 let verdict = if let Some(ref clf) = auto_classifier {
                                     use crate::permission::auto_mode::ClassifierContext;
-                                    clf.classify(
+                                    let mut turns = classifier_turns.clone();
+                                    turns.extend(recorded_permission_decisions.iter().cloned());
+                                    let classify = clf.classify(
                                         &tool_name,
                                         &access,
                                         access_detail.as_deref(),
                                         ClassifierContext {
-                                            turns: classifier_turns.clone(),
+                                            turns,
                                             project_instructions: project_instructions.clone(),
                                         },
-                                    )
-                                    .await
+                                    );
+                                    tokio::select! {
+                                        verdict = classify => Some(verdict),
+                                        _ = respond_to.closed() => None,
+                                    }
                                 } else {
                                     // No classifier wired: treat as unavailable, which
                                     // prompts the user (never a silent allow).
-                                    ClassifierVerdict::Unavailable
+                                    Some(ClassifierVerdict::Unavailable)
+                                };
+                                let Some(verdict) = verdict else {
+                                    tracing::info!(tool = %tool_name, "permission requester gone; classify abandoned");
+                                    emit_event(
+                                        &Decision::Cancelled,
+                                        false,
+                                        false,
+                                        None,
+                                        Some(reasons::REQUESTER_GONE),
+                                    );
+                                    continue;
                                 };
                                 // Allow runs without a prompt; Block/Unavailable
                                 // both surface the interactive picker (never a
@@ -1393,7 +1461,7 @@ fn spawn_permission_manager_with_pin(
                     // pre-decision match: a policy `Ask` rule on an MCP tool
                     // overrides the session allowlist and forces a re-prompt.
                     // Other access kinds keep their legacy fall-through behavior,
-                    // subject to Bash request floors.
+                    // subject to Bash request and protected-edit floors.
                     match policy_decision {
                         Some(Decision::Ask) => {
                             tracing::info!(
@@ -1403,12 +1471,13 @@ fn spawn_permission_manager_with_pin(
                             );
                         }
                         Some(Decision::Allow)
-                            if bash_request_floor_requires_prompt(bash_evaluation.as_ref()) =>
+                            if protected_edit
+                                || bash_request_floor_requires_prompt(bash_evaluation.as_ref()) =>
                         {
                             tracing::info!(
                                 tool = ?tool_name,
                                 source = "policy",
-                                "permission policy allow deferred to Bash prompt floor"
+                                "permission policy allow deferred to confirmation floor"
                             );
                         }
                         Some(decision) => {
@@ -1462,7 +1531,7 @@ fn spawn_permission_manager_with_pin(
                         )
                         .map(|d| (d, reasons::PERSISTED_GRANT)),
                         AccessKind::Edit(_) => {
-                            if allow_edits_for_session {
+                            if allow_edits_for_session && !protected_edit {
                                 Some((Decision::Allow, reasons::PERSISTED_GRANT))
                             } else {
                                 match state.edit_policy {
@@ -1592,6 +1661,17 @@ fn spawn_permission_manager_with_pin(
                     } else {
                         auto_prompt_reason.unwrap_or(reasons::NEEDS_USER)
                     };
+                    if respond_to.is_closed() {
+                        tracing::info!(tool = %tool_name, "permission requester gone; prompt suppressed");
+                        emit_event(
+                            &Decision::Cancelled,
+                            false,
+                            false,
+                            None,
+                            Some(reasons::REQUESTER_GONE),
+                        );
+                        continue;
+                    }
                     let (decision, outcome_str, user_prompted) = match &access {
                         AccessKind::Bash(cmd) => {
                             // Segment evaluation above still auto-allows fully-safe
@@ -1600,7 +1680,10 @@ fn spawn_permission_manager_with_pin(
                             // not open one permission UI per unsafe chained segment
                             // (e.g. `curl … && sh` must not become two separate
                             // prompts for `curl …` then `sh`).
-                            let prompt_outcome = prompter.request(&access, &tool_call_update).await;
+                            let prompt_outcome = tokio::select! {
+                                outcome = prompter.request(&access, &tool_call_update) => outcome,
+                                _ = respond_to.closed() => PromptOutcome::Cancelled,
+                            };
 
                             // One event per decision is emitted by the shared `emit_event`
                             // after this match; do not emit inline here.
@@ -1653,7 +1736,10 @@ fn spawn_permission_manager_with_pin(
                         }
                         _ => {
                             // Non-bash access kinds keep the single-prompt flow.
-                            let prompt_outcome = prompter.request(&access, &tool_call_update).await;
+                            let prompt_outcome = tokio::select! {
+                                outcome = prompter.request(&access, &tool_call_update) => outcome,
+                                _ = respond_to.closed() => PromptOutcome::Cancelled,
+                            };
                             let (decision, outcome_str) = match &prompt_outcome {
                                 PromptOutcome::AllowOnce => (Decision::Allow, "allow_once"),
                                 PromptOutcome::AllowEditsForSession => {
@@ -1712,20 +1798,15 @@ fn spawn_permission_manager_with_pin(
                                 }
                                 PromptOutcome::AllowAlwaysMcpServer(server_prefix) => {
                                     // Derive the canonical server prefix from the current
-                                    // AccessKind via `split_once("__")`. Validate the
-                                    // client-supplied prefix against it; on mismatch (or
-                                    // empty / no separator), downgrade to tool-scope using
-                                    // the access-kind name. This prevents a buggy or
-                                    // malicious client from whitelisting an unrelated
-                                    // server.
+                                    // AccessKind and validate the client-supplied prefix
+                                    // against it. On mismatch or malformed input, downgrade
+                                    // to tool-scope using the access-kind name.
                                     if let AccessKind::MCPTool {
                                         name: access_name, ..
                                     } = &access
                                     {
-                                        let canonical = access_name
-                                            .split_once("__")
-                                            .map(|(s, _)| s)
-                                            .filter(|s| !s.is_empty());
+                                        let canonical = parse_mcp_qualified_name(access_name)
+                                            .map(|(_, server, _)| server);
                                         match canonical {
                                             Some(canonical) if canonical == server_prefix => {
                                                 state
@@ -1739,10 +1820,9 @@ fn spawn_permission_manager_with_pin(
                                                 persist_state(&cwd, &state, client_id_ref).await;
                                             }
                                             _ => {
-                                                // Mismatch, empty prefix, or no `__` separator
-                                                // in the access name. Defensively downgrade to
-                                                // tool-scope on the access-kind name so the
-                                                // user is not re-prompted, but the blast
+                                                // Mismatch or malformed access name. Defensively
+                                                // downgrade to tool-scope on the access-kind name
+                                                // so the user is not re-prompted, but the blast
                                                 // radius is the smaller scope they actually
                                                 // saw.
                                                 tracing::warn!(
@@ -1783,12 +1863,39 @@ fn spawn_permission_manager_with_pin(
                             (decision, outcome_str, true)
                         }
                     };
+                    if user_prompted
+                        && let Some(approved) = prompted_decision_approved(&decision, outcome_str)
+                    {
+                        recorded_permission_decisions.push(
+                            crate::permission::auto_mode::ClassifierTurn::PermissionDecision {
+                                tool: tool_name.clone(),
+                                args: crate::permission::auto_mode::permission_decision_args(
+                                    &access,
+                                    access_detail.as_deref(),
+                                ),
+                                approved,
+                            },
+                        );
+                        let len = recorded_permission_decisions.len();
+                        if len > MAX_RECORDED_PERMISSION_DECISIONS {
+                            recorded_permission_decisions
+                                .drain(..len - MAX_RECORDED_PERMISSION_DECISIONS);
+                        }
+                    }
+                    let trigger = if matches!(decision, Decision::Cancelled)
+                        && respond_to.is_closed()
+                    {
+                        tracing::info!(tool = %tool_name, "permission requester gone; open prompt abandoned");
+                        reasons::REQUESTER_GONE
+                    } else {
+                        prompt_trigger
+                    };
                     emit_event(
                         &decision,
                         false,
                         user_prompted,
                         Some(outcome_str),
-                        Some(prompt_trigger),
+                        Some(trigger),
                     );
                     let _ = respond_to.send(decision);
                 }
@@ -2044,6 +2151,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_edit_grant_excludes_protected_target() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let transport = fake_hub(serde_json::json!({ "outcome": "always_approve" }));
+                let (mgr, _e) = test_manager_with_hub(&cwd, transport.clone());
+                for path in ["src/first.rs", "src/second.rs", "~/.zshrc"] {
+                    assert_eq!(
+                        mgr.request(AccessKind::Edit(path.into()), tool_call(), None, None, None)
+                            .await,
+                        Decision::Allow
+                    );
+                }
+                assert_eq!(transport.seen.lock().unwrap().len(), 2);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn shared_manager_uses_request_edit_path_context() {
+        use std::os::unix::fs::symlink;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let parent = tempfile::tempdir().unwrap();
+                let child = tempfile::tempdir().unwrap();
+                let display = tempfile::tempdir().unwrap();
+                symlink("/etc", child.path().join("link")).unwrap();
+                let parent_cwd = AbsPathBuf::new(parent.path().to_path_buf()).unwrap();
+                let transport = fake_hub(serde_json::json!({ "outcome": "approve" }));
+                let (mgr, _events) = test_manager_with_hub(&parent_cwd, transport.clone());
+                mgr.set_auto_mode(true);
+                let context = EditPathContext {
+                    real_cwd: child.path().to_path_buf(),
+                    display_cwd: Some(display.path().to_path_buf()),
+                };
+
+                for displayed in [
+                    display.path().join("link/hosts"),
+                    display.path().join("src.rs"),
+                ] {
+                    assert_eq!(
+                        mgr.request_with_edit_path_context(
+                            AccessKind::Edit(displayed.to_string_lossy().into_owned()),
+                            tool_call(),
+                            Some(context.clone()),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await,
+                        Decision::Allow
+                    );
+                }
+                assert_eq!(
+                    transport.seen.lock().unwrap().len(),
+                    1,
+                    "child protected target prompts; ordinary displayed child path stays auto"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
     async fn hub_permission_reject_aborts() {
         let local = tokio::task::LocalSet::new();
         local
@@ -2140,6 +2315,64 @@ mod tests {
                     1,
                     "always_approve must persist so the second call needs no hook"
                 );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ambiguous_mcp_server_scope_downgrades_to_exact_persisted_grant() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                for (name, forged_server) in [("a__b__c", "a"), ("foo___bar", "foo")] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                    let transport = fake_hub(serde_json::json!({
+                        "outcome": "always_approve",
+                        "scope": { "kind": "server_prefix", "value": forged_server },
+                    }));
+                    let (mgr, _e) = test_manager_with_hub(&cwd, transport.clone());
+                    let decision = mgr
+                        .request(
+                            AccessKind::MCPTool {
+                                name: name.into(),
+                                input: serde_json::Value::Null,
+                            },
+                            tool_call(),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                    assert_eq!(decision, Decision::Allow);
+
+                    let persisted = load_state_from_disk(&cwd, None).await;
+                    assert!(persisted.allowed_mcp_servers.is_empty(), "{name}");
+                    assert!(persisted.allowed_mcp_tools.contains(name), "{name}");
+                    assert!(matches!(
+                        mcp_pre_decision(name, &persisted, false, false),
+                        Some(Decision::Allow)
+                    ));
+
+                    let replay_transport = fake_hub(serde_json::json!({ "outcome": "reject" }));
+                    let (reloaded, _e) = test_manager_with_hub(&cwd, replay_transport.clone());
+                    assert_eq!(
+                        reloaded
+                            .request(
+                                AccessKind::MCPTool {
+                                    name: name.into(),
+                                    input: serde_json::Value::Null,
+                                },
+                                tool_call(),
+                                None,
+                                None,
+                                None,
+                            )
+                            .await,
+                        Decision::Allow
+                    );
+                    assert!(replay_transport.seen.lock().unwrap().is_empty());
+                }
             })
             .await;
     }
@@ -2657,11 +2890,10 @@ mod tests {
 
     /// Like [`manager_with_recording_client`] but lets a test pin the
     /// `remember_tool_approvals` gate (which decides whether an explicit grant
-    /// can satisfy an `ask` policy floor).
     fn manager_with_recording_client_remember(
         cwd: &AbsPathBuf,
         config: Option<crate::permission::types::PermissionConfig>,
-        client: RecordingClient,
+        client: impl acp::Client + 'static,
         client_type: ClientType,
         remember_tool_approvals: bool,
     ) -> (PermissionHandle, mpsc::UnboundedReceiver<PermissionEvent>) {
@@ -2688,6 +2920,488 @@ mod tests {
             acp::ToolCallId::new(Arc::from("tc")),
             acp::ToolCallUpdateFields::default(),
         )
+    }
+
+    struct ApprovingClient;
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for ApprovingClient {
+        async fn request_permission(
+            &self,
+            args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            let option_id = args
+                .options
+                .iter()
+                .find(|o| o.option_id.0.as_ref() == "allow-once")
+                .map(|o| o.option_id.clone())
+                .expect("prompt must offer allow-once");
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    option_id,
+                )),
+            ))
+        }
+
+        async fn session_notification(&self, _: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct CancellingClient;
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for CancellingClient {
+        async fn request_permission(
+            &self,
+            _: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Cancelled,
+            ))
+        }
+
+        async fn session_notification(&self, _: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ContextCapturingClassifier {
+        verdict: crate::permission::auto_mode::ClassifierVerdict,
+        seen: Arc<std::sync::Mutex<Vec<crate::permission::auto_mode::ClassifierContext>>>,
+    }
+
+    impl crate::permission::auto_mode::PermissionClassifier for ContextCapturingClassifier {
+        fn classify<'a>(
+            &'a self,
+            _tool_name: &'a str,
+            _access: &'a AccessKind,
+            _access_detail: Option<&'a str>,
+            context: crate::permission::auto_mode::ClassifierContext,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = crate::permission::auto_mode::ClassifierVerdict>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            self.seen.lock().unwrap().push(context);
+            let v = self.verdict;
+            Box::pin(async move { v })
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn capturing_classifier(
+        verdict: crate::permission::auto_mode::ClassifierVerdict,
+    ) -> (
+        crate::permission::auto_mode::SharedClassifier,
+        Arc<std::sync::Mutex<Vec<crate::permission::auto_mode::ClassifierContext>>>,
+    ) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Arc::new(ContextCapturingClassifier {
+                verdict,
+                seen: seen.clone(),
+            }),
+            seen,
+        )
+    }
+
+    #[test]
+    fn prompted_decision_approved_gates_allow_reject_only() {
+        assert_eq!(
+            prompted_decision_approved(&Decision::Allow, "allow_once"),
+            Some(true)
+        );
+        assert_eq!(
+            prompted_decision_approved(&Decision::Allow, "allow_always"),
+            Some(true)
+        );
+        assert_eq!(
+            prompted_decision_approved(&Decision::Reject("no".into()), "reject_once"),
+            Some(false)
+        );
+        assert_eq!(
+            prompted_decision_approved(&Decision::Reject("boom".into()), "error"),
+            None
+        );
+        assert_eq!(
+            prompted_decision_approved(&Decision::Cancelled, "cancelled"),
+            None
+        );
+        assert_eq!(
+            prompted_decision_approved(&Decision::FollowupMessage("do x".into()), "followup"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn prompted_allow_feeds_classifier_context() {
+        use crate::permission::auto_mode::{ClassifierTurn, ClassifierVerdict};
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let (mgr, _e) = manager_with_recording_client_remember(
+                    &cwd,
+                    None,
+                    ApprovingClient,
+                    ClientType::Generic,
+                    true,
+                );
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("my-custom-build --release".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow, "prompted allow-once must allow");
+
+                mgr.set_auto_mode(true);
+                mgr.set_classifier_transcript(vec![ClassifierTurn::UserText("build it".into())]);
+                let (clf, seen) = capturing_classifier(ClassifierVerdict::Allow);
+                mgr.set_classifier(Some(clf));
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("another-custom-tool".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow);
+
+                let seen = seen.lock().unwrap();
+                assert_eq!(seen.len(), 1, "exactly one classify call expected");
+                assert_eq!(
+                    seen[0].turns,
+                    vec![
+                        ClassifierTurn::UserText("build it".into()),
+                        ClassifierTurn::PermissionDecision {
+                            tool: "run_terminal_command".into(),
+                            args: r#"{"command":"my-custom-build --release"}"#.into(),
+                            approved: true,
+                        },
+                    ],
+                    "approval must follow the shell-set turns"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn prompted_reject_feeds_classifier_context_as_declined() {
+        use crate::permission::auto_mode::{ClassifierTurn, ClassifierVerdict};
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let (mgr, _e) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("deploy-widget --prod".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(
+                    matches!(d, Decision::Reject(_)),
+                    "prompted reject, got {d:?}"
+                );
+
+                mgr.set_auto_mode(true);
+                let (clf, seen) = capturing_classifier(ClassifierVerdict::Allow);
+                mgr.set_classifier(Some(clf));
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("my-custom-build --release".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow);
+
+                let seen = seen.lock().unwrap();
+                assert_eq!(
+                    seen[0].turns,
+                    vec![ClassifierTurn::PermissionDecision {
+                        tool: "run_terminal_command".into(),
+                        args: r#"{"command":"deploy-widget --prod"}"#.into(),
+                        approved: false,
+                    }],
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn policy_deny_and_auto_allow_record_no_decisions() {
+        use crate::permission::auto_mode::ClassifierVerdict;
+        use crate::permission::types::{
+            PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
+        };
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let config = PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Deny,
+                    tool: ToolFilter::Bash,
+                    pattern: Some("evil-tool*".to_owned()),
+                    pattern_mode: PatternMode::Glob,
+                }]);
+                let (mgr, _e) = manager_with_recording_client_remember(
+                    &cwd,
+                    Some(config),
+                    ApprovingClient,
+                    ClientType::Generic,
+                    true,
+                );
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("evil-tool --now".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(d, Decision::PolicyDeny(_)), "got {d:?}");
+
+                mgr.set_auto_mode(true);
+                let (clf, seen) = capturing_classifier(ClassifierVerdict::Allow);
+                mgr.set_classifier(Some(clf));
+                for cmd in ["my-custom-build --release", "second-custom-tool"] {
+                    let d = mgr
+                        .request(AccessKind::Bash(cmd.into()), tool_call(), None, None, None)
+                        .await;
+                    assert_eq!(d, Decision::Allow);
+                }
+                let seen = seen.lock().unwrap();
+                assert_eq!(seen.len(), 2);
+                assert!(
+                    seen[1].turns.is_empty(),
+                    "policy deny + auto allow must record nothing, got {:?}",
+                    seen[1].turns
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_and_error_prompts_record_no_decisions() {
+        use crate::permission::auto_mode::ClassifierVerdict;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let (mgr, _e) = manager_with_recording_client_remember(
+                    &cwd,
+                    None,
+                    CancellingClient,
+                    ClientType::Generic,
+                    true,
+                );
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("my-custom-build --release".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Cancelled);
+                mgr.set_auto_mode(true);
+                let (clf, seen) = capturing_classifier(ClassifierVerdict::Allow);
+                mgr.set_classifier(Some(clf));
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("post-cancel-tool".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow);
+                assert!(
+                    seen.lock().unwrap()[0].turns.is_empty(),
+                    "cancelled prompt must record nothing"
+                );
+
+                let tmp2 = tempfile::tempdir().unwrap();
+                let cwd2 = AbsPathBuf::new(tmp2.path().to_path_buf()).unwrap();
+                let (mgr2, _e2) = test_manager(&cwd2, false, None);
+                let d = mgr2
+                    .request(
+                        AccessKind::Bash("my-custom-build --release".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert!(matches!(d, Decision::Reject(_)), "got {d:?}");
+                mgr2.set_auto_mode(true);
+                let (clf2, seen2) = capturing_classifier(ClassifierVerdict::Allow);
+                mgr2.set_classifier(Some(clf2));
+                let d = mgr2
+                    .request(
+                        AccessKind::Bash("post-error-tool".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow);
+                assert!(
+                    seen2.lock().unwrap()[0].turns.is_empty(),
+                    "prompt transport error must record nothing"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn decision_history_capped_at_most_recent() {
+        use crate::permission::auto_mode::{ClassifierTurn, ClassifierVerdict};
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let (mgr, _e) = manager_with_recording_client_remember(
+                    &cwd,
+                    None,
+                    ApprovingClient,
+                    ClientType::Generic,
+                    true,
+                );
+                for i in 0..=MAX_RECORDED_PERMISSION_DECISIONS {
+                    let d = mgr
+                        .request(
+                            AccessKind::Bash(format!("custom-tool-{i} --run")),
+                            tool_call(),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                    assert_eq!(d, Decision::Allow);
+                }
+                mgr.set_auto_mode(true);
+                let (clf, seen) = capturing_classifier(ClassifierVerdict::Allow);
+                mgr.set_classifier(Some(clf));
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("capstone-tool".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow);
+
+                let seen = seen.lock().unwrap();
+                let turns = &seen[0].turns;
+                assert_eq!(turns.len(), MAX_RECORDED_PERMISSION_DECISIONS);
+                assert_eq!(
+                    turns[0],
+                    ClassifierTurn::PermissionDecision {
+                        tool: "run_terminal_command".into(),
+                        args: r#"{"command":"custom-tool-1 --run"}"#.into(),
+                        approved: true,
+                    }
+                );
+                assert_eq!(
+                    turns[turns.len() - 1],
+                    ClassifierTurn::PermissionDecision {
+                        tool: "run_terminal_command".into(),
+                        args: format!(
+                            r#"{{"command":"custom-tool-{MAX_RECORDED_PERMISSION_DECISIONS} --run"}}"#
+                        ),
+                        approved: true,
+                    }
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn transcript_refresh_preserves_decision_history() {
+        use crate::permission::auto_mode::{ClassifierTurn, ClassifierVerdict};
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let (mgr, _e) = manager_with_recording_client_remember(
+                    &cwd,
+                    None,
+                    ApprovingClient,
+                    ClientType::Generic,
+                    true,
+                );
+                mgr.set_classifier_transcript(vec![ClassifierTurn::UserText("first".into())]);
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("my-custom-build --release".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow);
+
+                mgr.set_classifier_transcript(vec![ClassifierTurn::UserText("second".into())]);
+                mgr.set_auto_mode(true);
+                let (clf, seen) = capturing_classifier(ClassifierVerdict::Allow);
+                mgr.set_classifier(Some(clf));
+                let d = mgr
+                    .request(
+                        AccessKind::Bash("another-tool".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                assert_eq!(d, Decision::Allow);
+
+                let seen = seen.lock().unwrap();
+                assert_eq!(
+                    seen[0].turns,
+                    vec![
+                        ClassifierTurn::UserText("second".into()),
+                        ClassifierTurn::PermissionDecision {
+                            tool: "run_terminal_command".into(),
+                            args: r#"{"command":"my-custom-build --release"}"#.into(),
+                            approved: true,
+                        },
+                    ],
+                    "refresh must replace shell turns but keep decision history"
+                );
+            })
+            .await;
     }
 
     /// Regression: an `Ask Bash(ls*)` rule on `ls` — which bash-safety would
@@ -2929,6 +3643,59 @@ mod tests {
             .await;
     }
 
+    #[tokio::test]
+    async fn protected_edit_floor_covers_auto_config_allow_and_dont_ask() {
+        use crate::permission::types::{PermissionRule, RuleAction, ToolFilter};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut auto = crate::permission::types::PermissionConfig::new(vec![]);
+                auto.prompt_policy = PromptPolicy::Auto;
+                let allow = crate::permission::types::PermissionConfig::new(vec![PermissionRule {
+                    action: RuleAction::Allow,
+                    tool: ToolFilter::Edit,
+                    pattern: None,
+                    pattern_mode: Default::default(),
+                }]);
+                let mut deny = crate::permission::types::PermissionConfig::new(vec![]);
+                deny.prompt_policy = PromptPolicy::Deny;
+
+                for (name, config, expected_prompts, policy_deny) in [
+                    ("auto", auto, 1, false),
+                    ("configured allow", allow, 1, false),
+                    ("dontAsk", deny, 0, true),
+                ] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                    let client = RecordingClient::default();
+                    let prompts = client.prompts.clone();
+                    let (mgr, _events) = manager_with_recording_client(
+                        &cwd,
+                        Some(config),
+                        client,
+                        ClientType::Generic,
+                    );
+                    let decision = mgr
+                        .request(
+                            AccessKind::Edit("/etc/hosts".into()),
+                            tool_call(),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                    assert_eq!(prompts.borrow().len(), expected_prompts, "{name}");
+                    if policy_deny {
+                        assert!(matches!(decision, Decision::PolicyDeny(_)), "{name}");
+                    } else {
+                        assert!(matches!(decision, Decision::Reject(_)), "{name}");
+                    }
+                }
+            })
+            .await;
+    }
+
     #[test]
     fn sandbox_auto_allow_respects_real_file_write_floor() {
         let state = PermissionState::default();
@@ -2979,6 +3746,179 @@ mod tests {
                     d,
                     Decision::Allow,
                     "bash-safe `ls` with no policy must auto-allow, got {d:?}"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn dead_requester_is_skipped_without_prompting() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let client = RecordingClient::default();
+                let prompts = client.prompts.clone();
+                let (mgr, mut events) =
+                    manager_with_recording_client(&cwd, None, client, ClientType::Generic);
+
+                let PermissionHandle::Actor { ref cmd_tx, .. } = mgr else {
+                    panic!("recording-client manager must be actor-backed");
+                };
+                let (tx, rx) = oneshot::channel::<Decision>();
+                drop(rx);
+                cmd_tx
+                    .send(PermissionCommand::Request {
+                        access: AccessKind::Bash("curl http://example.com".into()),
+                        tool_call_update: tool_call(),
+                        edit_path_context: None,
+                        respond_to: tx,
+                        session_id: None,
+                        subagent_type: None,
+                        subagent_description: None,
+                    })
+                    .expect("actor alive");
+
+                let d = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    mgr.request(
+                        AccessKind::Bash("curl http://example.com".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    ),
+                )
+                .await
+                .expect("control request must resolve, not hang");
+
+                assert_eq!(
+                    prompts.borrow().len(),
+                    1,
+                    "only the control request may prompt; the dead request must be skipped"
+                );
+                assert!(
+                    matches!(d, Decision::Reject(_)),
+                    "control decision must reflect the prompt answer, got {d:?}"
+                );
+                let ev = events
+                    .try_recv()
+                    .expect("the skipped request must still emit an artifact event");
+                assert_eq!(ev.decision, "cancelled");
+                assert_eq!(ev.decision_reason.as_deref(), Some("requester_gone"));
+                assert!(!ev.user_prompted, "skipped request must never prompt");
+            })
+            .await;
+    }
+
+    struct HangingFirstPromptClient {
+        prompts: std::rc::Rc<std::cell::RefCell<Vec<acp::RequestPermissionRequest>>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl acp::Client for HangingFirstPromptClient {
+        async fn request_permission(
+            &self,
+            args: acp::RequestPermissionRequest,
+        ) -> acp::Result<acp::RequestPermissionResponse> {
+            let first = self.prompts.borrow().is_empty();
+            self.prompts.borrow_mut().push(args.clone());
+            if first {
+                futures::future::pending::<()>().await;
+                unreachable!("pending() never resolves");
+            }
+            let option_id = args
+                .options
+                .iter()
+                .find(|o| o.kind == acp::PermissionOptionKind::RejectOnce)
+                .map(|o| o.option_id.clone())
+                .expect("prompt must offer a reject-once option");
+            Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    option_id,
+                )),
+            ))
+        }
+
+        async fn session_notification(&self, _: acp::SessionNotification) -> acp::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn requester_death_mid_prompt_frees_actor() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let cwd = AbsPathBuf::new(tmp.path().to_path_buf()).unwrap();
+                let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                let client = HangingFirstPromptClient {
+                    prompts: prompts.clone(),
+                };
+                let (gateway, receiver) = xai_acp_lib::acp_gateway::<acp::AgentSide, _>(client);
+                tokio::task::spawn_local(receiver.run());
+                let (mgr, _events) = spawn_permission_manager_with_pin(
+                    acp::SessionId::new(Arc::from("test-session")),
+                    gateway,
+                    cwd.clone(),
+                    ClientType::Generic,
+                    None,
+                    vec![],
+                    vec![],
+                    false,
+                    None,
+                    true,
+                    None,
+                    None,
+                );
+                let PermissionHandle::Actor { ref cmd_tx, .. } = mgr else {
+                    panic!("manager must be actor-backed");
+                };
+
+                let (tx, rx) = oneshot::channel::<Decision>();
+                cmd_tx
+                    .send(PermissionCommand::Request {
+                        access: AccessKind::Bash("curl http://example.com".into()),
+                        tool_call_update: tool_call(),
+                        edit_path_context: None,
+                        respond_to: tx,
+                        session_id: None,
+                        subagent_type: None,
+                        subagent_description: None,
+                    })
+                    .expect("actor alive");
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while prompts.borrow().is_empty() {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("first prompt must open");
+                drop(rx);
+
+                let d = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    mgr.request(
+                        AccessKind::Bash("curl http://example.com".into()),
+                        tool_call(),
+                        None,
+                        None,
+                        None,
+                    ),
+                )
+                .await
+                .expect("requests behind a dead prompt must not hang");
+
+                assert!(
+                    matches!(d, Decision::Reject(_)),
+                    "follow-up decision must reflect its own prompt answer, got {d:?}"
+                );
+                assert_eq!(
+                    prompts.borrow().len(),
+                    2,
+                    "both prompts open; only the dead one is abandoned"
                 );
             })
             .await;
@@ -4415,10 +5355,13 @@ mod tests {
 
         #[test]
         fn server_prefix_match_allows() {
-            assert!(mcp_server_prefix_allowed(
-                "linear__list",
-                &servers(&["linear"])
-            ));
+            for (name, server) in [
+                ("linear__list", "linear"),
+                ("123__lookup", "123"),
+                ("server:scope__tool", "server:scope"),
+            ] {
+                assert!(mcp_server_prefix_allowed(name, &servers(&[server])));
+            }
         }
 
         #[test]
@@ -4427,8 +5370,24 @@ mod tests {
         }
 
         #[test]
-        fn no_separator_rejects() {
-            assert!(!mcp_server_prefix_allowed("linear", &servers(&["linear"])));
+        fn malformed_names_do_not_consume_server_grants() {
+            for (name, server) in [
+                ("server__part__tool", "server"),
+                ("server__tool__part", "server"),
+                ("foo___bar", "foo"),
+                ("foo___bar", "foo_"),
+                ("foo____bar", "foo"),
+                ("server__", "server"),
+                ("server", "server"),
+                ("__tool", ""),
+                ("", ""),
+                ("server__bad.tool", "server"),
+            ] {
+                assert!(
+                    !mcp_server_prefix_allowed(name, &servers(&[server])),
+                    "unexpectedly allowed {name:?}"
+                );
+            }
         }
 
         #[test]
@@ -4448,9 +5407,8 @@ mod tests {
         }
 
         #[test]
-        fn first_double_underscore_anchors_split() {
-            // "a__b__c" splits into ("a", "b__c"); server "a" matches.
-            assert!(mcp_server_prefix_allowed("a__b__c", &servers(&["a"])));
+        fn multiple_delimiters_do_not_inherit_first_segment_grant() {
+            assert!(!mcp_server_prefix_allowed("a__b__c", &servers(&["a"])));
         }
 
         #[test]
@@ -4464,20 +5422,16 @@ mod tests {
         }
 
         #[test]
-        fn empty_tool_name_after_prefix_still_allowed() {
-            // The MCP server is responsible for rejecting empty tool names;
-            // the prefix match is what gates access.
-            assert!(mcp_server_prefix_allowed("foo__", &servers(&["foo"])));
-        }
-
-        #[test]
         fn pre_decision_tool_grant_allows() {
             let mut state = PermissionState::default();
             state.allowed_mcp_tools.insert("linear__list".to_string());
-            assert!(matches!(
-                mcp_pre_decision("linear__list", &state, false, false),
-                Some(Decision::Allow)
-            ));
+            state.allowed_mcp_tools.insert("a__b__c".to_string());
+            for name in ["linear__list", "a__b__c"] {
+                assert!(matches!(
+                    mcp_pre_decision(name, &state, false, false),
+                    Some(Decision::Allow)
+                ));
+            }
         }
 
         #[test]
@@ -4636,10 +5590,8 @@ mod tests {
             .await;
     }
 
-    /// Auto mode accepts ALL file edits via the fast path regardless of location
-    /// (the accept-all-edits product decision, no workspace restriction): both an
-    /// in-cwd edit and an absolute path clearly OUTSIDE cwd fast-path Allow. The
-    /// fast path is path-independent, so the target file need not exist.
+    /// Auto mode accepts ordinary file edits via the fast path regardless of
+    /// location (the accept-all-edits product decision, no workspace restriction).
     #[tokio::test]
     async fn auto_mode_edit_fast_path_allows() {
         let local = tokio::task::LocalSet::new();
@@ -4656,7 +5608,6 @@ mod tests {
                     )
                 };
 
-                // In-cwd edit → Allow (file need not exist).
                 let in_cwd = tmp.path().join("f.rs").to_string_lossy().into_owned();
                 let d = mgr
                     .request(AccessKind::Edit(in_cwd), mk("tc-edit-in"), None, None, None)
@@ -4666,10 +5617,9 @@ mod tests {
                     "in-cwd edit under auto must fast-path allow, got {d:?}"
                 );
 
-                // Out-of-workspace absolute edit → Allow too (no workspace restriction).
                 let d = mgr
                     .request(
-                        AccessKind::Edit("/etc/hosts".into()),
+                        AccessKind::Edit("/tmp/out-of-ws.rs".into()),
                         mk("tc-edit-out"),
                         None,
                         None,

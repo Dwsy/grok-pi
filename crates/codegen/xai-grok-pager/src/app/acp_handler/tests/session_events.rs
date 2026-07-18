@@ -155,10 +155,12 @@
         }
     }
 
+    /// Production `RetryState::Exhausted.reason` is `SamplingError::Api`'s
+    /// Display: `API error (status 429 Too Many Requests): …`.
     #[test]
     fn retry_exhausted_rate_limited_surfaces_server_detail() {
-        let reason =
-            "The model is currently at capacity due to high demand. Please try again.".to_string();
+        let body = "The model is currently at capacity due to high demand. Please try again.";
+        let reason = format!("API error (status 429 Too Many Requests): {body}");
         let exhausted = RetryState::Exhausted {
             attempts: 3,
             reason: reason.clone(),
@@ -170,7 +172,8 @@
         apply_retry_state(&exhausted, &mut session, &mut scrollback, false);
         match last_session_event(&scrollback) {
             Some(SessionEvent::RetryFailed { error, .. }) => {
-                assert_eq!(error, reason);
+                assert_eq!(error, body);
+                assert!(!error.contains("API error (status"));
             }
             other => panic!("expected detail RetryFailed, got {other:?}"),
         }
@@ -182,7 +185,8 @@
 
         let rpm = RetryState::Exhausted {
             attempts: 2,
-            reason: "Some resource has been exhausted: You are sending requests too quickly. \
+            reason: "API error (status 429 Too Many Requests): \
+                     Some resource has been exhausted: You are sending requests too quickly. \
                      Please slow down, or upgrade to a Grok subscription for higher limits: \
                      https://grok.com/supergrok"
                 .into(),

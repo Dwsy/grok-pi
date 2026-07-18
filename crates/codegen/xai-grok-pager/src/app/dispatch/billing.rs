@@ -1,6 +1,6 @@
 //! Subscription tier checks, credit-limit upsells, and auto-topup handling.
 
-use super::queue::{maybe_drain_queue, note_peek_page_flip_after_drain};
+use super::queue::{maybe_drain_queue, note_peek_page_flip};
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
@@ -9,9 +9,6 @@ use crate::scrollback::block::RenderBlock;
 use std::time::Duration;
 use xai_grok_telemetry::events::{SuperGrokUpsell, SuperGrokUpsellClicked};
 use xai_grok_telemetry::session_ctx::log_event;
-
-// Free-usage detection lives in shell next to the well-known code + 429 copy.
-pub(crate) use xai_grok_shell::sampling::error::is_free_usage_exhausted_error;
 
 /// How long the pager auto-checks subscription status before stopping.
 /// After this, the user can still manually check via the [Refresh] button.
@@ -523,13 +520,13 @@ pub(super) fn handle_credit_limit_recheck_complete(
     // Either way, drop the stashed prompt.
     agent.credit_limit_stashed_prompt = None;
 
-    let mut effects = maybe_drain_queue(agent);
-    effects.push(Effect::FetchBilling {
+    let mut drain = maybe_drain_queue(agent);
+    drain.effects.push(Effect::FetchBilling {
         agent_id,
         silent: true,
     });
-    note_peek_page_flip_after_drain(app, agent_id);
-    effects
+    note_peek_page_flip(app, agent_id, drain.page_flip_entry);
+    drain.effects
 }
 
 // Action handlers.

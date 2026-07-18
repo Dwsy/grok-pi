@@ -5,12 +5,15 @@ use ratatui::layout::Rect;
 
 use super::render::int_step_sizes;
 use super::state::{
-    RowEntry, SettingsKeyOutcome, SettingsModalMode, SettingsModalState, action_for_bool,
-    action_for_enum, action_for_enum_commit, action_for_int, action_for_string,
-    effective_enum_choices, group_children, validate_int, validate_string,
+    RowEntry, SettingsKeyOutcome, SettingsModalState, SettingsMode, SettingsModeKind,
+    action_for_bool, action_for_enum, action_for_enum_commit, action_for_int, action_for_string,
+    effective_enum_choices, group_children, validate_string,
 };
 use crate::app::actions::Action;
-use crate::settings::{SettingKey, SettingKind, SettingValue, dynamic_enum_choices};
+use crate::input::line_editor::LineEditOutcome;
+use crate::settings::{
+    SettingKey, SettingKind, SettingValue, StringValidator, dynamic_enum_choices,
+};
 
 // ---------------------------------------------------------------------------
 // Key handling
@@ -38,22 +41,50 @@ pub fn handle_settings_key(state: &mut SettingsModalState, key: &KeyEvent) -> Se
     }
 
     // Exhaustive per-mode dispatch.
-    match state.mode {
-        SettingsModalMode::Browse => handle_browse(state, key),
-        SettingsModalMode::FilterFocused => handle_filter_focused(state, key),
-        SettingsModalMode::PickingEnum { .. } => handle_picking_enum(state, key),
-        SettingsModalMode::PickingGroup { .. } => handle_picking_group(state, key),
-        SettingsModalMode::EditingValue { .. } => handle_editing_value(state, key),
+    match state.state.mode_kind() {
+        SettingsModeKind::Browse => handle_browse(state, key),
+        SettingsModeKind::FilterFocused => handle_filter_focused(state, key),
+        SettingsModeKind::PickingEnum => handle_picking_enum(state, key),
+        SettingsModeKind::PickingGroup => handle_picking_group(state, key),
+        SettingsModeKind::EditingString | SettingsModeKind::EditingInt => {
+            handle_editing_value(state, key)
+        }
+    }
+}
+
+pub fn handle_settings_paste(state: &mut SettingsModalState, text: &str) -> SettingsKeyOutcome {
+    match state.state.mode_kind() {
+        SettingsModeKind::FilterFocused => {
+            let outcome = state.state.filter.insert_paste(text);
+            apply_filter_edit(state, outcome)
+        }
+        SettingsModeKind::EditingString => {
+            let (validator, outcome) = {
+                let SettingsMode::EditingString {
+                    editor, validator, ..
+                } = &mut state.state.mode
+                else {
+                    unreachable!("mode kind changed before paste")
+                };
+                (
+                    *validator,
+                    editor.insert_paste_with_policy(text, safe_settings_char, usize::MAX),
+                )
+            };
+            apply_string_edit(state, validator, outcome)
+        }
+        SettingsModeKind::Browse
+        | SettingsModeKind::PickingEnum
+        | SettingsModeKind::PickingGroup
+        | SettingsModeKind::EditingInt => SettingsKeyOutcome::Unchanged,
     }
 }
 
 /// Enum chooser key routing. Up/Down dispatches preview actions,
 /// Enter commits current choice, Esc reverts to original value.
 fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyOutcome {
-    // Snapshot the current picker state under an immutable borrow so
-    // the subsequent `state.mode = ...` writes are unambiguous.
-    let (setting_key, choices_idx, original_value, supports_preview) = match &state.mode {
-        SettingsModalMode::PickingEnum {
+    let (setting_key, choices_idx, original_value, supports_preview) = match &state.state.mode {
+        SettingsMode::PickingEnum {
             key,
             choices_idx,
             original_value,
@@ -64,7 +95,7 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
             original_value.clone(),
             *supports_preview,
         ),
-        _ => return SettingsKeyOutcome::Unchanged,
+        _ => unreachable!("picker handler requires PickingEnum state"),
     };
 
     match key.code {
@@ -170,9 +201,9 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
 /// Space/Enter toggles the focused child in place (the sheet stays open);
 /// Esc returns to Browse.
 fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyOutcome {
-    let (group_key, child_idx) = match &state.mode {
-        SettingsModalMode::PickingGroup { key, child_idx } => (*key, *child_idx),
-        _ => return SettingsKeyOutcome::Unchanged,
+    let (group_key, child_idx) = match &state.state.mode {
+        SettingsMode::PickingGroup { key, child_idx } => (*key, *child_idx),
+        _ => unreachable!("group handler requires PickingGroup state"),
     };
     let children = group_children(state, group_key);
     if children.is_empty() {
@@ -186,20 +217,14 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
             if child_idx + 1 >= children.len() {
                 return SettingsKeyOutcome::Unchanged;
             }
-            state.mode = SettingsModalMode::PickingGroup {
-                key: group_key,
-                child_idx: child_idx + 1,
-            };
+            state.transition_to_picking_group(group_key, child_idx + 1);
             SettingsKeyOutcome::Changed
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if child_idx == 0 {
                 return SettingsKeyOutcome::Unchanged;
             }
-            state.mode = SettingsModalMode::PickingGroup {
-                key: group_key,
-                child_idx: child_idx - 1,
-            };
+            state.transition_to_picking_group(group_key, child_idx - 1);
             SettingsKeyOutcome::Changed
         }
         // Space/Enter toggle the focused child Bool and stay in the sheet so the
@@ -245,12 +270,7 @@ pub(super) fn set_picker_idx(
         // for refactor safety.
         return SettingsKeyOutcome::Unchanged;
     }
-    state.mode = SettingsModalMode::PickingEnum {
-        key: setting_key,
-        choices_idx: new_idx,
-        supports_preview,
-        original_value,
-    };
+    state.transition_to_picking_enum(setting_key, new_idx, original_value, supports_preview);
     // Preview dispatch for static Enums with preview support.
     if supports_preview
         && let Some(new_canonical) = picker_choice_at(state, setting_key, new_idx)
@@ -265,157 +285,112 @@ pub(super) fn set_picker_idx(
 /// String mode: free-form text with cursor. Int mode: range-aware stepper
 /// (Up/Down small, Left/Right large; see [`int_step_sizes`]), clamped to [min,max].
 fn handle_editing_value(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyOutcome {
-    // Snapshot mode payload under an immutable borrow.
-    let (setting_key, buffer, cursor_byte, validation_error) = match &state.mode {
-        SettingsModalMode::EditingValue {
-            key,
-            buffer,
-            cursor_byte,
-            validation_error,
-        } => (*key, buffer.clone(), *cursor_byte, validation_error.clone()),
-        _ => return SettingsKeyOutcome::Unchanged,
-    };
-
-    // Look up the registered kind so we know how to handle this
-    // edit. The lookup is `&self`-only.
-    let Some(meta) = state.registry.find(setting_key) else {
-        // Registry skew — log and exit. The CI guards catch this.
-        tracing::error!(
-            target: "settings",
-            key = setting_key,
-            "EditingValue mode references an unregistered key — exiting to Browse",
-        );
-        state.transition_to_browse();
-        return SettingsKeyOutcome::Changed;
-    };
-    let kind_snapshot = meta.kind.clone();
-
     // Int settings dispatch through a stepper-only
     // handler. All char-input / cursor-pan / Backspace / Delete /
     // Home / End keys are rejected; only Up/Down/Left/Right (and
     // j/k/h/l aliases), Enter, and Esc do anything.
-    if matches!(kind_snapshot, SettingKind::Int { .. }) {
-        return handle_int_stepper(state, key, setting_key, &buffer, &kind_snapshot);
+    if let SettingsMode::EditingInt {
+        key: setting_key,
+        buffer,
+        min,
+        max,
+    } = &state.state.mode
+    {
+        let setting_key = *setting_key;
+        let buffer = buffer.clone();
+        return handle_int_stepper(state, key, setting_key, &buffer, *min, *max);
     }
 
-    match key.code {
-        KeyCode::Esc => {
-            state.transition_to_browse();
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Enter => {
-            // Commit gate: re-validate against the current buffer.
-            // On failure, refresh the inline error and stay in
-            // EditingValue.
-            let error = match &kind_snapshot {
-                SettingKind::String { validator, .. } => {
-                    validate_string(*validator, &buffer, &state.pager_snapshot.available_models)
-                }
-                _ => return SettingsKeyOutcome::Unchanged,
+    let (setting_key, validator) = match &state.state.mode {
+        SettingsMode::EditingString { key, validator, .. } => (*key, *validator),
+        _ => unreachable!("editing handler requires String or Int state"),
+    };
+
+    if key.code == KeyCode::Enter {
+        let SettingsMode::EditingString { editor, .. } = &state.state.mode else {
+            unreachable!("String editor state changed during commit");
+        };
+        let text = editor.text().to_owned();
+        let error = validate_string(validator, &text, &state.pager_snapshot.available_models);
+        if error.is_some() {
+            let SettingsMode::EditingString {
+                validation_error, ..
+            } = &mut state.state.mode
+            else {
+                unreachable!("String editor state changed during validation");
             };
-            if error.is_some() {
-                update_editing_value_buffer(state, buffer, cursor_byte, error);
-                return SettingsKeyOutcome::Unchanged;
+            *validation_error = error;
+            return SettingsKeyOutcome::Unchanged;
+        }
+        let action = action_for_string(setting_key, text, &state.pager_snapshot);
+        state.transition_to_browse();
+        return match action {
+            Some(action) => SettingsKeyOutcome::Action(action),
+            None => {
+                tracing::error!(
+                    target: "settings",
+                    key = setting_key,
+                    "EditingValue commit has no action_for_string arm — registry skew",
+                );
+                SettingsKeyOutcome::Changed
             }
-            // Dispatch the typed Action and transition to Browse.
-            let action_opt = match &kind_snapshot {
-                SettingKind::String { .. } => {
-                    action_for_string(setting_key, buffer.clone(), &state.pager_snapshot)
-                }
-                _ => None,
+        };
+    }
+
+    if key.code == KeyCode::Esc {
+        state.transition_to_browse();
+        return SettingsKeyOutcome::Changed;
+    }
+
+    if matches!(
+        key.code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Tab
+            | KeyCode::BackTab
+    ) {
+        return SettingsKeyOutcome::Unchanged;
+    }
+
+    let outcome = {
+        let SettingsMode::EditingString { editor, .. } = &mut state.state.mode else {
+            unreachable!("String editor state changed before key handling");
+        };
+        editor.handle_key_with_insert_policy(key, safe_settings_char)
+    };
+    apply_string_edit(state, validator, outcome)
+}
+
+fn apply_string_edit(
+    state: &mut SettingsModalState,
+    validator: StringValidator,
+    outcome: LineEditOutcome,
+) -> SettingsKeyOutcome {
+    match outcome {
+        LineEditOutcome::TextChanged => {
+            let SettingsMode::EditingString { editor, .. } = &state.state.mode else {
+                unreachable!("String editor state changed after text mutation");
             };
-            state.transition_to_browse();
-            match action_opt {
-                Some(action) => SettingsKeyOutcome::Action(action),
-                None => {
-                    tracing::error!(
-                        target: "settings",
-                        key = setting_key,
-                        "EditingValue commit has no action_for_string arm — registry skew",
-                    );
-                    SettingsKeyOutcome::Changed
-                }
-            }
-        }
-        KeyCode::Backspace => {
-            if cursor_byte == 0 {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            let mut new_buf = buffer.clone();
-            // Find the prev char boundary.
-            let prev = (0..cursor_byte)
-                .rev()
-                .find(|&i| new_buf.is_char_boundary(i))
-                .unwrap_or(0);
-            new_buf.replace_range(prev..cursor_byte, "");
-            let new_cursor = prev;
-            let new_error = recompute_validation(&kind_snapshot, &new_buf, state);
-            update_editing_value_buffer(state, new_buf, new_cursor, new_error);
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Delete => {
-            if cursor_byte >= buffer.len() {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            let mut new_buf = buffer.clone();
-            // Find next char boundary.
-            let next = (cursor_byte + 1..=new_buf.len())
-                .find(|&i| new_buf.is_char_boundary(i))
-                .unwrap_or(new_buf.len());
-            new_buf.replace_range(cursor_byte..next, "");
-            let new_error = recompute_validation(&kind_snapshot, &new_buf, state);
-            update_editing_value_buffer(state, new_buf, cursor_byte, new_error);
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Left => {
-            if cursor_byte == 0 {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            let prev = (0..cursor_byte)
-                .rev()
-                .find(|&i| buffer.is_char_boundary(i))
-                .unwrap_or(0);
-            update_editing_value_buffer(state, buffer, prev, validation_error);
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Right => {
-            if cursor_byte >= buffer.len() {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            let next = (cursor_byte + 1..=buffer.len())
-                .find(|&i| buffer.is_char_boundary(i))
-                .unwrap_or(buffer.len());
-            update_editing_value_buffer(state, buffer, next, validation_error);
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Home => {
-            update_editing_value_buffer(state, buffer, 0, validation_error);
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::End => {
-            let end = buffer.len();
-            update_editing_value_buffer(state, buffer, end, validation_error);
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-            // Defense-in-depth for the (currently unused) String editor path:
-            // reject control + bidi/format chars so a future `String` setting
-            // can't reintroduce the Trojan-Source surface.
-            let accept = match &kind_snapshot {
-                SettingKind::String { .. } => !crate::render::line_utils::is_unsafe_display_char(c),
-                _ => false,
+            let error = validate_string(
+                validator,
+                editor.text(),
+                &state.pager_snapshot.available_models,
+            );
+            let SettingsMode::EditingString {
+                validation_error, ..
+            } = &mut state.state.mode
+            else {
+                unreachable!("String editor state changed during validation");
             };
-            if !accept {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            let mut new_buf = buffer.clone();
-            new_buf.insert(cursor_byte, c);
-            let new_cursor = cursor_byte + c.len_utf8();
-            let new_error = recompute_validation(&kind_snapshot, &new_buf, state);
-            update_editing_value_buffer(state, new_buf, new_cursor, new_error);
+            *validation_error = error;
             SettingsKeyOutcome::Changed
         }
-        _ => SettingsKeyOutcome::Unchanged,
+        LineEditOutcome::HandledNoChange | LineEditOutcome::CursorChanged => {
+            SettingsKeyOutcome::Changed
+        }
+        LineEditOutcome::Unhandled => SettingsKeyOutcome::Unchanged,
     }
 }
 
@@ -427,22 +402,18 @@ fn handle_int_stepper(
     key: &KeyEvent,
     setting_key: SettingKey,
     buffer: &str,
-    kind: &SettingKind,
+    min: i64,
+    max: i64,
 ) -> SettingsKeyOutcome {
-    let SettingKind::Int { min, max, .. } = kind else {
-        // Caller pre-checked the kind; defensive bail.
-        return SettingsKeyOutcome::Unchanged;
-    };
-
-    let (small_step, large_step) = int_step_sizes(*min, *max);
+    let (small_step, large_step) = int_step_sizes(min, max);
     let step_delta = |dir: i64, large: bool| -> i64 {
         let magnitude = if large { large_step } else { small_step };
         dir * magnitude
     };
 
     let apply_step = |state: &mut SettingsModalState, delta: i64| -> SettingsKeyOutcome {
-        let cur = buffer.parse::<i64>().unwrap_or(*min);
-        let new = cur.saturating_add(delta).clamp(*min, *max);
+        let cur = buffer.parse::<i64>().unwrap_or(min);
+        let new = cur.saturating_add(delta).clamp(min, max);
         if new == cur {
             // Already clamped — no visible change. Report
             // Unchanged so the test for `clamps_to_min/max` can
@@ -450,8 +421,7 @@ fn handle_int_stepper(
             return SettingsKeyOutcome::Unchanged;
         }
         let new_buf = new.to_string();
-        let new_cursor = new_buf.len();
-        update_editing_value_buffer(state, new_buf, new_cursor, None);
+        update_int_buffer(state, new_buf);
         SettingsKeyOutcome::Changed
     };
 
@@ -514,43 +484,11 @@ fn handle_int_stepper(
     }
 }
 
-/// Helper: rewrite the EditingValue mode payload with new buffer +
-/// cursor + validation. Centralised so future variants don't need
-/// to repeat the pattern-construction boilerplate.
-fn update_editing_value_buffer(
-    state: &mut SettingsModalState,
-    buffer: String,
-    cursor_byte: usize,
-    validation_error: Option<String>,
-) {
-    let SettingsModalMode::EditingValue { key, .. } = state.mode else {
-        // Caller-provided key was lost on mode shift; this is the
-        // belt-and-suspenders fallback for a future refactor.
-        return;
+fn update_int_buffer(state: &mut SettingsModalState, new_buffer: String) {
+    let SettingsMode::EditingInt { buffer, .. } = &mut state.state.mode else {
+        unreachable!("Int update requires EditingInt state");
     };
-    state.mode = SettingsModalMode::EditingValue {
-        key,
-        buffer,
-        cursor_byte,
-        validation_error,
-    };
-}
-
-/// Helper: recompute the validation error for the current buffer
-/// against the registered validator. Called on every buffer mutation
-/// so the inline error indicator stays in sync.
-fn recompute_validation(
-    kind: &SettingKind,
-    buffer: &str,
-    state: &SettingsModalState,
-) -> Option<String> {
-    match kind {
-        SettingKind::String { validator, .. } => {
-            validate_string(*validator, buffer, &state.pager_snapshot.available_models)
-        }
-        SettingKind::Int { min, max, .. } => validate_int(buffer, *min, *max),
-        _ => None,
-    }
+    *buffer = new_buffer;
 }
 
 /// Number of choices for the picker. Handles both
@@ -740,19 +678,30 @@ fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyO
             }
             SettingsKeyOutcome::Unchanged
         }
-        KeyCode::Char(' ') | KeyCode::Enter => {
-            if matches!(state.focused_setting(), Some(("pi_config", _))) {
-                return SettingsKeyOutcome::Action(Action::OpenPiConfig);
+        KeyCode::Char(' ') => {
+            if let Some(action) = state.toggle_focused_bool() {
+                SettingsKeyOutcome::Action(action)
+            } else {
+                SettingsKeyOutcome::Unchanged
             }
+        }
+        KeyCode::Enter => {
+            // Group row → open its sub-sheet of child toggles.
             if state.try_enter_picking_group() {
                 return SettingsKeyOutcome::Changed;
             }
+            // For Bool, Enter behaves like Space (the keyboard
+            // map gives both keys the toggle semantics).
             if let Some(action) = state.toggle_focused_bool() {
                 return SettingsKeyOutcome::Action(action);
             }
+            // Enum row → enter PickingEnum mode. The picker's chooser
+            // sub-pane takes over rendering and key routing from here.
             if state.try_enter_picking_enum() {
                 return SettingsKeyOutcome::Changed;
             }
+            // String / Int row → enter EditingValue mode. The
+            // inline editor takes over rendering and key routing.
             if state.try_enter_editing_value() {
                 return SettingsKeyOutcome::Changed;
             }
@@ -760,7 +709,7 @@ fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyO
         }
         // `i` aliases `/` (vim-nav "press i to search").
         KeyCode::Char('/') | KeyCode::Char('i') if key.modifiers.is_empty() => {
-            state.mode = SettingsModalMode::FilterFocused;
+            state.focus_filter();
             SettingsKeyOutcome::Changed
         }
         KeyCode::Char('d') if key.modifiers.is_empty() => {
@@ -791,19 +740,12 @@ fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyO
             }
         }
         KeyCode::Backspace => {
-            // Continue editing the query from Browse mode (the commit
-            // path via Enter preserves the query, so Browse can be
-            // entered with a non-empty query). Pop one char and
-            // re-broaden the filter without switching modes. Mirrors
-            // `memory_modal::handle_browse`'s Backspace arm.
-            if state.query.pop().is_some() {
-                state.query_cursor = state.query.len();
-                state.invalidate_filter();
-                state.clamp_selected_to_visible();
-                SettingsKeyOutcome::Changed
-            } else {
-                SettingsKeyOutcome::Unchanged
+            // Continue editing a committed query without refocusing the filter.
+            if state.query().is_empty() {
+                return SettingsKeyOutcome::Unchanged;
             }
+            let outcome = state.state.filter.delete_last_grapheme();
+            apply_filter_edit(state, outcome)
         }
         _ => SettingsKeyOutcome::Unchanged,
     }
@@ -812,10 +754,11 @@ fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyO
 fn handle_filter_focused(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyOutcome {
     match key.code {
         KeyCode::Esc => {
-            state.query.clear();
-            state.query_cursor = 0;
-            state.invalidate_filter();
-            state.clamp_selected_to_visible();
+            if !state.query().is_empty() {
+                state.state.filter.reset();
+                state.invalidate_filter();
+                state.clamp_selected_to_visible();
+            }
             state.transition_to_browse();
             SettingsKeyOutcome::Changed
         }
@@ -846,59 +789,48 @@ fn handle_filter_focused(state: &mut SettingsModalState, key: &KeyEvent) -> Sett
             }
             changed_if(moved)
         }
+        KeyCode::Tab => SettingsKeyOutcome::Unchanged,
         KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-            // Clears entire query (not cursor-to-start) to match picker behavior.
-            if state.query.is_empty() {
-                return SettingsKeyOutcome::Unchanged;
+            if !state.query().is_empty() {
+                state.state.filter.reset();
+                state.invalidate_filter();
+                state.clamp_selected_to_visible();
             }
-            state.query.clear();
-            state.query_cursor = 0;
+            SettingsKeyOutcome::Changed
+        }
+        _ => {
+            let outcome = state
+                .state
+                .filter
+                .handle_key_with_insert_policy(key, safe_settings_char);
+            apply_filter_edit(state, outcome)
+        }
+    }
+}
+
+fn safe_settings_char(character: char) -> bool {
+    !crate::render::line_utils::is_unsafe_display_char(character)
+}
+
+#[cfg(test)]
+pub(super) fn set_filter_cursor(state: &mut SettingsModalState, cursor_byte: usize) {
+    let _ = state.state.filter.set_cursor_byte(cursor_byte);
+}
+
+fn apply_filter_edit(
+    state: &mut SettingsModalState,
+    outcome: LineEditOutcome,
+) -> SettingsKeyOutcome {
+    match outcome {
+        LineEditOutcome::TextChanged => {
             state.invalidate_filter();
             state.clamp_selected_to_visible();
             SettingsKeyOutcome::Changed
         }
-        KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-            state.query.insert(state.query_cursor, c);
-            state.query_cursor += c.len_utf8();
-            state.invalidate_filter();
-            state.clamp_selected_to_visible();
+        LineEditOutcome::HandledNoChange | LineEditOutcome::CursorChanged => {
             SettingsKeyOutcome::Changed
         }
-        KeyCode::Backspace => {
-            if state.query_cursor == 0 {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            let prev = state.query[..state.query_cursor]
-                .char_indices()
-                .next_back()
-                .map_or(0, |(i, _)| i);
-            state.query.drain(prev..state.query_cursor);
-            state.query_cursor = prev;
-            state.invalidate_filter();
-            state.clamp_selected_to_visible();
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Left => {
-            if state.query_cursor == 0 {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            state.query_cursor = state.query[..state.query_cursor]
-                .char_indices()
-                .next_back()
-                .map_or(0, |(i, _)| i);
-            SettingsKeyOutcome::Changed
-        }
-        KeyCode::Right => {
-            if state.query_cursor >= state.query.len() {
-                return SettingsKeyOutcome::Unchanged;
-            }
-            state.query_cursor = state.query[state.query_cursor..]
-                .char_indices()
-                .nth(1)
-                .map_or(state.query.len(), |(i, _)| state.query_cursor + i);
-            SettingsKeyOutcome::Changed
-        }
-        _ => SettingsKeyOutcome::Unchanged,
+        LineEditOutcome::Unhandled => SettingsKeyOutcome::Unchanged,
     }
 }
 
@@ -940,14 +872,14 @@ pub fn handle_settings_mouse(
         && rect_contains(rect, column, row)
     {
         let synthetic = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        match state.mode {
-            SettingsModalMode::PickingEnum { .. } => {
+        match state.state.mode_kind() {
+            SettingsModeKind::PickingEnum => {
                 return handle_picking_enum(state, &synthetic);
             }
-            SettingsModalMode::PickingGroup { .. } => {
+            SettingsModeKind::PickingGroup => {
                 return handle_picking_group(state, &synthetic);
             }
-            SettingsModalMode::EditingValue { .. } => {
+            SettingsModeKind::EditingString | SettingsModeKind::EditingInt => {
                 return handle_editing_value(state, &synthetic);
             }
             _ => {}
@@ -984,21 +916,24 @@ pub fn handle_settings_mouse(
     // when in EditingValue mode AND the row is an Int. All other
     // events in EditingValue (scrolls, off-adornment clicks) are
     // no-ops.
-    if matches!(state.mode, SettingsModalMode::EditingValue { .. }) {
+    if matches!(
+        state.state.mode_kind(),
+        SettingsModeKind::EditingString | SettingsModeKind::EditingInt
+    ) {
         let outcome = handle_editor_mouse(state, kind, column, row);
         return upgrade_if_breadcrumb_flipped(outcome, breadcrumb_hover_flipped);
     }
 
     // PickingEnum: click-to-pick on choice rects, scroll wheel is a
     // no-op (the picker is bounded; scroll there could surprise).
-    if matches!(state.mode, SettingsModalMode::PickingEnum { .. }) {
+    if state.state.mode_kind() == SettingsModeKind::PickingEnum {
         let outcome = handle_picker_mouse(state, kind, column, row);
         return upgrade_if_breadcrumb_flipped(outcome, breadcrumb_hover_flipped);
     }
 
     // PickingGroup: hover tracks the child rects; a click toggles the clicked
     // child in place (same bounded-viewport, scroll-is-a-no-op contract).
-    if matches!(state.mode, SettingsModalMode::PickingGroup { .. }) {
+    if state.state.mode_kind() == SettingsModeKind::PickingGroup {
         let outcome = handle_group_mouse(state, kind, column, row);
         return upgrade_if_breadcrumb_flipped(outcome, breadcrumb_hover_flipped);
     }
@@ -1150,8 +1085,7 @@ fn handle_picker_mouse(
 ) -> SettingsKeyOutcome {
     // Hover highlight for picker choices. Tracks the
     // choice index under the cursor in `state.hover_row` (same
-    // field as the row-list path; the field is mode-aware via the
-    // active `state.mode`).
+    // field as the row-list path; the field is mode-aware).
     if matches!(kind, MouseEventKind::Moved) {
         let new_hover = state
             .picker_choice_rects
@@ -1167,9 +1101,9 @@ fn handle_picker_mouse(
     let MouseEventKind::Down(crossterm::event::MouseButton::Left) = kind else {
         return SettingsKeyOutcome::Unchanged;
     };
-    // Snapshot the picker payload under the immutable borrow.
-    let (setting_key, current_idx, original_value, supports_preview) = match &state.mode {
-        SettingsModalMode::PickingEnum {
+    // Snapshot the picker payload before mutating the state.
+    let (setting_key, current_idx, original_value, supports_preview) = match &state.state.mode {
+        SettingsMode::PickingEnum {
             key,
             choices_idx,
             original_value,
@@ -1180,7 +1114,7 @@ fn handle_picker_mouse(
             original_value.clone(),
             *supports_preview,
         ),
-        _ => return SettingsKeyOutcome::Unchanged,
+        _ => unreachable!("picker mouse handler requires PickingEnum state"),
     };
     let clicked_idx = state
         .picker_choice_rects
@@ -1232,9 +1166,9 @@ fn handle_group_mouse(
     let MouseEventKind::Down(crossterm::event::MouseButton::Left) = kind else {
         return SettingsKeyOutcome::Unchanged;
     };
-    let group_key = match &state.mode {
-        SettingsModalMode::PickingGroup { key, .. } => *key,
-        _ => return SettingsKeyOutcome::Unchanged,
+    let group_key = match &state.state.mode {
+        SettingsMode::PickingGroup { key, .. } => *key,
+        _ => unreachable!("group mouse handler requires PickingGroup state"),
     };
     let children = group_children(state, group_key);
     let clicked_idx = state
@@ -1244,10 +1178,7 @@ fn handle_group_mouse(
     let Some(idx) = clicked_idx else {
         return SettingsKeyOutcome::Unchanged;
     };
-    state.mode = SettingsModalMode::PickingGroup {
-        key: group_key,
-        child_idx: idx,
-    };
+    state.transition_to_picking_group(group_key, idx);
     let Some(child_key) = children.get(idx).copied() else {
         return SettingsKeyOutcome::Changed;
     };
@@ -1308,5 +1239,3 @@ fn rect_contains(r: Rect, column: u16, row: u16) -> bool {
         && row >= r.y
         && row < r.y.saturating_add(r.height)
 }
-
-// ---------------------------------------------------------------------------

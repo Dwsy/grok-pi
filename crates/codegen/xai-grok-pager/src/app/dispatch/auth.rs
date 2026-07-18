@@ -1,7 +1,7 @@
 //! Login, logout, account switching, and auth-code submission dispatchers.
 
 use super::ctx::{restore_auth_return_view, show_welcome};
-use super::queue::{maybe_drain_queue, note_peek_page_flip_after_drain};
+use super::queue::{maybe_drain_queue, note_peek_page_flip};
 use super::router::dispatch;
 use super::session::lifecycle::{clear_startup_actions, drain_startup_actions};
 use crate::app::actions::{Action, Effect};
@@ -98,7 +98,7 @@ pub(super) fn dispatch_switch_account(app: &mut AppView) -> Vec<Effect> {
 
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;
-    app.auth_code_input.clear();
+    app.auth_code_input.reset();
     app.auth_state = AuthState::Authenticating {
         request_seq,
         handle: None,
@@ -230,7 +230,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
 
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;
-    app.auth_code_input.clear();
+    app.auth_code_input.reset();
     app.auth_state = AuthState::Authenticating {
         request_seq,
         handle: None,
@@ -270,7 +270,7 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
     app.next_auth_request_seq += 1;
     app.auth_state = AuthState::Done;
     app.auth_show_raw_url = false;
-    app.auth_code_input.clear();
+    app.auth_code_input.reset();
     restore_auth_return_view(app, return_view);
     // The user bailed out of re-auth — drop stashed prompts and strip the
     // stale re-auth prompt from scrollback (on all agents: the login may
@@ -324,7 +324,7 @@ pub(super) fn handle_auth_complete(
         app.auth_state = AuthState::Done;
         app.auth_show_raw_url = false;
         app.welcome_prompt_focused = !app.is_access_blocked();
-        app.auth_code_input.clear();
+        app.auth_code_input.reset();
 
         // Mid-session re-auth (`/login` or a 401 prompt): restore the
         // view the user was on instead of running the startup
@@ -346,7 +346,7 @@ pub(super) fn handle_auth_complete(
             // have been started from the dashboard, not the agent
             // that 401'd).
             let mut retry_effects = Vec::new();
-            let mut drained_ids = Vec::new();
+            let mut page_flips = Vec::new();
             for agent in app.agents.values_mut() {
                 strip_trailing_auth_error_blocks(agent);
                 // Auto-resubmit the prompt that failed on the expired
@@ -358,12 +358,13 @@ pub(super) fn handle_auth_complete(
                         "Re-authenticated. Retrying\u{2026}".to_string(),
                     ));
                     agent.session.enqueue_in_flight_prompt_front(prompt);
-                    retry_effects.extend(maybe_drain_queue(agent));
-                    drained_ids.push(agent.session.id);
+                    let drain = maybe_drain_queue(agent);
+                    retry_effects.extend(drain.effects);
+                    page_flips.push((agent.session.id, drain.page_flip_entry));
                 }
             }
-            for id in drained_ids {
-                note_peek_page_flip_after_drain(app, id);
+            for (id, page_flip_entry) in page_flips {
+                note_peek_page_flip(app, id, page_flip_entry);
             }
             let mut effects = dispatch(Action::RequestBundleStatus, app);
             if app.usage_visible {

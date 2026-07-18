@@ -1,5 +1,66 @@
 # Changelog
 
+# 0.2.105 — 2026-07-18
+
+## Features
+
+- **/btw** now works inside `grok --minimal`, showing answers in the live area and committing them to scrollback on Esc.
+- **New Appearance setting** "Snap prompt to top on send" lets you keep the viewport where it is instead of jumping to the new prompt.
+- **Default model** is now Grok 4.5 with high/medium/low reasoning effort and improved compaction settings.
+- **New `/summarize` slash command** is now available as an alias for `/recap` to request an on-demand session summary.
+
+## Bug Fixes
+
+- **Local shell tools** now see the same environment variables, aliases, and functions as your login shell.
+- **Syntax highlighting** in diffs and the file viewer no longer miscolors strings or comments that span multiple lines.
+- **Global rules** from ~/.grok/rules and compatible vendor homes are now discovered correctly.
+- **Background tasks** that finish after you press Ctrl+C no longer automatically resume the model.
+- **Ctrl+\** out of the dashboard now returns you to the agent you came from.
+- **MCP OAuth logins** now succeed against servers that require the RFC 9207 issuer parameter in the callback.
+- **Agent dashboard** now shows fleet roster entries even when the local agent list is empty.
+- **Long-session compaction** no longer fails on servers that reject tool_choice none when tools are attached.
+
+## Performance
+
+- **Scrolling** feels smoother and less jagged under load or over slow connections.
+
+
+# 0.2.104 — 2026-07-17
+
+## Features
+
+- **Background work counts** now appear in a persistent status line instead of repeated transcript messages.
+
+## Bug Fixes
+
+- **Fixed authentication recovery** for idle sessions after token timeouts.
+- **Retry failed** messages no longer contain raw HTML error pages.
+- **Rate limit messages** now show the server detail without the wire prefix.
+- **In-place prompt editing** is temporarily disabled due to scroll behavior issues.
+
+
+# 0.2.103 — 2026-07-17
+
+## Features
+
+- **New require_sha option** prevents remote plugins from tracking mutable branches or tags.
+- **Local sessions now inherit full rc environment, cwd, and exports** across tool calls (configurable).
+- **MCP servers** from plugins can now require setup choices such as a regional site before connecting.
+- Quitting a fullscreen session now shows the session title and last exchange above the resume command.
+- **SSH sessions** now show a one-time tip recommending `grok wrap ssh <host>` for clipboard and terminal restore.
+
+## Bug Fixes
+
+- **Fixed GitHub PR status detection** when the gh CLI inherits forcing color environment variables.
+- **Fixed a race** where an early cancel could permanently wedge a session's turn slot.
+- **grok** and the agent binary now stay in sync even when no update is installed.
+- **Copying** a multiline queued prompt now copies the complete text instead of a collapsed summary.
+- **grok wrap** now restores the terminal after SSH disconnects or other abrupt child exits.
+- **Voice speech-to-text** now works with per-model API keys in config.toml without requiring `grok login`.
+- **Copy over SSH** or in containers now shows clearer feedback when delivery cannot be confirmed.
+- **Local Bash sessions** no longer keep a persistent shell across calls, avoiding failures after directory deletion.
+
+
 # 0.2.102 — 2026-07-16
 
 ## Breaking Changes
@@ -50,7 +111,6 @@
 ## Performance
 
 - **Improved recap and compaction** behavior.
-
 
 # 0.2.101 — 2026-07-13
 

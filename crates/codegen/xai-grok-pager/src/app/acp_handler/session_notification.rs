@@ -219,11 +219,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             } else if is_wake_prompt(&prompt_id) {
                 if agent.session.state.is_busy() {
                     false
-                } else if matches!(stop_reason.as_str(), "cancelled" | "error" | "rate_limit") {
-                    agent.maybe_push_work_status()
                 } else {
-                    let elapsed = wake_turn_elapsed(agent, &prompt_id, meta.agent_timestamp_ms);
-                    push_wake_end_marker(agent, &prompt_id, elapsed);
+                    finish_wake_turn(agent);
                     true
                 }
             } else {
@@ -506,7 +503,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             turns,
             duration_ms,
             tokens_used,
-            will_wake,
             ..
         } => {
             tracing::info!(
@@ -571,9 +567,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 }
                 entry.invalidate_cache();
             }
-            let mut was_running = false;
             if let Some(info) = agent.subagent_sessions.get_mut(&child_session_id) {
-                was_running = info.is_running();
                 info.finished = true;
                 info.status = Some(Arc::from(status));
                 info.error = error.map(Arc::from);
@@ -594,11 +588,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                     crate::app::subagent::finalize_finished_child_view(child_view, elapsed_dur);
                 }
             }
-            if was_running && !resuming {
-                agent.maybe_refresh_parked_subagent_marker();
-            }
-            if !resuming && !will_wake {
-                agent.maybe_push_work_status();
+            if !resuming {
+                agent.maybe_push_parked_marker();
             }
             true
         }
@@ -691,18 +682,6 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                         event_name,
                         hook_entries,
                         batch_prompt_id.as_deref(),
-                    );
-                } else if batch_is_wake
-                    && !batch_prompt_id
-                        .as_deref()
-                        .is_some_and(|pid| agent.scrollback.has_turn_terminal_marker_with_pid(pid))
-                {
-                    stash_live_stop_batch(
-                        agent,
-                        batch_prompt_id.clone(),
-                        event_name,
-                        hook_entries,
-                        true,
                     );
                 } else {
                     agent
@@ -1261,8 +1240,8 @@ pub(super) fn apply_retry_state(
                 );
             }
             is_credit_limit = super::super::dispatch::is_credit_limit_error(None, reason);
-            let is_free_usage =
-                *rate_limited && super::super::dispatch::is_free_usage_exhausted_error(reason);
+            let is_free_usage = *rate_limited
+                && xai_grok_shell::sampling::error::is_free_usage_exhausted_error(reason);
             if is_credit_limit {
                 session.credit_limit_blocked = true;
             } else if is_free_usage {
@@ -1272,7 +1251,10 @@ pub(super) fn apply_retry_state(
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
             } else {
                 let error = if *rate_limited {
-                    format_rate_limited_user_message(Some(reason.as_str()), is_api_key_auth)
+                    crate::app::effects::sanitize_user_error(&format_rate_limited_user_message(
+                        Some(reason.as_str()),
+                        is_api_key_auth,
+                    ))
                 } else {
                     format!("failed after {attempts} retries: {reason}")
                 };

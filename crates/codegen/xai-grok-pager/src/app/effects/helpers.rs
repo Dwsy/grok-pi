@@ -88,7 +88,9 @@ pub(super) async fn fetch_plugin_cta_mcps(
 pub(super) fn format_acp_error(err: &acp::Error, is_api_key_auth: bool) -> String {
     if i32::from(err.code) == RATE_LIMITED_ERROR_CODE {
         let detail = err.data.as_ref().and_then(error_detail_from_data);
-        return format_rate_limited_user_message(detail.as_deref(), is_api_key_auth);
+        return sanitize_user_error(
+            &format_rate_limited_user_message(detail.as_deref(), is_api_key_auth),
+        );
     }
     if err.code == acp::ErrorCode::InvalidParams && let Some(data) = &err.data
         && let Some(msg) = error_detail_from_data(data) && !msg.is_empty()
@@ -787,6 +789,14 @@ pub(crate) async fn persist_setting(
                 return Err(kind_mismatch("show_timestamps", "Bool", &value));
             };
             xai_grok_shell::util::config::set_show_timestamps(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "page_flip_on_send" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("page_flip_on_send", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_page_flip_on_send(b)
                 .await
                 .map_err(|e| e.to_string())
         }

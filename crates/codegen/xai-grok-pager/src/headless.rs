@@ -872,7 +872,6 @@ pub async fn run_single_turn(
     agent_config.resolve_runtime_fields(&xai_grok_shell::agent::config::RuntimeResolutionContext {
         raw_config: &raw_config,
         remote_settings: None,
-        cwd: Some(&cwd),
         is_headless: true,
         cli_subagents: None,
         cli_web_search_model: None,
@@ -1324,7 +1323,10 @@ pub async fn run_single_turn(
         Some(Err(err)) => {
             let msg = if i32::from(err.code) == RATE_LIMITED_ERROR_CODE {
                 let detail = err.data.as_ref().and_then(error_detail_from_data);
-                format_rate_limited_user_message(detail.as_deref(), is_api_key_auth)
+                crate::app::sanitize_user_error(&format_rate_limited_user_message(
+                    detail.as_deref(),
+                    is_api_key_auth,
+                ))
             } else {
                 err.to_string()
             };
