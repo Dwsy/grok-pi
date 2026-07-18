@@ -938,6 +938,40 @@ fn acp_bootstrap_command_executes_as_passthrough() {
     );
 }
 #[test]
+fn pi_extension_command_bypasses_local_prompt_queue() {
+    let mut app = test_app();
+    app.bootstrap_acp_commands = vec![
+        acp::AvailableCommand::new("review".to_string(), "Review changes".to_string()).meta(
+            serde_json::json!({ "piCommandSource": "extension" })
+                .as_object()
+                .cloned(),
+        ),
+    ];
+    dispatch(Action::NewSession, &mut app);
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.session_id = Some("sess-1".into());
+        agent.session.state = AgentState::TurnRunning;
+        agent.prompt.sync_acp_commands(
+            &agent.session.available_commands,
+            agent.session.available_tools.as_ref(),
+            &agent.session.models,
+        );
+    }
+
+    let effects = dispatch(Action::SendPrompt("/review focus queue".into()), &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::RunPiExtensionCommand { session_id, command }]
+            if session_id.0.as_ref() == "sess-1" && command == "/review focus queue"
+    ));
+    assert_eq!(app.agents[&id].session.queue_len(), 0);
+    assert!(app.agents[&id].shared_queue.is_empty());
+    assert!(app.agents[&id].session.state.is_turn_running());
+}
+
+#[test]
 fn acp_runtime_update_replaces_commands_in_autocomplete() {
     let mut app = test_app();
     app.bootstrap_acp_commands = vec![acp::AvailableCommand::new(

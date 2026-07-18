@@ -741,6 +741,9 @@ fn handle_browse(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyO
             SettingsKeyOutcome::Unchanged
         }
         KeyCode::Char(' ') | KeyCode::Enter => {
+            if matches!(state.focused_setting(), Some(("pi_config", _))) {
+                return SettingsKeyOutcome::Action(Action::OpenPiConfig);
+            }
             if state.try_enter_picking_group() {
                 return SettingsKeyOutcome::Changed;
             }

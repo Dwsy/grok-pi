@@ -63,6 +63,10 @@ pub enum CommandResult {
         /// arrives from the shell).
         scheduled_task_preview: Option<ScheduledTaskPreview>,
     },
+    /// Command text should be dispatched to Pi immediately without creating a
+    /// Pager turn or queue row. Only Pi extension commands use this path; Pi
+    /// remains responsible for the command handler and any nested agent work.
+    DirectPiCommand(String),
     /// Command text should be sent as a regular prompt. The shell resolves it.
     ///
     /// Phase-1 simplification: this intentionally covers two semantically

@@ -7,6 +7,7 @@ pub mod groups;
 mod layout;
 mod nav;
 mod selection;
+mod timeline;
 mod types;
 pub mod verb_group;
 

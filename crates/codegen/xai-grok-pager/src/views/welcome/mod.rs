@@ -1705,7 +1705,8 @@ fn render_welcome_done(
     // with a project changelog URL use the same gate (no CDN dependency).
     let menu_policy = logo::welcome_menu_override();
     let show_changelog_action = p.has_access && !show_picker;
-    let hide_new_worktree = show_changelog_action && menu_policy.is_some_and(|m| m.hide_new_worktree);
+    let hide_new_worktree =
+        show_changelog_action && menu_policy.is_some_and(|m| m.hide_new_worktree);
 
     let gate_menu;
     let owned_menu;

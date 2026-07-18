@@ -1466,7 +1466,8 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             }
             dispatch(action, app)
         }
-        CommandResult::QueueCommand(_)
+        CommandResult::DirectPiCommand(_)
+        | CommandResult::QueueCommand(_)
         | CommandResult::InjectSkill { .. }
         | CommandResult::PassThrough(_) => {
             // These results all expect an agent session to consume

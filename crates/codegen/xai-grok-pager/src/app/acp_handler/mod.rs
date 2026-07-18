@@ -626,8 +626,8 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         }
         "x.ai/mcp/servers_updated" => handle_mcp_servers_updated(notif, app),
         // Pi RPC extension UI is projected onto native Grok pager surfaces.
-        // These are notifications (no fake response/ack text is inserted into
-        // the transcript), matching Pi's fire-and-forget protocol contract.
+        // Explicit info notices are additionally retained as native system
+        // blocks; warning/error notifications remain transient alerts.
         "pi/ui/notify" => handle_pi_ui_notify(notif, app),
         "pi/ui/status" => handle_pi_ui_status(notif, app),
         "pi/ui/widget" => handle_pi_ui_widget(notif, app),
@@ -771,7 +771,11 @@ fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView)
     };
     let timestamp = |value: Option<&serde_json::Value>| {
         value
-            .and_then(|value| value.as_i64().and_then(chrono::DateTime::from_timestamp_millis))
+            .and_then(|value| {
+                value
+                    .as_i64()
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+            })
             .or_else(|| {
                 value
                     .and_then(serde_json::Value::as_str)

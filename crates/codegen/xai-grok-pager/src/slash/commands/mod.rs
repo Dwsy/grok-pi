@@ -39,6 +39,7 @@ pub mod model;
 pub mod multiline;
 pub mod new;
 pub mod personas;
+pub mod pi_config;
 pub mod plan;
 pub mod plugin;
 pub mod privacy;
@@ -57,6 +58,7 @@ pub mod share;
 pub mod tasks;
 pub mod terminal_setup;
 pub mod theme;
+pub mod timeline;
 pub mod timestamps;
 pub mod toggle_mouse_reporting;
 pub mod transcript;
@@ -122,7 +124,9 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(imagine::ImagineCommand),
         Arc::new(imagine_video::ImagineVideoCommand),
         Arc::new(timestamps::TimestampsCommand),
+        Arc::new(timeline::TimelineCommand),
         Arc::new(toggle_mouse_reporting::ToggleMouseReportingCommand),
+        Arc::new(pi_config::PiConfigCommand),
         Arc::new(settings_cmd::SettingsCommand),
         Arc::new(privacy::PrivacyCommand),
         Arc::new(rewind::RewindCommand),

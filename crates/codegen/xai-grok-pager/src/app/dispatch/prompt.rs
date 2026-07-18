@@ -554,6 +554,19 @@ pub(super) fn dispatch_send_prompt_inner(
             CommandResult::QueueCommand(cmd_text) => {
                 agent.session.enqueue_command(cmd_text);
             }
+            CommandResult::DirectPiCommand(command) => {
+                let Some(session_id) = agent.session.session_id.clone() else {
+                    agent.show_toast("Pi session is still starting");
+                    return vec![];
+                };
+                if consume_input {
+                    agent.prompt.set_text("");
+                }
+                return vec![Effect::RunPiExtensionCommand {
+                    session_id,
+                    command,
+                }];
+            }
             CommandResult::InjectSkill {
                 display_text,
                 prompt_blocks,

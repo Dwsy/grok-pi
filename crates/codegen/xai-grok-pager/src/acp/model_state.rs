@@ -358,7 +358,11 @@ impl ModelState {
         // Bare model id after `::` — only when unique.
         let mut bare_match: Option<acp::ModelId> = None;
         for (id, _) in &self.available {
-            let bare = id.0.as_ref().split_once("::").map(|(_, m)| m).unwrap_or(id.0.as_ref());
+            let bare =
+                id.0.as_ref()
+                    .split_once("::")
+                    .map(|(_, m)| m)
+                    .unwrap_or(id.0.as_ref());
             if bare.eq_ignore_ascii_case(query) {
                 if bare_match.is_some() {
                     return None;

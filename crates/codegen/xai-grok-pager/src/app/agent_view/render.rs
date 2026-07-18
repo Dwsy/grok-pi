@@ -1101,6 +1101,35 @@ impl AgentView {
                 .height
                 .saturating_sub(search_reserved_rows);
         }
+        let timeline_width = crate::views::timeline::rail_width(
+            appearance.show_timeline,
+            self.is_subagent_view,
+            area.width,
+            self.scrollback.turn_count(),
+        );
+        if timeline_width > 0 && scrollbar_cfg.enabled {
+            let timeline_x = (layout.scrollbar_x + 1).saturating_sub(timeline_width);
+            let content_end = timeline_x.saturating_sub(scrollbar_cfg.gap_left);
+            layout.scrollback_content.width = content_end.saturating_sub(layout.scrollback.x);
+            self.scrollback.prepare_layout(
+                layout.scrollback_content.width,
+                layout.scrollback_content.height,
+            );
+            self.timeline_rail = crate::views::timeline::compute_rail(
+                layout.scrollback,
+                timeline_x,
+                self.scrollback.turn_count(),
+                crate::views::timeline::RailViewport {
+                    active: self.scrollback.active_turn_for_viewport(),
+                    up_target: self.scrollback.turn_above_viewport_top(),
+                    down_target: self.scrollback.turn_below_viewport_top(),
+                    at_bottom: !self.scrollback.has_content_below(),
+                },
+            );
+        } else {
+            self.timeline_rail = None;
+            self.timeline_hover = None;
+        }
         agent::fill_background(buf, area, layout_cfg, compact, &theme);
         use crate::views::agent_status::AgentStatusBar;
         use crate::views::context_bar;
@@ -1513,16 +1542,21 @@ impl AgentView {
                 self.hit_sb_copy.clear();
                 self.hit_sb_view.clear();
             }
-            agent::render_scrollbar(
-                buf,
-                layout.scrollback,
-                layout.scrollbar_x,
-                scrollbar_cfg,
-                sb_output.scroll_info,
-                self.scrollback.is_follow_mode(),
-                &theme,
-            );
-            if scrollbar_cfg.enabled && sb_output.scroll_info.is_some() {
+            if self.timeline_rail.is_none() {
+                agent::render_scrollbar(
+                    buf,
+                    layout.scrollback,
+                    layout.scrollbar_x,
+                    scrollbar_cfg,
+                    sb_output.scroll_info,
+                    self.scrollback.is_follow_mode(),
+                    &theme,
+                );
+            }
+            if self.timeline_rail.is_none()
+                && scrollbar_cfg.enabled
+                && sb_output.scroll_info.is_some()
+            {
                 self.hit_scrollbar.set(Some(Rect {
                     x: layout.scrollbar_x,
                     y: layout.scrollback.y,
@@ -1531,6 +1565,9 @@ impl AgentView {
                 }));
             } else {
                 self.hit_scrollbar.clear();
+            }
+            if let Some(rail) = self.timeline_rail.as_ref() {
+                crate::views::timeline::render_rail(buf, rail, self.timeline_hover, &theme);
             }
         }
         if self.block_viewer.is_none() && !search_active {
@@ -1864,20 +1901,33 @@ impl AgentView {
             if index >= layout.external_widgets_above_editor.height as usize {
                 break;
             }
-            let row = Rect::new(
-                layout.external_widgets_above_editor.x,
-                layout.external_widgets_above_editor.y + index as u16,
-                layout.external_widgets_above_editor.width,
-                1,
-            );
-            crate::tips::render::render_ephemeral_tip(
-                row,
-                buf,
-                &Line::from(Span::styled(
-                    format!("  {line}"),
+            // Remote TUI bleeds to the full terminal row (Pi interactive is full-width).
+            // Other above-editor widgets stay inside the padded content column.
+            let row = if self.external_widgets_above_full_bleed {
+                Rect::new(
+                    area.x,
+                    layout.external_widgets_above_editor.y + index as u16,
+                    area.width,
+                    1,
+                )
+            } else {
+                Rect::new(
+                    layout.external_widgets_above_editor.x,
+                    layout.external_widgets_above_editor.y + index as u16,
+                    layout.external_widgets_above_editor.width,
+                    1,
+                )
+            };
+            buf.set_style(row, Style::default().bg(theme.bg_base));
+            let styled = if line.contains('\u{1b}') {
+                crate::views::agent_status::ansi_remote_tui_line(line, &theme)
+            } else {
+                Line::from(Span::styled(
+                    line.clone(),
                     Style::default().fg(theme.text_secondary).bg(theme.bg_base),
-                )),
-            );
+                ))
+            };
+            crate::tips::render::render_ephemeral_tip(row, buf, &styled);
         }
         if let Some((ref msg, remaining)) = self.mode_switch_banner {
             self.hit_announcement_hide.clear();

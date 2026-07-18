@@ -458,10 +458,7 @@ mod tests {
             Some(FULL),
             "override must ignore the legacy-console hide flag"
         );
-        assert_eq!(
-            pick_logo_for(SMALL_LOGO_MIN_HEIGHT, true, art),
-            Some(SMALL)
-        );
+        assert_eq!(pick_logo_for(SMALL_LOGO_MIN_HEIGHT, true, art), Some(SMALL));
         assert!(pick_logo_for(SMALL_LOGO_MIN_HEIGHT - 1, true, art).is_none());
 
         assert_eq!(full_logo_line_count_for(true, art), count_lines(FULL));

@@ -491,17 +491,13 @@ pub(crate) async fn run(
     let external_agent = ui_profile.is_external();
     match &ui_profile {
         crate::acp::UiProfile::Grok => {
-            crate::slash::set_builtin_command_profile(
-                crate::slash::BuiltinCommandProfile::Grok,
-            );
+            crate::slash::set_builtin_command_profile(crate::slash::BuiltinCommandProfile::Grok);
             crate::views::welcome::logo::set_logo_override(None);
             crate::views::welcome::logo::set_welcome_menu_override(None);
         }
         crate::acp::UiProfile::External(profile) => {
             crate::slash::set_builtin_command_profile(
-                crate::slash::BuiltinCommandProfile::External(
-                    profile.builtin_commands.clone(),
-                ),
+                crate::slash::BuiltinCommandProfile::External(profile.builtin_commands.clone()),
             );
             crate::views::welcome::logo::set_logo_override(profile.logo);
             crate::views::welcome::logo::set_welcome_menu_override(Some(

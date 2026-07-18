@@ -1231,9 +1231,7 @@ pub(super) fn set_theme_inner(app: &mut AppView, value: &str) {
 fn resolve_theme_canonical(value: &str) -> Option<String> {
     if crate::theme::pi::is_pi_theme_id(value) {
         // Validate it exists (or is a known builtin).
-        return crate::theme::pi::load_palette(value)
-            .ok()
-            .map(|(id, _)| id);
+        return crate::theme::pi::load_palette(value).ok().map(|(id, _)| id);
     }
     crate::theme::canonical_name(value).map(str::to_owned)
 }
@@ -1685,9 +1683,7 @@ pub(in crate::app::dispatch) fn set_default_model(
     // Chat (`--chat` / GROK_CHAT_MODE) catalogs use opaque `/rest/modes`
     // slugs that must not become the global Build `default_model`.
     let mut effects: Vec<Effect> = Vec::new();
-    if !app.external_agent
-        && !xai_grok_shell::agent::chat_modes::process_chat_mode_enabled()
-    {
+    if !app.external_agent && !xai_grok_shell::agent::chat_modes::process_chat_mode_enabled() {
         let new_id_str = new_id.0.to_string();
         let prev_id_str = prev_id
             .as_ref()

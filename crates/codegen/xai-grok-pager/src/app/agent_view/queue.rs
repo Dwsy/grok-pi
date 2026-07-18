@@ -1829,8 +1829,7 @@ mod queue_edit_routing_tests {
                 Some(crate::views::modal::ActiveModal::ArgPicker { ref command, .. })
                     if command == "model"
             ),
-            "expected model ArgPicker modal, got {:?}",
-            agent.active_modal
+            "expected model ArgPicker modal"
         );
     }
 }

@@ -179,11 +179,7 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
         // Trailing space on reasoning models: signals "more input
         // expected" to the prompt widget so Enter advances to effort
         // phase instead of submitting.
-        let insert_text = if supports {
-            format!("{token} ")
-        } else {
-            token
-        };
+        let insert_text = if supports { format!("{token} ") } else { token };
 
         items.push(ArgItem {
             display,
@@ -199,11 +195,7 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
 
 /// Stable commit token for `/model`. Prefer display name when unique; otherwise
 /// use `provider/id` so same-label models from different providers stay distinct.
-fn model_insert_token(
-    models: &ModelState,
-    id: &acp::ModelId,
-    info: &acp::ModelInfo,
-) -> String {
+fn model_insert_token(models: &ModelState, id: &acp::ModelId, info: &acp::ModelInfo) -> String {
     let name_collisions = models
         .available
         .values()
@@ -249,9 +241,7 @@ pub(crate) fn model_picker_detail_lines(info: &acp::ModelInfo) -> Vec<String> {
     if !input.is_empty() {
         caps.push(format!("Input {input}"));
     }
-    if meta_bool(meta, "reasoning").unwrap_or(false)
-        || supports_reasoning_effort(info)
-    {
+    if meta_bool(meta, "reasoning").unwrap_or(false) || supports_reasoning_effort(info) {
         caps.push("⚡ reasoning".into());
     }
     if !caps.is_empty() {
@@ -278,7 +268,10 @@ pub(crate) fn model_picker_detail_lines(info: &acp::ModelInfo) -> Vec<String> {
     lines
 }
 
-fn meta_str<'a>(meta: Option<&'a serde_json::Map<String, serde_json::Value>>, key: &str) -> Option<&'a str> {
+fn meta_str<'a>(
+    meta: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    key: &str,
+) -> Option<&'a str> {
     meta.and_then(|m| m.get(key)).and_then(|v| v.as_str())
 }
 
@@ -329,13 +322,22 @@ fn format_input_short(meta: Option<&serde_json::Map<String, serde_json::Value>>)
         .and_then(|v| v.as_array())
     {
         let mut parts = Vec::new();
-        if modalities.iter().any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("text"))) {
+        if modalities
+            .iter()
+            .any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("text")))
+        {
             parts.push("txt");
         }
-        if modalities.iter().any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("image"))) {
+        if modalities
+            .iter()
+            .any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("image")))
+        {
             parts.push("img");
         }
-        if modalities.iter().any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("audio"))) {
+        if modalities
+            .iter()
+            .any(|m| m.as_str().is_some_and(|s| s.eq_ignore_ascii_case("audio")))
+        {
             parts.push("aud");
         }
         if !parts.is_empty() {
@@ -366,7 +368,9 @@ fn format_cost_num(value: f64) -> String {
 }
 
 fn format_cost_line(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> Option<String> {
-    let cost = meta.and_then(|m| m.get("cost")).and_then(|v| v.as_object())?;
+    let cost = meta
+        .and_then(|m| m.get("cost"))
+        .and_then(|v| v.as_object())?;
     let input = cost.get("input").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let output = cost.get("output").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let mut line = if input == 0.0 && output == 0.0 {
@@ -378,7 +382,11 @@ fn format_cost_line(meta: Option<&serde_json::Map<String, serde_json::Value>>) -
             format_cost_num(output)
         )
     };
-    if let Some(cache_read) = cost.get("cacheRead").and_then(|v| v.as_f64()).filter(|v| *v > 0.0) {
+    if let Some(cache_read) = cost
+        .get("cacheRead")
+        .and_then(|v| v.as_f64())
+        .filter(|v| *v > 0.0)
+    {
         line.push_str(&format!("  ·  cache read ${}", format_cost_num(cache_read)));
     }
     if let Some(cache_write) = cost
@@ -386,7 +394,10 @@ fn format_cost_line(meta: Option<&serde_json::Map<String, serde_json::Value>>) -
         .and_then(|v| v.as_f64())
         .filter(|v| *v > 0.0)
     {
-        line.push_str(&format!("  ·  cache write ${}", format_cost_num(cache_write)));
+        line.push_str(&format!(
+            "  ·  cache write ${}",
+            format_cost_num(cache_write)
+        ));
     }
     Some(line)
 }
@@ -552,10 +563,7 @@ mod tests {
         assert_eq!(reasoning.insert_text, "Reasoning X ");
 
         // Plain model has no trailing space -- Enter commits immediately.
-        let plain = items
-            .iter()
-            .find(|i| i.insert_text == "Grok 4.5")
-            .unwrap();
+        let plain = items.iter().find(|i| i.insert_text == "Grok 4.5").unwrap();
         assert_eq!(plain.insert_text, "Grok 4.5");
     }
 
@@ -626,10 +634,19 @@ mod tests {
         let detail = model_picker_detail_lines(&a_info);
         assert!(detail[0].contains("Claude Haiku 4.5"));
         assert!(detail[0].contains("[anthropic]"));
-        assert!(detail.iter().any(|l| l.contains("Context 200k")), "{detail:?}");
+        assert!(
+            detail.iter().any(|l| l.contains("Context 200k")),
+            "{detail:?}"
+        );
         assert!(detail.iter().any(|l| l.contains("API anth")), "{detail:?}");
-        assert!(detail.iter().any(|l| l.contains("Cost $1 / $5")), "{detail:?}");
-        assert!(detail.iter().any(|l| l.contains("cache read")), "{detail:?}");
+        assert!(
+            detail.iter().any(|l| l.contains("Cost $1 / $5")),
+            "{detail:?}"
+        );
+        assert!(
+            detail.iter().any(|l| l.contains("cache read")),
+            "{detail:?}"
+        );
     }
 
     #[test]

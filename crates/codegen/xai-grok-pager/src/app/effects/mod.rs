@@ -1275,6 +1275,28 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::RunPiExtensionCommand {
+            session_id,
+            command,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({
+                    "sessionId": session_id.0.to_string(),
+                    "command": command,
+                });
+                let notification = acp::ExtNotification::new(
+                    "pi/extension_command",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize Pi extension command")
+                        .into(),
+                );
+                if let Err(error) = acp_send(notification, &tx).await {
+                    tracing::warn!(%error, "failed to invoke Pi extension command");
+                }
+                TaskResult::CancelComplete
+            });
+        }
         Effect::SendPrompt {
             agent_id,
             session_id,

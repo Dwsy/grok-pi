@@ -213,6 +213,34 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(app: &mut AppView) -> Vec
     vec![]
 }
 
+/// Open the native Pi resource configuration modal. Pi source remains
+/// unmodified; the Pager's Rust compatibility layer reads the Pi settings and
+/// trust files, while this dispatcher owns only the native modal transition.
+pub(in crate::app::dispatch) fn dispatch_open_pi_config(app: &mut AppView) -> Vec<Effect> {
+    use crate::views::modal::ActiveModal;
+
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(cwd) = app.agents.get(&id).map(|agent| agent.session.cwd.clone()) else {
+        return vec![];
+    };
+    match crate::views::pi_config::PiConfigModalState::open(cwd) {
+        Ok(state) => {
+            if let Some(agent) = app.agents.get_mut(&id) {
+                agent.active_modal = Some(ActiveModal::PiConfig {
+                    state: Box::new(state),
+                });
+            }
+        }
+        Err(error) => {
+            let message = format!("Pi config unavailable: {error:#}");
+            app.show_toast(&message);
+        }
+    }
+    vec![]
+}
+
 /// Open the reset-settings confirmation modal.
 ///
 /// **Modal stack contract.** The current `ActiveModal::Settings`

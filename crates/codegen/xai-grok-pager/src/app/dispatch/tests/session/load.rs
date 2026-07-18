@@ -8,7 +8,10 @@ fn external_resume_uses_current_tab_then_loads_all_on_refresh() {
     app.external_agent = true;
     let effects = dispatch(Action::ShowSessionPicker, &mut app);
     assert!(
-        matches!(&effects[..], [Effect::FetchExternalSessionCatalog { all: false, .. }]),
+        matches!(
+            &effects[..],
+            [Effect::FetchExternalSessionCatalog { all: false, .. }]
+        ),
         "external resume must initially request only the current folder, got {effects:?}"
     );
     let agent = get_active_agent_mut(&mut app).expect("active agent");
@@ -29,7 +32,10 @@ fn external_resume_uses_current_tab_then_loads_all_on_refresh() {
 
     let effects = dispatch(Action::RefreshExternalSessionCatalog, &mut app);
     assert!(
-        matches!(&effects[..], [Effect::FetchExternalSessionCatalog { all: true, .. }]),
+        matches!(
+            &effects[..],
+            [Effect::FetchExternalSessionCatalog { all: true, .. }]
+        ),
         "All tab must request the global catalog, got {effects:?}"
     );
 }

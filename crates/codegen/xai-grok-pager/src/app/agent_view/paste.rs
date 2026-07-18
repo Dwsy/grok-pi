@@ -1270,6 +1270,8 @@ pub(super) mod paste_key_tests {
             0,
             0,
             1,
+            0,
+            0,
             false,
         );
         assert!(layout.prompt.y + layout.prompt.height <= area.height);

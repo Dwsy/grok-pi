@@ -1527,6 +1527,28 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
+        // External Pi profile resource manager. This is a Pager navigation row,
+        // not a Grok-shell setting, so its Group form only supplies the native
+        // chevron presentation; settings-modal input maps it to OpenPiConfig.
+        SettingMeta {
+            key: "pi_config",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Pi resources",
+            description: "Review and enable Pi extensions, skills, prompts, and themes. Project resources require Pi project trust.",
+            keywords: &[
+                "pi",
+                "config",
+                "extensions",
+                "skills",
+                "prompts",
+                "themes",
+                "resources",
+            ],
+            kind: SettingKind::Group { children: &[] },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
         // Session recap (auto away-recap + /recap model override).
         // Auto toggle lives on `[ui].session_recap` (mirrors notification opt-in).
         SettingMeta {

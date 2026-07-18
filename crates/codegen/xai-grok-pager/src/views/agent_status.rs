@@ -75,6 +75,59 @@ pub fn ansi_status_line(ansi: &str, theme: &Theme) -> Line<'static> {
     line
 }
 
+/// Remote TUI frames: map ANSI into the active Grok theme.
+///
+/// Pi components often use reverse video (`ESC[7m`) for cursors / field chrome.
+/// Keeping the REVERSED modifier inverts against the terminal cell and looks
+/// wrong under both light (too dark) and dark (too light) themes. Convert it
+/// to an explicit theme highlight instead.
+pub fn ansi_remote_tui_line(ansi: &str, theme: &Theme) -> Line<'static> {
+    use ratatui::style::{Color, Modifier};
+
+    let mut line = ansi
+        .as_bytes()
+        .into_text()
+        .ok()
+        .and_then(|text| text.lines.into_iter().next())
+        .unwrap_or_else(|| Line::raw(ansi.to_owned()));
+
+    for span in &mut line.spans {
+        let reversed = span.style.add_modifier.contains(Modifier::REVERSED);
+        // Always clear reverse; we re-encode selection/cursor with theme colors.
+        span.style = span.style.remove_modifier(Modifier::REVERSED);
+
+        // Some parsers expand reverse into an explicit dark/light bg pair instead
+        // of Modifier::REVERSED. Treat dark fills as field chrome too.
+        let dark_fill = match span.style.bg {
+            Some(Color::Black) | Some(Color::DarkGray) => true,
+            Some(Color::Rgb(r, g, b)) => (u16::from(r) + u16::from(g) + u16::from(b)) < 180,
+            _ => false,
+        };
+
+        if reversed || dark_fill {
+            span.style.fg = Some(theme.text_primary);
+            span.style.bg = Some(theme.bg_highlight);
+            continue;
+        }
+
+        span.style.fg = Some(match span.style.fg {
+            Some(Color::Green) => theme.accent_success,
+            Some(Color::Yellow) => theme.warning,
+            Some(Color::Red) => theme.accent_error,
+            Some(Color::Blue) => theme.accent_system,
+            Some(Color::Magenta) => theme.accent_assistant,
+            Some(Color::Cyan) => theme.running,
+            None | Some(Color::Reset) | Some(Color::White) => theme.text_primary,
+            Some(Color::Black) | Some(Color::DarkGray) => theme.gray,
+            Some(Color::Gray) => theme.text_secondary,
+            _ => theme.text_secondary,
+        });
+        // Pin to surface so partial ANSI lines don't leave holes of terminal default.
+        span.style.bg = Some(theme.bg_base);
+    }
+    line
+}
+
 impl<'a> AgentStatusBar<'a> {
     /// Create a new empty status bar.
     pub fn new(theme: &'a Theme) -> Self {
@@ -354,6 +407,25 @@ mod tests {
 
         assert_eq!(line.spans.len(), 1);
         assert_eq!(line.spans[0].content, "-- tok/s");
+    }
+
+    #[test]
+    fn ansi_remote_tui_line_maps_reverse_to_theme_highlight() {
+        use ratatui::style::Modifier;
+        let theme = Theme::current();
+        // Pi Input cursor: reverse video on one cell, then normal.
+        let line = ansi_remote_tui_line("a\x1b[7m \x1b[27mb", &theme);
+        assert!(line.spans.iter().any(|span| {
+            span.content == " "
+                && span.style.bg == Some(theme.bg_highlight)
+                && !span.style.add_modifier.contains(Modifier::REVERSED)
+        }));
+        // Non-reversed cells pin to surface bg.
+        assert!(
+            line.spans
+                .iter()
+                .any(|span| { span.content == "a" && span.style.bg == Some(theme.bg_base) })
+        );
     }
 
     #[test]

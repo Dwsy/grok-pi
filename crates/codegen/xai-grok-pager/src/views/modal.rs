@@ -295,6 +295,10 @@ pub enum ActiveModal {
     Settings {
         state: Box<crate::views::settings_modal::SettingsModalState>,
     },
+    /// Pi resource configuration, opened from the F2 settings modal.
+    PiConfig {
+        state: Box<crate::views::pi_config::PiConfigModalState>,
+    },
     /// Reset-settings confirmation, stacked above Settings.
     ///
     /// The underlying `SettingsModalState` is moved in/out so cancel
@@ -618,6 +622,7 @@ impl ActiveModal {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
+            | ActiveModal::PiConfig { .. }
             | ActiveModal::RememberNoteReview { .. } => vec![],
         }
     }
@@ -648,6 +653,7 @@ impl ActiveModal {
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",
             ActiveModal::Settings { .. } => crate::views::settings_modal::MODAL_TITLE,
+            ActiveModal::PiConfig { .. } => "Pi resources",
             ActiveModal::ResetSettingsConfirm { .. } => "Reset setting?",
             ActiveModal::RememberNoteReview { .. } => "Memory Note",
         }

@@ -93,9 +93,9 @@ use super::settings::setters::{
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
-    dispatch_open_reset_confirm, dispatch_open_settings, dispatch_toggle_compact_mode,
-    dispatch_toggle_mouse_capture, dispatch_toggle_multiline, dispatch_toggle_timestamps,
-    dispatch_toggle_vim_mode,
+    dispatch_open_pi_config, dispatch_open_reset_confirm, dispatch_open_settings,
+    dispatch_toggle_compact_mode, dispatch_toggle_mouse_capture, dispatch_toggle_multiline,
+    dispatch_toggle_timestamps, dispatch_toggle_vim_mode,
 };
 use super::status::{
     dispatch_copy_session_id, dispatch_open_gboom, dispatch_share_session,
@@ -1015,6 +1015,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoDarkTheme(v) => preview_auto_dark_theme(app, v),
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app),
+        Action::OpenPiConfig => dispatch_open_pi_config(app),
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
         Action::OpenHowtoGuides => dispatch_open_howto_guides(app),
         Action::OpenResetConfirm { key } => dispatch_open_reset_confirm(app, key),

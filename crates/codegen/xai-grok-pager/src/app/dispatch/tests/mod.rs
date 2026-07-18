@@ -257,6 +257,9 @@ fn test_app() -> AppView {
         voice_auth: None,
         voice_cmd_tx: None,
         voice_state: VoiceState::Idle,
+        external_ui: crate::app::app_view::ExternalUiState::default(),
+        external_agent: false,
+        welcome_prewarm_agent: None,
     }
 }
 /// Build a default `AgentSession` for

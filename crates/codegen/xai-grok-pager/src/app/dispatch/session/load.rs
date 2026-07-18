@@ -1201,8 +1201,8 @@ pub(in crate::app::dispatch) fn handle_deep_search_results(
 /// [`Action::FetchSessionList`]), and `/resume`. Grok's session-store list is
 /// never used for external agents.
 pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) -> Vec<Effect> {
-    use crate::views::modal::ActiveModal;
     use super::lifecycle::discard_welcome_prewarm;
+    use crate::views::modal::ActiveModal;
     let external_agent = app.external_agent;
     let has_agent = matches!(app.active_view, crate::app::app_view::ActiveView::Agent(_));
     // Resume replaces the empty prewarmed session; drop it so we do not leak

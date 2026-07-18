@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -23,6 +24,37 @@ fn make_state() -> SettingsModalState {
         UiConfig::default(),
         PagerLocalSnapshot::default(),
     )
+}
+
+fn set_voice_mode_enabled_for_test(enabled: bool) {
+    crate::app::VOICE_MODE_ENABLED.store(enabled, Ordering::Release);
+}
+
+#[test]
+fn pi_config_row_opens_native_resource_modal() {
+    let mut state = make_state();
+    state.selected = state
+        .rows
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                RowEntry::Setting {
+                    key: "pi_config",
+                    ..
+                }
+            )
+        })
+        .expect("Pi config setting row must be registered");
+
+    let outcome = handle_settings_key(
+        &mut state,
+        &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert!(matches!(
+        outcome,
+        SettingsKeyOutcome::Action(Action::OpenPiConfig)
+    ));
 }
 
 /// The contextual-hints group renders as a single top-level row (children
@@ -206,7 +238,7 @@ fn setting_row_visible_hides_voice_rows_when_voice_mode_off() {
 #[test]
 fn rebuild_rows_drops_voice_settings_when_gate_turns_off() {
     let prev = crate::app::voice_mode_enabled();
-    crate::app::set_voice_mode_enabled_for_test(true);
+    set_voice_mode_enabled_for_test(true);
     let mut state = make_state();
     let has_voice_lang = |s: &SettingsModalState| {
         s.rows.iter().any(|r| {
@@ -224,13 +256,13 @@ fn rebuild_rows_drops_voice_settings_when_gate_turns_off() {
         "voice_stt_language should be listed with gate on"
     );
 
-    crate::app::set_voice_mode_enabled_for_test(false);
+    set_voice_mode_enabled_for_test(false);
     state.rebuild_rows();
     assert!(
         !has_voice_lang(&state),
         "rebuild after gate off must hide voice_stt_language"
     );
-    crate::app::set_voice_mode_enabled_for_test(prev);
+    set_voice_mode_enabled_for_test(prev);
 }
 
 #[test]
@@ -574,7 +606,7 @@ fn render_setting_row_shows_full_label_when_one_line_fits() {
 #[test]
 fn rows_contain_categories_and_settings_through_pr_14() {
     let prev_voice = crate::app::voice_mode_enabled();
-    crate::app::set_voice_mode_enabled_for_test(false);
+    set_voice_mode_enabled_for_test(false);
     let s = make_state();
     let headers: Vec<&SettingCategory> = s
         .rows
@@ -701,7 +733,7 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             "hunk_tracker_mode",
         ]
     );
-    crate::app::set_voice_mode_enabled_for_test(prev_voice);
+    set_voice_mode_enabled_for_test(prev_voice);
 }
 
 #[test]

@@ -455,6 +455,16 @@ impl AgentView {
             }
         }
 
+        if let ActiveModal::PiConfig { state } = modal {
+            return match crate::views::pi_config::PiConfigModalState::handle_key(state, key) {
+                crate::views::pi_config::PiConfigOutcome::Close => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                crate::views::pi_config::PiConfigOutcome::Changed => InputOutcome::Changed,
+            };
+        }
+
         // ResetSettingsConfirm: y/n routing. Handled before generic
         // char-match so Esc/F2/Ctrl+, route to Cancel (not modal close).
         if let Some(ActiveModal::ResetSettingsConfirm { modal, .. }) = self.active_modal.as_ref() {
@@ -506,6 +516,7 @@ impl AgentView {
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
+            | ActiveModal::PiConfig { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
             | ActiveModal::RememberNoteReview { .. } => unreachable!(),
         }
@@ -1584,6 +1595,32 @@ impl AgentView {
             }
         }
 
+        // Pi resources: modal chrome owns close/tabs, then the native resource
+        // tree receives clicks and wheel input.
+        if let Some(ActiveModal::PiConfig { state }) = &mut self.active_modal {
+            let outcome =
+                mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
+            return match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::TabChanged(index) => {
+                    state.select_tab(index);
+                    InputOutcome::Changed
+                }
+                ModalWindowOutcome::Handled => InputOutcome::Changed,
+                ModalWindowOutcome::Unhandled => match state.handle_mouse(mouse) {
+                    crate::views::pi_config::PiConfigOutcome::Close => {
+                        self.active_modal = None;
+                        InputOutcome::Changed
+                    }
+                    crate::views::pi_config::PiConfigOutcome::Changed => InputOutcome::Changed,
+                },
+                _ => InputOutcome::Changed,
+            };
+        }
+
         // ResetSettingsConfirm: route mouse events through the
         // modal-window chrome.
         if let Some(ActiveModal::ResetSettingsConfirm { settings_state, .. }) =
@@ -2373,6 +2410,8 @@ impl AgentView {
                 }
             } else if let modal::ActiveModal::MemoryBrowser { state: mem_state } = active_modal {
                 crate::views::memory_modal::render_memory_modal(buf, area, mem_state, compact);
+            } else if let modal::ActiveModal::PiConfig { state } = active_modal {
+                crate::views::pi_config::render_pi_config_modal(buf, area, state, compact);
             } else if let modal::ActiveModal::Settings {
                 state: settings_state,
             } = active_modal
@@ -2411,7 +2450,6 @@ impl AgentView {
             }
         }
     }
-
 
     fn handle_session_tree_mouse(
         state: &mut crate::views::session_tree::SessionTreeState,
@@ -2684,7 +2722,6 @@ impl AgentView {
             _ => InputOutcome::Unchanged,
         }
     }
-
 }
 
 /// Split the model-list content area into list + bottom detail pane.

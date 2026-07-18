@@ -1187,6 +1187,9 @@ pub struct AgentView {
     /// Pi RPC widgets placed above the native editor. Pager renders these in
     /// their own reserved rows instead of overloading the toast slot.
     pub(crate) external_widgets_above_editor: Vec<String>,
+    /// When true, above-editor external widgets bleed past outer hpad so they
+    /// match Pi interactive full-terminal width (Remote TUI).
+    pub(crate) external_widgets_above_full_bleed: bool,
     /// Pi RPC widgets placed below the native editor.
     pub(crate) external_widgets_below_editor: Vec<String>,
     /// Pi RPC keyed statuses, rendered by the native status bar.
@@ -1319,6 +1322,9 @@ pub struct AgentView {
     /// Set only when the rewind flow emits `Effect::RewindExecute` while the
     /// inline editor is open (see `stash_inline_resubmit_if_editing`).
     pub(crate) pending_inline_resubmit: Option<String>,
+    /// Timeline geometry built during render and consumed by mouse input.
+    pub(crate) timeline_rail: Option<crate::views::timeline::TimelineRail>,
+    pub(crate) timeline_hover: Option<crate::views::timeline::TimelineHit>,
     /// Running agent definition for this session (`x.ai/session/info` `agentName`).
     pub session_agent_name: Option<String>,
     /// Map of child session IDs to subagent metadata. Populated on

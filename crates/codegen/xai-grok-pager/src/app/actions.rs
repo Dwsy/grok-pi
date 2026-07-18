@@ -666,6 +666,8 @@ pub enum Action {
     /// Open the settings modal (F2, `/settings`, command palette).
     /// If already open, closes it instead of stacking.
     OpenSettings,
+    /// Open the native Pi resource-configuration modal from F2 settings.
+    OpenPiConfig,
     /// Open the command palette (`/help`). The keybinding path (Ctrl+P) opens it
     /// directly in `handle_agent_action`; this lets a slash command reach the
     /// same modal through dispatch.
@@ -1567,6 +1569,12 @@ pub enum Effect {
         /// offsets index the block's `text` displayed verbatim — never
         /// combined with a `displayText` override.
         skill_token_ranges: Vec<std::ops::Range<usize>>,
+    },
+    /// Invoke a Pi extension command without creating a Pager turn or queue row.
+    /// Pi owns the command handler and any nested agent work it starts.
+    RunPiExtensionCommand {
+        session_id: acp::SessionId,
+        command: String,
     },
     /// Send a direct bash command to the agent (with typed PromptBlockMeta).
     SendBashCommand {

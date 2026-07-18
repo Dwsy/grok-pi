@@ -126,7 +126,7 @@ impl ScrollbackState {
     }
 
     /// Common logic for switching to a specific turn (jumps to its prompt).
-    fn activate_turn(&mut self, turn_idx: usize) {
+    pub(super) fn activate_turn(&mut self, turn_idx: usize) {
         if let Some(prompt_index) = self.turns.get(turn_idx).map(|t| t.prompt_index) {
             self.activate_entry(turn_idx, prompt_index);
         }

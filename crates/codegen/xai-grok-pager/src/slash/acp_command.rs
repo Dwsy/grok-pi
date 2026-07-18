@@ -1,13 +1,9 @@
 //! Wrapper that turns an ACP `AvailableCommand` into a `SlashCommand`.
 //!
-//! ACP-advertised commands appear in the dropdown but pass through to the
-//! shell for execution. The wrapper stores `String` fields -- consistent
-//! with the `&str` trait design.
-//!
-//! Skill commands (those with `meta.path` + `meta.scope`) are handled
-//! client-side: pager reads the SKILL.md, applies substitutions, and
-//! sends structured prompt blocks directly. Non-skill ACP commands
-//! pass through to the shell as before.
+//! ACP-advertised commands appear in the dropdown. Pi extension commands use
+//! a direct host notification; skill and prompt commands keep their existing
+//! prompt semantics. The wrapper stores `String` fields -- consistent with
+//! the `&str` trait design.
 
 use agent_client_protocol as acp;
 use xai_grok_tools::implementations::skills::types::SkillScope;
@@ -16,9 +12,10 @@ use super::command::{CommandExecCtx, CommandResult, SlashCommand};
 
 /// A slash command backed by an ACP `AvailableCommand`.
 ///
-/// For skill commands (has `skill_path` + `skill_scope`), execution reads
-/// the SKILL.md client-side and produces `CommandResult::InjectSkill`.
-/// For non-skill commands, execution produces `CommandResult::PassThrough`.
+/// Pi extension commands (has `piCommandSource="extension"`) produce
+/// `CommandResult::DirectPiCommand`. Skill commands (has `skill_path` +
+/// `skill_scope`) produce `CommandResult::InjectSkill`; all other commands
+/// produce `CommandResult::PassThrough`.
 pub struct AcpSlashCommand {
     name: String,
     description: String,
@@ -30,6 +27,8 @@ pub struct AcpSlashCommand {
     skill_scope: Option<SkillScope>,
     /// True if the ACP meta had skill-like keys but they were invalid.
     meta_malformed: bool,
+    /// Pi extension commands execute before Pi's streaming queue semantics.
+    direct_pi_command: bool,
 }
 
 impl SlashCommand for AcpSlashCommand {
@@ -69,13 +68,18 @@ impl SlashCommand for AcpSlashCommand {
             return CommandResult::Error(format!("Malformed skill metadata for /{}", self.name));
         }
 
+        let text = if args.trim().is_empty() {
+            format!("/{}", self.name)
+        } else {
+            format!("/{} {}", self.name, args)
+        };
+
+        if self.direct_pi_command {
+            return CommandResult::DirectPiCommand(text);
+        }
+
         // Non-skill ACP commands: pass through to the shell as before.
         if self.skill_path.is_none() || self.skill_scope.is_none() {
-            let text = if args.trim().is_empty() {
-                format!("/{}", self.name)
-            } else {
-                format!("/{} {}", self.name, args)
-            };
             return CommandResult::PassThrough(text);
         }
 
@@ -85,11 +89,7 @@ impl SlashCommand for AcpSlashCommand {
         // SKILL.md loading, substitution, and assembly of the
         // <user_query> + <skill_information> format. The pager just
         // sends the raw `/skill args` text as a single prompt block.
-        let display_text = if args.trim().is_empty() {
-            format!("/{}", self.name)
-        } else {
-            format!("/{} {}", self.name, args)
-        };
+        let display_text = text;
 
         let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
             display_text.clone(),
@@ -139,6 +139,13 @@ impl From<&acp::AvailableCommand> for AcpSlashCommand {
             }
         };
 
+        let direct_pi_command = cmd
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("piCommandSource"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|source| source == "extension");
+
         Self {
             name: cmd.name.clone(),
             description: cmd.description.clone(),
@@ -150,6 +157,7 @@ impl From<&acp::AvailableCommand> for AcpSlashCommand {
             skill_path,
             skill_scope,
             meta_malformed,
+            direct_pi_command,
         }
     }
 }
@@ -278,6 +286,7 @@ mod tests {
             skill_path: Some(path.to_string()),
             skill_scope: serde_json::from_value(serde_json::json!(scope)).ok(),
             meta_malformed: false,
+            direct_pi_command: false,
         }
     }
 
@@ -308,10 +317,27 @@ mod tests {
             skill_path: None,
             skill_scope: None,
             meta_malformed: false,
+            direct_pi_command: false,
         };
         let mut ctx = make_exec_ctx();
         let result = cmd.run(&mut ctx, "");
         assert!(matches!(result, CommandResult::PassThrough(t) if t == "/flush"));
+    }
+
+    #[test]
+    fn extension_metadata_runs_directly() {
+        let cmd = make_cmd(
+            "review",
+            Some(serde_json::json!({
+                "piCommandSource": "extension"
+            })),
+        );
+        let direct = AcpSlashCommand::from(&cmd);
+        let mut ctx = make_exec_ctx();
+        assert!(matches!(
+            direct.run(&mut ctx, "scope"),
+            CommandResult::DirectPiCommand(text) if text == "/review scope"
+        ));
     }
 
     #[test]
@@ -324,6 +350,7 @@ mod tests {
             skill_path: None,
             skill_scope: None,
             meta_malformed: true,
+            direct_pi_command: false,
         };
         let mut ctx = make_exec_ctx();
         let result = cmd.run(&mut ctx, "");

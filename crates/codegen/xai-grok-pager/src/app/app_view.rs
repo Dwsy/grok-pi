@@ -1816,6 +1816,8 @@ impl AppView {
     /// Queue a Pi/external-backend notification for Grok's native toast.
     /// The Pager toast has one visible slot, so all external notifications go
     /// through FIFO draining rather than replacing the currently visible one.
+    /// Explicit information notices are also written to scrollback: they are
+    /// command results such as `/grok-cli-vision:status`, not transient alerts.
     pub fn show_external_notification(&mut self, message: &str, kind: Option<&str>) {
         let rendered = match kind {
             Some("warning") => format!("Warning: {message}"),
@@ -1823,6 +1825,17 @@ impl AppView {
             _ => message.to_string(),
         };
         self.external_ui.pending_toasts.push_back(rendered);
+
+        if kind != Some("info") {
+            return;
+        }
+        if let ActiveView::Agent(id) = self.active_view
+            && let Some(agent) = self.agents.get_mut(&id)
+        {
+            agent
+                .scrollback
+                .push_block(crate::scrollback::block::RenderBlock::system(message));
+        }
     }
 
     /// Project an external session catalog into the native picker and/or the
@@ -1864,8 +1877,8 @@ impl AppView {
                 == crate::views::session_picker::SourceFilter::External
             && scope == "current"
         {
-            let picker_changed =
-                self.session_picker_entries.as_ref() != Some(&entries) || self.session_picker_loading;
+            let picker_changed = self.session_picker_entries.as_ref() != Some(&entries)
+                || self.session_picker_loading;
             self.session_picker_entries = Some(entries.clone());
             self.session_picker_loading = false;
             return changed || picker_changed;
@@ -1956,6 +1969,20 @@ impl AppView {
         lines: Option<Vec<String>>,
         placement: ExternalWidgetPlacement,
     ) -> bool {
+        // Extension-host Remote TUI reuses setWidget("remote_tui", lines).
+        // Arm keyboard capture whenever that widget is present.
+        if key == "remote_tui" {
+            match &lines {
+                Some(_) => {
+                    if self.external_ui.remote_tui_id.is_none() {
+                        self.external_ui.remote_tui_id = Some("widget".to_string());
+                    }
+                }
+                None => {
+                    self.external_ui.remote_tui_id = None;
+                }
+            }
+        }
         match lines.filter(|lines| lines.iter().any(|line| !line.trim().is_empty())) {
             Some(lines) => {
                 self.external_ui
@@ -2010,7 +2037,11 @@ impl AppView {
             }
             "close" => {
                 self.external_ui.remote_tui_id = None;
-                self.set_external_widget("remote_tui".to_string(), None, ExternalWidgetPlacement::AboveEditor)
+                self.set_external_widget(
+                    "remote_tui".to_string(),
+                    None,
+                    ExternalWidgetPlacement::AboveEditor,
+                )
             }
             _ => false,
         }
@@ -2039,9 +2070,7 @@ impl AppView {
             KeyCode::End => Some("\u{001b}[F".to_string()),
             KeyCode::PageUp => Some("\u{001b}[5~".to_string()),
             KeyCode::PageDown => Some("\u{001b}[6~".to_string()),
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(c.to_string())
-            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::ALT) => Some(c.to_string()),
             _ => None,
         }
     }
@@ -2125,9 +2154,16 @@ impl AppView {
             &self.external_ui.widgets,
             ExternalWidgetPlacement::BelowEditor,
         );
+        // Remote TUI projects full-terminal frames (like Pi interactive). Bleed
+        // past Pager outer hpad so width matches host COLUMNS, not inner area.
+        let above_full_bleed = self.external_ui.widgets.contains_key("remote_tui");
         self.agents.values_mut().fold(false, |changed, agent| {
-            agent.set_external_ui_surface(&widgets_above_editor, &widgets_below_editor, &statuses)
-                || changed
+            agent.set_external_ui_surface(
+                &widgets_above_editor,
+                &widgets_below_editor,
+                &statuses,
+                above_full_bleed,
+            ) || changed
         })
     }
     /// Insert or replace a leader roster entry, keyed by `session_id`.
@@ -3598,10 +3634,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             }
             let menu_policy = crate::views::welcome::logo::welcome_menu_override();
             let hide_worktree = menu_policy.is_some_and(|m| m.hide_new_worktree);
-            if key!('w', CONTROL).matches(key)
-                && ctx.cwd_has_git_ancestor
-                && !hide_worktree
-            {
+            if key!('w', CONTROL).matches(key) && ctx.cwd_has_git_ancestor && !hide_worktree {
                 return InputOutcome::Action(Action::OpenNewWorktreeDialog);
             }
             // External hosts: equivalent to `/resume` (native SessionPicker +
@@ -5911,6 +5944,16 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn explicit_info_notification_is_retained_in_scrollback() {
+        let mut app = test_app_with_agent();
+        let id = super::super::agent::AgentId(0);
+
+        app.show_external_notification("grok-cli-vision: ON", Some("info"));
+
+        assert_eq!(app.agents[&id].scrollback.len(), 1);
+    }
+
+    #[test]
     fn remote_tui_key_sequence_maps_arrows_enter_esc() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
@@ -5920,7 +5963,10 @@ pub(crate) mod tests {
             AppView::remote_tui_key_sequence(&up).as_deref(),
             Some("\u{1b}[A")
         );
-        assert_eq!(AppView::remote_tui_key_sequence(&enter).as_deref(), Some("\r"));
+        assert_eq!(
+            AppView::remote_tui_key_sequence(&enter).as_deref(),
+            Some("\r")
+        );
         assert_eq!(
             AppView::remote_tui_key_sequence(&esc).as_deref(),
             Some("\u{1b}")
@@ -5931,12 +5977,7 @@ pub(crate) mod tests {
     fn remote_tui_frame_preserves_multiline_and_closes() {
         let mut app = test_app_with_agent();
         app.external_agent = true;
-        assert!(app.apply_remote_tui(
-            "open",
-            Some("sess-1".into()),
-            None,
-            Some("Probe".into()),
-        ));
+        assert!(app.apply_remote_tui("open", Some("sess-1".into()), None, Some("Probe".into()),));
         assert_eq!(app.external_ui.remote_tui_id.as_deref(), Some("sess-1"));
         assert!(app.apply_remote_tui(
             "frame",
@@ -5950,8 +5991,18 @@ pub(crate) mod tests {
         // multiline remote frames must not be joined into one status row
         let id = super::super::agent::AgentId(0);
         let agent = &app.agents[&id];
-        assert!(agent.external_widgets_above_editor.iter().any(|l| l == "line-a"));
-        assert!(agent.external_widgets_above_editor.iter().any(|l| l == "line-b"));
+        assert!(
+            agent
+                .external_widgets_above_editor
+                .iter()
+                .any(|l| l == "line-a")
+        );
+        assert!(
+            agent
+                .external_widgets_above_editor
+                .iter()
+                .any(|l| l == "line-b")
+        );
         assert!(app.apply_remote_tui("close", Some("sess-1".into()), None, None));
         assert!(app.external_ui.remote_tui_id.is_none());
         assert!(!app.external_ui.widgets.contains_key("remote_tui"));
@@ -8234,7 +8285,10 @@ pub(crate) mod tests {
         let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(outcome, InputOutcome::Changed));
         assert!(matches!(
-            app.pending_action.as_ref().expect("arm session tree").action,
+            app.pending_action
+                .as_ref()
+                .expect("arm session tree")
+                .action,
             Action::ShowSessionTree
         ));
 

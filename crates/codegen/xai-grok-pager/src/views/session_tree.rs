@@ -237,15 +237,7 @@ impl SessionTreeState {
 
         // 4) DFS with Pi indent rules.
         // Stack: (id, indent, just_branched, show_connector, is_last, gutters, is_virtual_root_child)
-        let mut stack: Vec<(
-            String,
-            usize,
-            bool,
-            bool,
-            bool,
-            Vec<GutterInfo>,
-            bool,
-        )> = Vec::new();
+        let mut stack: Vec<(String, usize, bool, bool, bool, Vec<GutterInfo>, bool)> = Vec::new();
         for (i, root_id) in visible_roots.iter().enumerate().rev() {
             let is_last = i == visible_roots.len() - 1;
             stack.push((
@@ -509,11 +501,7 @@ impl SessionTreeState {
         let rel = (row - list.y) as usize;
         let index = self.scroll + rel;
         let len = self.visible_rows().len();
-        if index < len {
-            Some(index)
-        } else {
-            None
-        }
+        if index < len { Some(index) } else { None }
     }
 }
 
@@ -659,10 +647,7 @@ pub fn render_session_tree(
         Line::from(Span::styled(
             format!(
                 "  {} · filter [{}]",
-                state
-                    .status
-                    .as_deref()
-                    .unwrap_or("Loading tree from Pi…"),
+                state.status.as_deref().unwrap_or("Loading tree from Pi…"),
                 state.filter.label()
             ),
             Style::default().fg(theme.accent_user),
@@ -784,20 +769,14 @@ pub fn render_session_tree(
                 ),
             ];
             if !label.is_empty() {
-                spans.push(Span::styled(
-                    label,
-                    Style::default().fg(theme.warning),
-                ));
+                spans.push(Span::styled(label, Style::default().fg(theme.warning)));
             }
             // Split "role: body" for colored role when present.
             if let Some((role_part, body_part)) = content.split_once(": ") {
                 if matches!(node.role.as_str(), "user" | "assistant")
                     && node.entry_type == "message"
                 {
-                    spans.push(Span::styled(
-                        format!("{role_part}: "),
-                        role_style,
-                    ));
+                    spans.push(Span::styled(format!("{role_part}: "), role_style));
                     spans.push(Span::styled(body_part.to_string(), body_style));
                 } else {
                     spans.push(Span::styled(content.clone(), body_style));
@@ -821,7 +800,10 @@ pub fn render_session_tree(
     let help = if matches!(state.focus, SessionTreeFocus::LabelEdit) {
         format!("  label edit · Enter save · Esc cancel  ({pos}/{count})")
     } else if state.detail_expanded {
-        format!("  Ctrl+R collapse · ↑/↓ detail  ({pos}/{count}) [{}]", state.filter.label())
+        format!(
+            "  Ctrl+R collapse · ↑/↓ detail  ({pos}/{count}) [{}]",
+            state.filter.label()
+        )
     } else {
         format!(
             "  ({pos}/{count}) [{}]  ↑/↓ · click select · dblclick go · Tab fold · / search · o filter · Enter go · Esc",
@@ -835,11 +817,7 @@ pub fn render_session_tree(
     .render(chunks[3], buf);
 }
 
-fn role_styles(
-    node: &SessionTreeNode,
-    selected: bool,
-    theme: &Theme,
-) -> (Style, Style) {
+fn role_styles(node: &SessionTreeNode, selected: bool, theme: &Theme) -> (Style, Style) {
     let bold = if selected {
         Modifier::BOLD
     } else {

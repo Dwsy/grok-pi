@@ -108,10 +108,7 @@ impl SlashCommand for ThemeCommand {
 
         // Concrete Grok themes — only show "(active)" when not in auto/custom.
         items.extend(available.iter().map(|kind| {
-            let active = if !is_auto
-                && !has_custom
-                && kind.display_name() == current_id.as_str()
-            {
+            let active = if !is_auto && !has_custom && kind.display_name() == current_id.as_str() {
                 " (active)"
             } else {
                 ""
@@ -607,7 +604,10 @@ mod tests {
             let result = cmd.run(&mut ctx, "nonexistent");
             if let CommandResult::Error(msg) = result {
                 assert!(msg.contains("auto"), "error should list auto: {msg}");
-                assert!(msg.contains("pi:dark"), "error should list Pi themes: {msg}");
+                assert!(
+                    msg.contains("pi:dark"),
+                    "error should list Pi themes: {msg}"
+                );
             } else {
                 panic!("expected Error, got: {result:?}");
             }
