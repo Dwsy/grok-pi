@@ -262,7 +262,11 @@ export type RpcExtensionUIRequest =
 			widgetPlacement?: "aboveEditor" | "belowEditor";
 	  }
 	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
-	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string };
+	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string }
+	// Experimental Remote TUI (PI_GROK_REMOTE_TUI=1)
+	| { type: "extension_ui_request"; id: string; method: "remote_tui_open"; title?: string; width?: number }
+	| { type: "extension_ui_request"; id: string; method: "remote_tui_frame"; lines: string[]; width?: number }
+	| { type: "extension_ui_request"; id: string; method: "remote_tui_close" };
 
 // ============================================================================
 // Extension UI Commands (stdin)

@@ -1265,6 +1265,41 @@ impl PiAgent {
                         .await;
                 }
             }
+            // Experimental Remote TUI: frames projected from Pi-process component host.
+            "remote_tui_open" => {
+                self.send_ext_notification(
+                    "pi/ui/remote_tui",
+                    json!({
+                        "op": "open",
+                        "id": event.get("id").cloned().unwrap_or(Value::Null),
+                        "title": event.get("title").cloned().unwrap_or(Value::Null),
+                        "width": event.get("width").cloned().unwrap_or(Value::Null),
+                    }),
+                )
+                .await;
+            }
+            "remote_tui_frame" => {
+                self.send_ext_notification(
+                    "pi/ui/remote_tui",
+                    json!({
+                        "op": "frame",
+                        "id": event.get("id").cloned().unwrap_or(Value::Null),
+                        "lines": event.get("lines").cloned().unwrap_or(json!([])),
+                        "width": event.get("width").cloned().unwrap_or(Value::Null),
+                    }),
+                )
+                .await;
+            }
+            "remote_tui_close" => {
+                self.send_ext_notification(
+                    "pi/ui/remote_tui",
+                    json!({
+                        "op": "close",
+                        "id": event.get("id").cloned().unwrap_or(Value::Null),
+                    }),
+                )
+                .await;
+            }
             "select" | "confirm" | "input" | "editor" => {
                 let agent = self.clone();
                 tokio::task::spawn_local(async move {
@@ -1825,6 +1860,32 @@ impl acp::Agent for PiAgent {
 
     async fn ext_notification(&self, arguments: acp::ExtNotification) -> Result<(), acp::Error> {
         match arguments.method.as_ref() {
+            // Experimental Remote TUI key / cancel path (Pager → Pi process).
+            "pi/ui/remote_tui/input" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                if let Some(id) = string(&params, &["id"]) {
+                    if let Some(data) = string(&params, &["data"]) {
+                        let _ = self.rpc.notify(json!({
+                            "type": "remote_tui_input",
+                            "id": id,
+                            "data": data,
+                        }));
+                    }
+                }
+                Ok(())
+            }
+            "pi/ui/remote_tui/cancel" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                if let Some(id) = string(&params, &["id"]) {
+                    let _ = self.rpc.notify(json!({
+                        "type": "remote_tui_cancel",
+                        "id": id,
+                    }));
+                }
+                Ok(())
+            }
             "x.ai/queue/remove" | "x.ai/queue/clear" | "x.ai/queue/edit" | "x.ai/queue/reorder" => {
                 // Pi RPC does not expose per-item queue mutation / clearQueue.
                 // Rebroadcast the authoritative Pi mirror so the pager cannot

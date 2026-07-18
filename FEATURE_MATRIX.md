@@ -77,7 +77,8 @@
 | timeout/cancel | 适配 | Pi timeout 撤销对应 QuestionView，返回 `cancelled:true` |
 | raw terminal hook | 边界 | Pi RPC 明确不支持 |
 | custom header/footer/component | 边界 | Pi RPC 明确不支持 component factory |
-| `rpiv-ask-user-question` (`custom` 问卷) | 边界 | 依赖不可序列化的 `ctx.ui.custom(factory)`；RPC stub 恒 decline；不改插件无法桥接 |
+| Remote TUI（实验） | 实验 | `PI_GROK_REMOTE_TUI=1`：进程内跑 `custom(factory)`，帧投影 `pi/ui/remote_tui` + 键回传；默认关；非产品路径 |
+| `rpiv-ask-user-question` (`custom` 问卷) | 边界 | 依赖不可序列化的 `ctx.ui.custom(factory)`；RPC stub 恒 decline；实验 Remote TUI 可尝试，不改插件仍非稳定适配 |
 | `rpiv-btw` | 边界 | 进程内 side model + TUI overlay；应走原生 `/btw` + adapter `x.ai/btw`（尚未实现），不映射 juicesharp 包 |
 
 ## 斜杠命令

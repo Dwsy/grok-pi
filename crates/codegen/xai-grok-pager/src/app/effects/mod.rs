@@ -42,6 +42,38 @@ pub(crate) fn execute(
     let mut meta = EffectMeta::default();
     let effect_is_send_now = matches!(effect, Effect::SendPromptNow { .. });
     match effect {
+        Effect::RemoteTuiInput { id, data } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({ "id": id, "data": data });
+                let notification = acp::ExtNotification::new(
+                    "pi/ui/remote_tui/input",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize remote_tui input")
+                        .into(),
+                );
+                if let Err(e) = acp_send(notification, &tx).await {
+                    tracing::warn!(%e, "Failed to send remote_tui input");
+                }
+                TaskResult::CancelComplete
+            });
+        }
+        Effect::RemoteTuiCancel { id } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({ "id": id });
+                let notification = acp::ExtNotification::new(
+                    "pi/ui/remote_tui/cancel",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize remote_tui cancel")
+                        .into(),
+                );
+                if let Err(e) = acp_send(notification, &tx).await {
+                    tracing::warn!(%e, "Failed to send remote_tui cancel");
+                }
+                TaskResult::CancelComplete
+            });
+        }
         Effect::RegisterActiveSession { session_id, cwd } => {
             crate::app::signal_handler::set_current_session_id(Some(session_id.clone()));
             if let Err(e) = xai_grok_shell::active_sessions::register(xai_grok_shell::active_sessions::ActiveSession {

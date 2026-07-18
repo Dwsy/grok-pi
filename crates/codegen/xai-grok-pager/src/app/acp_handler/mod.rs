@@ -635,6 +635,8 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "pi/ui/editor_text" => handle_pi_ui_editor_text(notif, app),
         "pi/ui/session_catalog" => handle_pi_ui_session_catalog(notif, app),
         "pi/ui/cancel_interaction" => handle_pi_ui_cancel_interaction(notif, app),
+        // Experimental Remote TUI frame projection (PI_GROK_REMOTE_TUI=1 on Pi).
+        "pi/ui/remote_tui" => handle_pi_ui_remote_tui(notif, app),
         _ => false,
     }
 }
@@ -714,6 +716,36 @@ fn handle_pi_ui_widget(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
         _ => crate::app::app_view::ExternalWidgetPlacement::AboveEditor,
     };
     app.set_external_widget(key, lines, placement)
+}
+
+fn handle_pi_ui_remote_tui(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let op = params
+        .get("op")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let id = params
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let title = params
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let lines = match params.get("lines") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(values)) => Some(
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        ),
+        Some(_) => None,
+    };
+    app.apply_remote_tui(op, id, lines, title)
 }
 
 fn handle_pi_ui_title(notif: &acp::ExtNotification) -> bool {

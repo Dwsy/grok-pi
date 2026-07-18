@@ -28,6 +28,12 @@ import {
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+import {
+	handleRemoteTuiCancel,
+	handleRemoteTuiInput,
+	isRemoteTuiEnabled,
+	runRemoteCustom,
+} from "./remote-tui-host.ts";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -224,8 +230,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			} as RpcExtensionUIRequest);
 		},
 
-		async custom() {
-			// Custom UI not supported in RPC mode
+		async custom<T>(factory: unknown, options?: unknown): Promise<T> {
+			// Experimental: run component in-process and project frames to host.
+			// Factory is typed against full TUI in ExtensionUIContext; we pass a
+			// structural stub (requestRender/setFocus/showOverlay) which is enough
+			// for L1 components that only need those hooks.
+			if (isRemoteTuiEnabled() && typeof factory === "function") {
+				return runRemoteCustom(
+					output as (request: Record<string, unknown>) => void,
+					factory as Parameters<typeof runRemoteCustom<T>>[1],
+					options as Parameters<typeof runRemoteCustom<T>>[2],
+				);
+			}
+			// Custom UI not supported in RPC mode without remote host
 			return undefined as never;
 		},
 
@@ -751,6 +768,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			if (pending) {
 				pendingExtensionRequests.delete(response.id);
 				pending.resolve(response);
+			}
+			return;
+		}
+
+		// Experimental remote TUI input / cancel (PI_GROK_REMOTE_TUI=1)
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			"type" in parsed &&
+			(parsed.type === "remote_tui_input" || parsed.type === "remote_tui_cancel")
+		) {
+			const msg = parsed as { type: string; id?: string; data?: string };
+			if (typeof msg.id === "string") {
+				if (msg.type === "remote_tui_input" && typeof msg.data === "string") {
+					handleRemoteTuiInput(msg.id, msg.data);
+				} else if (msg.type === "remote_tui_cancel") {
+					handleRemoteTuiCancel(msg.id);
+				}
 			}
 			return;
 		}

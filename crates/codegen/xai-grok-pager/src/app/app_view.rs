@@ -86,6 +86,9 @@ pub struct ExternalUiState {
     /// Session metadata from the external agent, rendered by the existing
     /// native SessionPicker rather than by an adapter-owned selector.
     pub session_catalog: Vec<SessionPickerEntry>,
+    /// Experimental Remote TUI session id (PI_GROK_REMOTE_TUI). When set,
+    /// keyboard input is forwarded as Pi key sequences instead of prompt edit.
+    pub remote_tui_id: Option<String>,
 }
 
 /// Semantic placement supplied by an external ACP adapter. Grok's native
@@ -111,6 +114,13 @@ fn append_external_widgets(
 ) {
     for (key, widget) in widgets {
         if widget.placement != placement {
+            continue;
+        }
+        // Experimental Remote TUI: keep multi-line frames intact (do not join).
+        if key == "remote_tui" {
+            for line in &widget.lines {
+                output.push(line.clone());
+            }
             continue;
         }
         let text = widget
@@ -1959,6 +1969,83 @@ impl AppView {
         self.refresh_external_ui_surface()
     }
 
+    /// Experimental Remote TUI open/frame/close (env-gated on Pi side).
+    pub fn apply_remote_tui(
+        &mut self,
+        op: &str,
+        id: Option<String>,
+        lines: Option<Vec<String>>,
+        title: Option<String>,
+    ) -> bool {
+        match op {
+            "open" => {
+                if let Some(id) = id {
+                    self.external_ui.remote_tui_id = Some(id);
+                }
+                let mut header = vec!["[Remote TUI experimental]".to_string()];
+                if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
+                    header.push(title);
+                }
+                header.push("↑/↓ · Enter · Esc".to_string());
+                self.set_external_widget(
+                    "remote_tui".to_string(),
+                    Some(header),
+                    ExternalWidgetPlacement::AboveEditor,
+                )
+            }
+            "frame" => {
+                if let Some(id) = id {
+                    self.external_ui.remote_tui_id = Some(id);
+                }
+                let mut frame = vec!["[Remote TUI experimental]".to_string()];
+                if let Some(lines) = lines {
+                    frame.extend(lines);
+                }
+                frame.push("↑/↓ · Enter · Esc".to_string());
+                self.set_external_widget(
+                    "remote_tui".to_string(),
+                    Some(frame),
+                    ExternalWidgetPlacement::AboveEditor,
+                )
+            }
+            "close" => {
+                self.external_ui.remote_tui_id = None;
+                self.set_external_widget("remote_tui".to_string(), None, ExternalWidgetPlacement::AboveEditor)
+            }
+            _ => false,
+        }
+    }
+
+    /// Map a crossterm key to a Pi-TUI legacy key sequence for remote host.
+    pub fn remote_tui_key_sequence(key: &crossterm::event::KeyEvent) -> Option<String> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return match key.code {
+                KeyCode::Char('c') => Some("\u{0003}".to_string()),
+                KeyCode::Char('d') => Some("\u{0004}".to_string()),
+                _ => None,
+            };
+        }
+        match key.code {
+            KeyCode::Up => Some("\u{001b}[A".to_string()),
+            KeyCode::Down => Some("\u{001b}[B".to_string()),
+            KeyCode::Right => Some("\u{001b}[C".to_string()),
+            KeyCode::Left => Some("\u{001b}[D".to_string()),
+            KeyCode::Enter => Some("\r".to_string()),
+            KeyCode::Esc => Some("\u{001b}".to_string()),
+            KeyCode::Backspace => Some("\u{007f}".to_string()),
+            KeyCode::Tab => Some("\t".to_string()),
+            KeyCode::Home => Some("\u{001b}[H".to_string()),
+            KeyCode::End => Some("\u{001b}[F".to_string()),
+            KeyCode::PageUp => Some("\u{001b}[5~".to_string()),
+            KeyCode::PageDown => Some("\u{001b}[6~".to_string()),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(c.to_string())
+            }
+            _ => None,
+        }
+    }
+
     /// Replace the text in whichever native Grok composer currently owns
     /// keyboard input.
     pub fn set_external_editor_text(&mut self, text: String) -> bool {
@@ -2400,6 +2487,24 @@ impl AppView {
             Event::Key(k) if k.kind != KeyEventKind::Release => Some(k),
             _ => None,
         };
+        // Experimental Remote TUI: when a remote component session is open,
+        // forward keys to the Pi process host instead of editing the prompt.
+        if self.external_agent
+            && let Some(id) = self.external_ui.remote_tui_id.clone()
+            && let Some(key) = key_event
+        {
+            if key.code == KeyCode::Esc {
+                // Prefer cancel over raw Esc input to avoid race with done().
+                self.pending_effects
+                    .push(crate::app::actions::Effect::RemoteTuiCancel { id });
+                return InputOutcome::Changed;
+            }
+            if let Some(data) = Self::remote_tui_key_sequence(key) {
+                self.pending_effects
+                    .push(crate::app::actions::Effect::RemoteTuiInput { id, data });
+                return InputOutcome::Changed;
+            }
+        }
         if let Event::Resize(_, rows) = ev {
             for agent in self.agents.values_mut() {
                 agent.note_terminal_resize();
@@ -5803,6 +5908,53 @@ pub(crate) mod tests {
                 .map(|(message, _)| message.as_str()),
             Some("Warning: second")
         );
+    }
+
+    #[test]
+    fn remote_tui_key_sequence_maps_arrows_enter_esc() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            AppView::remote_tui_key_sequence(&up).as_deref(),
+            Some("\u{1b}[A")
+        );
+        assert_eq!(AppView::remote_tui_key_sequence(&enter).as_deref(), Some("\r"));
+        assert_eq!(
+            AppView::remote_tui_key_sequence(&esc).as_deref(),
+            Some("\u{1b}")
+        );
+    }
+
+    #[test]
+    fn remote_tui_frame_preserves_multiline_and_closes() {
+        let mut app = test_app_with_agent();
+        app.external_agent = true;
+        assert!(app.apply_remote_tui(
+            "open",
+            Some("sess-1".into()),
+            None,
+            Some("Probe".into()),
+        ));
+        assert_eq!(app.external_ui.remote_tui_id.as_deref(), Some("sess-1"));
+        assert!(app.apply_remote_tui(
+            "frame",
+            Some("sess-1".into()),
+            Some(vec!["line-a".into(), "line-b".into()]),
+            None,
+        ));
+        let widget = app.external_ui.widgets.get("remote_tui").expect("widget");
+        assert!(widget.lines.iter().any(|line| line == "line-a"));
+        assert!(widget.lines.iter().any(|line| line == "line-b"));
+        // multiline remote frames must not be joined into one status row
+        let id = super::super::agent::AgentId(0);
+        let agent = &app.agents[&id];
+        assert!(agent.external_widgets_above_editor.iter().any(|l| l == "line-a"));
+        assert!(agent.external_widgets_above_editor.iter().any(|l| l == "line-b"));
+        assert!(app.apply_remote_tui("close", Some("sess-1".into()), None, None));
+        assert!(app.external_ui.remote_tui_id.is_none());
+        assert!(!app.external_ui.widgets.contains_key("remote_tui"));
     }
 
     #[test]

@@ -2036,6 +2036,10 @@ pub enum Effect {
     },
     /// Unregister a session from the active-sessions registry (clean exit).
     UnregisterActiveSession { session_id: acp::SessionId },
+    /// Experimental Remote TUI: forward a key sequence to the Pi process host.
+    RemoteTuiInput { id: String, data: String },
+    /// Experimental Remote TUI: cancel the active remote component session.
+    RemoteTuiCancel { id: String },
     /// Quit the application.
     Quit,
     /// Toggle coding data sharing via ACP.

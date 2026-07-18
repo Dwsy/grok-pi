@@ -10,6 +10,8 @@ mod cli;
 mod session_paths;
 #[path = "grok_pi/recap_extension.rs"]
 mod recap_extension;
+#[path = "grok_pi/remote_tui_extension.rs"]
+mod remote_tui_extension;
 #[path = "grok_pi/subagent_extension.rs"]
 mod subagent_extension;
 #[path = "grok_pi/tree_bridge.rs"]
@@ -30,6 +32,7 @@ use xai_grok_pager::{
 use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_flags};
 use session_paths::pi_session_dir;
 use recap_extension::write_recap_extension;
+use remote_tui_extension::write_remote_tui_extension;
 use subagent_extension::write_subagent_extension;
 use tree_bridge::write_navigate_tree_extension;
 
@@ -150,6 +153,14 @@ async fn run(mut args: Args) -> Result<()> {
         .context("failed to create Pi subagent extension")?;
     let recap_extension =
         write_recap_extension().context("failed to create Pi recap extension")?;
+    // Experimental Remote TUI probe — only when PI_GROK_REMOTE_TUI=1.
+    let remote_tui_enabled =
+        std::env::var_os("PI_GROK_REMOTE_TUI").is_some_and(|value| value == "1");
+    let remote_tui_extension = if remote_tui_enabled {
+        Some(write_remote_tui_extension().context("failed to create Pi remote-tui extension")?)
+    } else {
+        None
+    };
     let mut pi_args = pi_args_with_startup_flags(
         std::mem::take(&mut args.pi_args),
         &args,
@@ -163,18 +174,29 @@ async fn run(mut args: Args) -> Result<()> {
         "--extension".to_string(),
         recap_extension.path().to_string_lossy().into_owned(),
     ]);
+    if let Some(path) = remote_tui_extension.as_ref().map(|file| file.path()) {
+        pi_args.extend([
+            "--extension".to_string(),
+            path.to_string_lossy().into_owned(),
+        ]);
+    }
+    let mut env = vec![("PI_GROK_SUBAGENTS".to_string(), "1".to_string())];
+    if remote_tui_enabled {
+        env.push(("PI_GROK_REMOTE_TUI".to_string(), "1".to_string()));
+    }
     let process = PiRpc::spawn(SpawnConfig {
         program: args.pi_bin,
         prefix_args: args.pi_prefix_args,
         cwd: cwd.clone(),
         pi_args,
-        env: vec![("PI_GROK_SUBAGENTS".to_string(), "1".to_string())],
+        env,
     })
     .await?;
     // Hold the NamedTempFiles so the extension paths remain valid.
     let _navigate_tree_extension = navigate_tree_extension;
     let _subagent_extension = subagent_extension;
     let _recap_extension = recap_extension;
+    let _remote_tui_extension = remote_tui_extension;
     let bootstrap = PiBootstrap::load(&process.rpc)
         .await
         .context("failed to bootstrap Pi RPC state")?;
