@@ -23,6 +23,8 @@ pub struct SpawnConfig {
     pub prefix_args: Vec<String>,
     pub cwd: PathBuf,
     pub pi_args: Vec<String>,
+    /// Environment additions scoped to the spawned Pi process.
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -50,6 +52,9 @@ impl PiRpc {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for (key, value) in &config.env {
+            command.env(key, value);
+        }
 
         let mut child = command.spawn().with_context(|| {
             format!(

@@ -668,8 +668,17 @@ pub struct PiModel {
     pub id: String,
     pub label: String,
     pub context_window: Option<u64>,
+    pub max_tokens: Option<u64>,
+    pub api: Option<String>,
+    pub base_url: Option<String>,
     pub reasoning: bool,
     pub accepts_images: bool,
+    /// Input modalities from Pi (`text`, `image`, …).
+    pub input: Vec<String>,
+    pub cost_input: Option<f64>,
+    pub cost_output: Option<f64>,
+    pub cost_cache_read: Option<f64>,
+    pub cost_cache_write: Option<f64>,
     /// Pi-level tokens accepted by `set_thinking_level` for this model. This is
     /// derived with the same rules as Pi's `getSupportedThinkingLevels()`:
     /// standard levels default to enabled, `null` disables a level, and the
@@ -816,6 +825,7 @@ fn collect_models(value: &Value, provider_hint: &str, out: &mut Vec<PiModel>) {
                 format!("{provider_hint}/{id}")
             },
             accepts_images: false,
+            input: Vec::new(),
             thinking_levels: Vec::new(),
             ..PiModel::default()
         }),
@@ -825,8 +835,11 @@ fn collect_models(value: &Value, provider_hint: &str, out: &mut Vec<PiModel>) {
 
 pub fn parse_model(value: &Value) -> Option<PiModel> {
     let id = string(value, &["id", "modelId", "model_id"])?;
-    let provider = string(value, &["provider", "providerId", "provider_id", "api"])
+    // `api` is the protocol (openai-completions / anthropic-messages / …),
+    // not the provider id — keep them separate so the picker can show both.
+    let provider = string(value, &["provider", "providerId", "provider_id"])
         .unwrap_or_default();
+    let api = string(value, &["api", "protocol"]).map(ToOwned::to_owned);
     let label = string(value, &["name", "label", "displayName", "display_name"])
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| {
@@ -842,9 +855,10 @@ pub fn parse_model(value: &Value) -> Option<PiModel> {
             "contextWindow",
             "context_window",
             "contextWindowTokens",
-            "maxTokens",
         ],
     );
+    let max_tokens = number(value, &["maxTokens", "max_tokens", "maxOutputTokens"]);
+    let base_url = string(value, &["baseUrl", "base_url"]).map(ToOwned::to_owned);
     let reasoning = value
         .get("reasoning")
         .and_then(Value::as_bool)
@@ -856,21 +870,51 @@ pub fn parse_model(value: &Value) -> Option<PiModel> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         });
-    let accepts_images = value
+    let input = value
         .get("input")
         .or_else(|| value.get("inputModalities"))
         .and_then(Value::as_array)
-        .map(|items| items.iter().any(|v| v.as_str() == Some("image")))
-        .or_else(|| value.get("supportsImages").and_then(Value::as_bool))
-        .unwrap_or(false);
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let accepts_images = if !input.is_empty() {
+        input.iter().any(|m| m.eq_ignore_ascii_case("image"))
+    } else {
+        value
+            .get("supportsImages")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    let cost = value.get("cost").and_then(Value::as_object);
+    let cost_input = cost.and_then(|c| c.get("input")).and_then(Value::as_f64);
+    let cost_output = cost.and_then(|c| c.get("output")).and_then(Value::as_f64);
+    let cost_cache_read = cost
+        .and_then(|c| c.get("cacheRead").or_else(|| c.get("cache_read")))
+        .and_then(Value::as_f64);
+    let cost_cache_write = cost
+        .and_then(|c| c.get("cacheWrite").or_else(|| c.get("cache_write")))
+        .and_then(Value::as_f64);
     let thinking_levels = supported_thinking_levels(value, reasoning);
     Some(PiModel {
         provider: provider.to_string(),
         id: id.to_string(),
         label,
         context_window,
+        max_tokens,
+        api,
+        base_url,
         reasoning,
         accepts_images,
+        input,
+        cost_input,
+        cost_output,
+        cost_cache_read,
+        cost_cache_write,
         thinking_levels,
     })
 }
@@ -1475,5 +1519,36 @@ mod tests {
             })),
             (String::new(), String::new())
         );
+    }
+
+    #[test]
+    fn parse_model_keeps_provider_and_api_separate_with_cost() {
+        let model = parse_model(&json!({
+            "id": "claude-haiku-4-5",
+            "name": "Claude Haiku 4.5",
+            "provider": "anthropic",
+            "api": "anthropic-messages",
+            "baseUrl": "https://api.anthropic.com",
+            "contextWindow": 200000,
+            "maxTokens": 64000,
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": { "input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25 }
+        }))
+        .expect("model");
+        assert_eq!(model.provider, "anthropic");
+        assert_eq!(model.id, "claude-haiku-4-5");
+        assert_eq!(model.label, "Claude Haiku 4.5");
+        assert_eq!(model.api.as_deref(), Some("anthropic-messages"));
+        assert_eq!(model.base_url.as_deref(), Some("https://api.anthropic.com"));
+        assert_eq!(model.context_window, Some(200_000));
+        assert_eq!(model.max_tokens, Some(64_000));
+        assert!(model.reasoning);
+        assert!(model.accepts_images);
+        assert_eq!(model.input, vec!["text".to_string(), "image".to_string()]);
+        assert_eq!(model.cost_input, Some(1.0));
+        assert_eq!(model.cost_output, Some(5.0));
+        assert_eq!(model.cost_cache_read, Some(0.1));
+        assert_eq!(model.cost_cache_write, Some(1.25));
     }
 }

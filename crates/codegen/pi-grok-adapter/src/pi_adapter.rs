@@ -1,13 +1,26 @@
 use crate::{
+    context_projection::{
+        build_session_info_response, context_tokens_from_stats, context_tokens_from_usage,
+        entries_to_messages_value,
+    },
     model::{
         PiCommand, PiHistoryItem, PiModel, PiSessionSwitch, PiSessionTree, PiState, PiToolContent,
-        extract_delta, json_text, number, parse_commands, parse_messages, parse_models,
-        parse_session_switch, parse_session_tree, parse_state, scan_local_sessions,
-        scan_local_sessions_for_cwd, string,
+        extract_delta, json_text, parse_commands, parse_messages, parse_models, parse_session_switch,
+        parse_session_tree, parse_state, scan_local_sessions, scan_local_sessions_for_cwd, string,
+    },
+    prompt_bridge::{
+        direct_bash_command, format_bash_result, prompt_response, prompt_streaming_behavior,
+        prompt_to_pi, queue_lane_for_behavior,
     },
     pi_rpc::PiRpc,
     queue_bridge::{QueueLane, QueueMirror, queue_changed_params, string_list},
+    recap_bridge::{parse_recap_message, session_recap_notification},
+    subagent_projection::{BridgeOperation, parse_bridge_message},
     todo_bridge::plan_update_for_tool,
+    tool_projection::{
+        bash_tool_output, edit_diff_content, history_tool_content, normalize_tool_raw_input,
+        normalize_tool_raw_output, pi_result_text, tool_content, tool_kind,
+    },
 };
 use agent_client_protocol as acp;
 use anyhow::{Result, anyhow};
@@ -119,6 +132,10 @@ struct AdapterState {
     last_context_tokens: Option<u64>,
     /// Pi steering / follow-up queue mirrored as Grok `x.ai/queue/changed`.
     queue_mirror: QueueMirror,
+    /// Last accepted live bridge sequence per child. The adapter uses this only
+    /// to reject duplicate/out-of-order transport events; child lifecycle stays
+    /// owned by the Pi extension.
+    subagent_bridge_sequences: HashMap<String, u64>,
 }
 
 #[derive(Clone)]
@@ -158,6 +175,7 @@ impl PiAgent {
                 tool_args: HashMap::new(),
                 last_context_tokens: None,
                 queue_mirror: QueueMirror::default(),
+                subagent_bridge_sequences: HashMap::new(),
             })),
         }
     }
@@ -375,6 +393,106 @@ impl PiAgent {
         if let Err(error) = acp_send(notification, &self.client_tx).await {
             tracing::debug!(%error, "Grok pager closed while sending Pi session update");
         }
+    }
+
+    async fn send_update_for_session(
+        &self,
+        session_id: &str,
+        update: acp::SessionUpdate,
+        replay: bool,
+        event_id: &str,
+    ) {
+        let mut notification = acp::SessionNotification::new(
+            acp::SessionId::new(session_id.to_string()),
+            update,
+        );
+        let mut meta = acp::Meta::new();
+        if replay {
+            meta.insert("isReplay".into(), Value::Bool(true));
+        }
+        meta.insert("eventId".into(), Value::String(event_id.to_string()));
+        notification = notification.meta(Some(meta));
+        if let Err(error) = acp_send(notification, &self.client_tx).await {
+            tracing::debug!(%error, session_id, "Grok pager closed while sending Pi child session update");
+        }
+    }
+
+    fn accept_subagent_bridge_sequence(&self, subagent_id: &str, sequence: u64, replay: bool) -> bool {
+        let mut state = self.state.borrow_mut();
+        let previous = state.subagent_bridge_sequences.get(subagent_id).copied();
+        if !replay && previous.is_some_and(|last| sequence <= last) {
+            return false;
+        }
+        state
+            .subagent_bridge_sequences
+            .entry(subagent_id.to_string())
+            .and_modify(|last| *last = (*last).max(sequence))
+            .or_insert(sequence);
+        true
+    }
+
+    async fn handle_recap_bridge_message(&self, event: &Value) -> Result<bool> {
+        let Some(projection) = parse_recap_message(event) else {
+            return Ok(false);
+        };
+        let session_id = self.session_id().0.to_string();
+        let notification = session_recap_notification(&session_id, &projection);
+        self.send_ext_notification("x.ai/session/update", notification)
+            .await;
+        Ok(true)
+    }
+
+    async fn handle_subagent_bridge_message(&self, event: &Value) -> Result<bool> {
+        let root_session_id = self.session_id().0.to_string();
+        let Some(projection) = parse_bridge_message(event, &root_session_id)? else {
+            return Ok(false);
+        };
+        if !self.accept_subagent_bridge_sequence(
+            &projection.subagent_id,
+            projection.sequence,
+            projection.replay,
+        ) {
+            return Ok(true);
+        }
+        let event_id = format!(
+            "pi-grok-subagent:{}:{}",
+            projection.subagent_id, projection.sequence
+        );
+        for operation in projection.operations {
+            match operation {
+                BridgeOperation::ParentTaskMetadata {
+                    tool_call_id,
+                    raw_input,
+                } => {
+                    self.send_update(acp::SessionUpdate::ToolCallUpdate(
+                        acp::ToolCallUpdate::new(
+                            acp::ToolCallId::new(tool_call_id),
+                            acp::ToolCallUpdateFields::new()
+                                .status(Some(acp::ToolCallStatus::InProgress))
+                                .raw_input(Some(raw_input)),
+                        ),
+                    ))
+                    .await;
+                }
+                BridgeOperation::ParentLifecycle(notification) => {
+                    self.send_ext_notification("x.ai/session/update", notification)
+                        .await;
+                }
+                BridgeOperation::ChildUpdate {
+                    child_session_id,
+                    update,
+                } => {
+                    self.send_update_for_session(
+                        &child_session_id,
+                        update,
+                        projection.replay,
+                        &event_id,
+                    )
+                    .await;
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// Pull Pi's current context-window estimate and push it to the pager bar.
@@ -612,7 +730,9 @@ impl PiAgent {
                     acp::ToolCall::new(acp::ToolCallId::new(id), name.clone())
                         .kind(tool_kind(&name))
                         .status(acp::ToolCallStatus::InProgress)
-                        .content(edit_diff_content(&name, arguments.as_ref()).unwrap_or_default())
+                        .content(
+                            edit_diff_content(&name, arguments.as_ref(), None).unwrap_or_default(),
+                        )
                         .locations(Vec::new())
                         .raw_input(arguments),
                 )
@@ -651,7 +771,9 @@ impl PiAgent {
                         acp::ToolCallStatus::Completed
                     }))
                     .raw_output(Some(normalized));
-                if tool_kind(&name) != acp::ToolKind::Edit {
+                if tool_kind(&name) == acp::ToolKind::Edit {
+                    fields = fields.content(edit_diff_content(&name, args.as_ref(), Some(&raw)));
+                } else {
                     fields = fields.content(Some(history_tool_content(content)));
                 }
                 // Project todo-plugin snapshots onto the native TodoPane before
@@ -698,7 +820,13 @@ impl PiAgent {
             "turn_end" => self.refresh_context_usage().await,
             "message_start" => self.handle_message_start(&event),
             "message_update" => self.handle_message_update(&event).await,
-            "message_end" => self.handle_message_end(&event).await,
+            "message_end" => {
+                if self.handle_recap_bridge_message(&event).await? {
+                    // Recap custom messages are display-only bridge traffic.
+                } else if !self.handle_subagent_bridge_message(&event).await? {
+                    self.handle_message_end(&event).await;
+                }
+            }
             "tool_execution_start" => self.handle_tool_start(&event).await,
             "tool_execution_update" => self.handle_tool_update(&event).await,
             "tool_execution_end" => self.handle_tool_end(&event).await,
@@ -1020,7 +1148,7 @@ impl PiAgent {
                 .tool_args
                 .insert(id.to_string(), args);
         }
-        let content = edit_diff_content(name, args.as_ref()).unwrap_or_default();
+        let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
         self.send_update(acp::SessionUpdate::ToolCall(
             acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
                 .kind(tool_kind(name))
@@ -1089,7 +1217,9 @@ impl PiAgent {
         let mut fields = acp::ToolCallUpdateFields::new()
             .status(Some(status))
             .raw_output(Some(raw_output));
-        if tool_kind(name) != acp::ToolKind::Edit {
+        if tool_kind(name) == acp::ToolKind::Edit {
+            fields = fields.content(edit_diff_content(name, args.as_ref(), Some(&output)));
+        } else {
             fields = fields.content(Some(tool_content(&output)));
         }
         // Live path: rpiv-todo (and future TodoSource plugins) publish a full
@@ -1284,6 +1414,11 @@ impl acp::Agent for PiAgent {
         &self,
         _arguments: acp::InitializeRequest,
     ) -> Result<acp::InitializeResponse, acp::Error> {
+        // Advertise session recap so Pager enables /recap + auto away-recap.
+        // Actual generation is handled by the injected Pi extension bridge.
+        let meta = json!({ "sessionRecap": true })
+            .as_object()
+            .cloned();
         Ok(acp::InitializeResponse::new(acp::ProtocolVersion::V1)
             .agent_capabilities(
                 acp::AgentCapabilities::new()
@@ -1294,7 +1429,8 @@ impl acp::Agent for PiAgent {
                             .embedded_context(true),
                     ),
             )
-            .agent_info(acp::Implementation::new("pi", env!("CARGO_PKG_VERSION")).title("Pi")))
+            .agent_info(acp::Implementation::new("pi", env!("CARGO_PKG_VERSION")).title("Pi"))
+            .meta(meta))
     }
 
     async fn authenticate(
@@ -1555,6 +1691,7 @@ impl acp::Agent for PiAgent {
     async fn ext_method(&self, arguments: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
         match arguments.method.as_ref() {
             "x.ai/interject" => self.handle_steer_message(arguments.params.get()).await,
+            "x.ai/recap" => self.handle_recap_request(arguments.params.get()).await,
             "x.ai/compact_conversation" => {
                 let params: Value =
                     serde_json::from_str(arguments.params.get()).unwrap_or_default();
@@ -1664,6 +1801,21 @@ impl acp::Agent for PiAgent {
             // Grok `/context` and context-bar click fetch this; map Pi
             // get_session_stats (+ message estimate) into native ContextInfo.
             "x.ai/session/info" => self.handle_session_info().await,
+            "x.ai/subagent/cancel" => {
+                let params: Value = serde_json::from_str(arguments.params.get()).map_err(acp_internal)?;
+                let subagent_id = string(&params, &["subagentId", "subagent_id"])
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| acp::Error::invalid_params().data("subagentId is required"))?;
+                self.run_bridge_command(SUBAGENT_CANCEL_COMMAND, subagent_id)
+                    .await?;
+                ext_response(json!({
+                    "subagentId": subagent_id,
+                    "cancelled": true,
+                    "outcome": "cancelled",
+                }))
+                .map_err(acp_internal)
+            }
             method => Err(acp::Error::new(
                 acp::ErrorCode::MethodNotFound.into(),
                 format!("Method not found: {method}"),
@@ -1723,6 +1875,29 @@ impl acp::Agent for PiAgent {
 }
 
 impl PiAgent {
+    /// Fire-and-forget session recap via injected `__pi_grok_recap` extension.
+    ///
+    /// Params: `{ sessionId?, auto?, model? }`. Language is taken from process locale.
+    async fn handle_recap_request(&self, params_raw: &str) -> Result<acp::ExtResponse, acp::Error> {
+        let params: Value = serde_json::from_str(params_raw).unwrap_or_else(|_| json!({}));
+        let auto = params.get("auto").and_then(Value::as_bool).unwrap_or(false);
+        let model = string(&params, &["model", "modelId", "recapModel"])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+        let language = system_language_tag();
+        let payload = json!({
+            "auto": auto,
+            "model": model,
+            "language": language,
+        });
+        let args = payload.to_string();
+        // Extension emits custom message asynchronously; adapter projects it.
+        // Await preflight so extension errors surface before we ack.
+        self.run_bridge_command(RECAP_COMMAND, &args).await?;
+        ext_response(json!({ "ok": true, "auto": auto })).map_err(acp_internal)
+    }
+
     async fn handle_steer_message(&self, params_raw: &str) -> Result<acp::ExtResponse, acp::Error> {
         let params: Value = serde_json::from_str(params_raw).map_err(acp_internal)?;
         let blocks = params
@@ -1772,10 +1947,50 @@ fn build_model_catalog(
     for model in models {
         let id = acp::ModelId::new(model_key(model));
         let mut meta = serde_json::Map::new();
+        if !model.provider.is_empty() {
+            meta.insert("provider".into(), json!(model.provider));
+        }
+        meta.insert("modelId".into(), json!(model.id));
         if let Some(tokens) = model.context_window {
             meta.insert("totalContextTokens".into(), json!(tokens));
         }
+        if let Some(tokens) = model.max_tokens {
+            meta.insert("maxTokens".into(), json!(tokens));
+        }
+        if let Some(api) = model.api.as_ref() {
+            meta.insert("api".into(), json!(api));
+        }
+        if let Some(base_url) = model.base_url.as_ref() {
+            meta.insert("baseUrl".into(), json!(base_url));
+        }
         meta.insert("acceptsImages".into(), json!(model.accepts_images));
+        meta.insert("reasoning".into(), json!(model.reasoning));
+        if !model.input.is_empty() {
+            meta.insert(
+                "inputModalities".into(),
+                Value::Array(model.input.iter().cloned().map(Value::String).collect()),
+            );
+        }
+        if model.cost_input.is_some()
+            || model.cost_output.is_some()
+            || model.cost_cache_read.is_some()
+            || model.cost_cache_write.is_some()
+        {
+            let mut cost = serde_json::Map::new();
+            if let Some(v) = model.cost_input {
+                cost.insert("input".into(), json!(v));
+            }
+            if let Some(v) = model.cost_output {
+                cost.insert("output".into(), json!(v));
+            }
+            if let Some(v) = model.cost_cache_read {
+                cost.insert("cacheRead".into(), json!(v));
+            }
+            if let Some(v) = model.cost_cache_write {
+                cost.insert("cacheWrite".into(), json!(v));
+            }
+            meta.insert("cost".into(), Value::Object(cost));
+        }
         let reasoning_efforts = model_reasoning_efforts(model);
         if !reasoning_efforts.is_empty() {
             meta.insert("supportsReasoningEffort".into(), json!(true));
@@ -1785,20 +2000,160 @@ fn build_model_catalog(
             );
             meta.insert("reasoningEfforts".into(), Value::Array(reasoning_efforts));
         }
-        let info = acp::ModelInfo::new(id.clone(), model.label.clone()).meta(Some(meta));
+        let description = model_catalog_description(model);
+        let mut info = acp::ModelInfo::new(id.clone(), model.label.clone()).meta(Some(meta));
+        if !description.is_empty() {
+            info = info.description(description);
+        }
         available.insert(id, info);
     }
     let current = current.map(|model| acp::ModelId::new(model_key(model)));
     (available, current)
 }
 
+/// Compact right-side detail for the native model picker.
+/// Provider lives on the left row (`id [provider]`); this side mirrors
+/// model-selector-x metadata: context / max-out / protocol / input / cost.
+fn model_catalog_description(model: &PiModel) -> String {
+    let mut parts = Vec::new();
+    if let Some(tokens) = model.context_window {
+        parts.push(format!("ctx {}", format_token_count(tokens)));
+    }
+    if let Some(tokens) = model.max_tokens {
+        parts.push(format!("out {}", format_token_count(tokens)));
+    }
+    if let Some(api) = model.api.as_deref().and_then(format_protocol_short) {
+        parts.push(format!("api {api}"));
+    }
+    let input = format_input_short(&model.input, model.accepts_images);
+    if !input.is_empty() {
+        parts.push(format!("in {input}"));
+    }
+    if model.reasoning {
+        parts.push("⚡".into());
+    }
+    if let Some(cost) = format_cost_short(model) {
+        parts.push(cost);
+    }
+    // Fallback when we only know the provider (no numeric metadata yet).
+    if parts.is_empty() && !model.provider.is_empty() {
+        return format!("[{}]", model.provider);
+    }
+    parts.join(" · ")
+}
+
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let millions = tokens as f64 / 1_000_000.0;
+        if millions.fract() == 0.0 {
+            format!("{}M", millions as u64)
+        } else {
+            format!("{millions:.1}M")
+        }
+    } else if tokens >= 1_000 {
+        let thousands = tokens as f64 / 1_000.0;
+        if thousands.fract() == 0.0 {
+            format!("{}k", thousands as u64)
+        } else {
+            format!("{thousands:.0}k")
+        }
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn format_protocol_short(api: &str) -> Option<&'static str> {
+    match api {
+        "openai-responses" | "openai-codex-responses" => Some("resp"),
+        "openai-completions" => Some("comp"),
+        "anthropic-messages" => Some("anth"),
+        "google-generative-ai" => Some("goog"),
+        _ => None,
+    }
+}
+
+fn format_input_short(input: &[String], accepts_images: bool) -> String {
+    if input.is_empty() {
+        return if accepts_images {
+            "txt+img".into()
+        } else {
+            "txt".into()
+        };
+    }
+    let mut parts = Vec::new();
+    if input.iter().any(|m| m.eq_ignore_ascii_case("text")) {
+        parts.push("txt");
+    }
+    if input.iter().any(|m| m.eq_ignore_ascii_case("image")) || accepts_images {
+        parts.push("img");
+    }
+    if input.iter().any(|m| m.eq_ignore_ascii_case("audio")) {
+        parts.push("aud");
+    }
+    if parts.is_empty() {
+        "txt".into()
+    } else {
+        parts.join("+")
+    }
+}
+
+fn format_cost_short(model: &PiModel) -> Option<String> {
+    let input = model.cost_input.unwrap_or(0.0);
+    let output = model.cost_output.unwrap_or(0.0);
+    if input == 0.0 && output == 0.0 {
+        // Only claim free when cost fields were present.
+        if model.cost_input.is_some() || model.cost_output.is_some() {
+            return Some("free".into());
+        }
+        return None;
+    }
+    Some(format!(
+        "${} / ${}",
+        format_cost_num(input),
+        format_cost_num(output)
+    ))
+}
+
+fn format_cost_num(value: f64) -> String {
+    if value == 0.0 {
+        "0".into()
+    } else if value < 0.01 {
+        format!("{value:.3}")
+    } else if value < 1.0 {
+        format!("{value:.2}")
+    } else if (value - value.round()).abs() < f64::EPSILON {
+        format!("{}", value.round() as i64)
+    } else if value < 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{}", value.round() as i64)
+    }
+}
+
 /// Internal bridge commands injected by grok-pi; never advertised to slash UI.
 const NAVIGATE_TREE_COMMAND: &str = "__pi_navigate_tree";
 const LABEL_TREE_COMMAND: &str = "__pi_tree_label";
+const SUBAGENT_CANCEL_COMMAND: &str = "__pi_grok_subagent_cancel";
+const RECAP_COMMAND: &str = "__pi_grok_recap";
 
 fn is_bridge_command(name: &str) -> bool {
     name.eq_ignore_ascii_case(NAVIGATE_TREE_COMMAND)
         || name.eq_ignore_ascii_case(LABEL_TREE_COMMAND)
+        || name.eq_ignore_ascii_case(SUBAGENT_CANCEL_COMMAND)
+        || name.eq_ignore_ascii_case(RECAP_COMMAND)
+}
+
+/// Process locale for recap body language. Prefers LC_ALL → LC_MESSAGES → LANG.
+fn system_language_tag() -> Option<String> {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() && trimmed != "C" && trimmed != "POSIX" {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn command_catalog(commands: &[PiCommand]) -> Vec<acp::AvailableCommand> {
@@ -1855,1012 +2210,6 @@ fn content_chunk(content: acp::ContentBlock) -> acp::ContentChunk {
 
 fn text_chunk(text: impl Into<String>) -> acp::ContentChunk {
     content_chunk(acp::ContentBlock::Text(acp::TextContent::new(text)))
-}
-
-/// Extract context-window used tokens from Pi `get_session_stats` data.
-fn context_tokens_from_stats(data: &Value) -> Option<u64> {
-    let usage = data.get("contextUsage")?;
-    // After compaction Pi may report null until the next assistant response.
-    usage
-        .get("tokens")
-        .and_then(Value::as_u64)
-        .or_else(|| {
-            usage
-                .get("tokens")
-                .and_then(Value::as_f64)
-                .map(|value| value.round() as u64)
-        })
-        .filter(|&tokens| tokens > 0)
-}
-
-fn context_window_from_stats(data: &Value) -> Option<u64> {
-    data.get("contextUsage").and_then(|usage| {
-        usage
-            .get("contextWindow")
-            .or_else(|| usage.get("context_window"))
-            .and_then(|value| value.as_u64().or_else(|| value.as_f64().map(|n| n.round() as u64)))
-            .filter(|&tokens| tokens > 0)
-    })
-}
-
-fn usage_pct_from_stats(data: &Value, used: u64, total: u64) -> u8 {
-    if let Some(percent) = data
-        .get("contextUsage")
-        .and_then(|usage| usage.get("percent"))
-        .and_then(Value::as_f64)
-    {
-        return percent.round().clamp(0.0, 100.0) as u8;
-    }
-    if total == 0 {
-        0
-    } else {
-        ((used as f64 / total as f64) * 100.0)
-            .round()
-            .clamp(0.0, 100.0) as u8
-    }
-}
-
-/// Approximate token count used by the pi-context extension (`ceil(len/4)`).
-fn estimate_tokens_text(text: &str) -> u64 {
-    if text.is_empty() {
-        0
-    } else {
-        ((text.len() as f64) / 4.0).ceil() as u64
-    }
-}
-
-fn estimate_tokens_value(value: &Value) -> u64 {
-    match value {
-        Value::Null => 0,
-        Value::String(text) => estimate_tokens_text(text),
-        Value::Array(items) => items.iter().map(estimate_tokens_value).sum(),
-        Value::Object(map) => map.values().map(estimate_tokens_value).sum(),
-        other => estimate_tokens_text(&other.to_string()),
-    }
-}
-
-/// Project `get_entries` payload into a `{ messages: [...] }` shape that
-/// [`estimate_message_tokens`] already understands.
-fn entries_to_messages_value(entries: Value) -> Value {
-    let items = entries
-        .get("entries")
-        .and_then(Value::as_array)
-        .cloned()
-        .or_else(|| entries.as_array().cloned())
-        .unwrap_or_default();
-    let messages: Vec<Value> = items
-        .into_iter()
-        .filter_map(|entry| {
-            let kind = string(&entry, &["type", "kind"])
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if kind == "message" || kind.is_empty() {
-                Some(entry.get("message").cloned().unwrap_or(entry))
-            } else if kind.contains("compaction") || kind.contains("branch") {
-                // Keep summary text so compaction/branch tokens contribute.
-                Some(entry)
-            } else {
-                None
-            }
-        })
-        .collect();
-    json!({ "messages": messages })
-}
-
-/// Raw (unscaled) message-window estimate, mirroring pi-context categories.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct MessageTokenEstimate {
-    /// User + assistant text (+ thought) content.
-    messages: u64,
-    /// Tool calls + tool results (shown as Reasoning/overhead when unallocated).
-    tool_payload: u64,
-    compaction_count: u64,
-}
-
-fn estimate_message_tokens(messages: &Value) -> MessageTokenEstimate {
-    let mut estimate = MessageTokenEstimate::default();
-    let Some(items) = messages
-        .get("messages")
-        .and_then(Value::as_array)
-        .or_else(|| messages.as_array())
-    else {
-        return estimate;
-    };
-    for item in items {
-        let message = item.get("message").unwrap_or(item);
-        let role = string(message, &["role", "type"])
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        match role.as_str() {
-            "user" => {
-                estimate.messages += estimate_tokens_value(message.get("content").unwrap_or(message));
-            }
-            "assistant" => {
-                if let Some(content) = message.get("content").and_then(Value::as_array) {
-                    for part in content {
-                        match content_kind_local(part).as_str() {
-                            "text" => {
-                                if let Some(text) = string(part, &["text"]) {
-                                    estimate.messages += estimate_tokens_text(text);
-                                }
-                            }
-                            "thinking" | "reasoning" => {
-                                if let Some(text) =
-                                    string(part, &["thinking", "reasoning", "text"])
-                                {
-                                    estimate.messages += estimate_tokens_text(text);
-                                }
-                            }
-                            "toolcall" | "tool_call" | "tool" => {
-                                estimate.tool_payload += estimate_tokens_value(part);
-                            }
-                            _ => {
-                                estimate.messages += estimate_tokens_value(part);
-                            }
-                        }
-                    }
-                } else if let Some(text) = message.get("content").and_then(Value::as_str) {
-                    estimate.messages += estimate_tokens_text(text);
-                }
-            }
-            "toolresult" | "tool_result" => {
-                estimate.tool_payload += estimate_tokens_value(message.get("content").unwrap_or(&Value::Null));
-            }
-            "bashexecution" | "bash_execution" => {
-                estimate.tool_payload += estimate_tokens_text(
-                    string(message, &["command"]).unwrap_or_default(),
-                );
-                estimate.tool_payload += estimate_tokens_text(
-                    string(message, &["output"]).unwrap_or_default(),
-                );
-            }
-            "branchsummary"
-            | "branch_summary"
-            | "compactionsummary"
-            | "compaction_summary" => {
-                estimate.messages += estimate_tokens_text(
-                    string(message, &["summary", "text"]).unwrap_or_default(),
-                );
-                if role.contains("compaction") {
-                    estimate.compaction_count += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    estimate
-}
-
-fn content_kind_local(value: &Value) -> String {
-    string(value, &["type", "kind"])
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .replace(['-', '_'], "")
-}
-
-/// Scale raw char-based estimates so they sum to the authoritative `used`
-/// total from Pi (`contextUsage.tokens`), same ratio trick as pi-context.
-fn scale_token_parts(parts: &[u64], used: u64) -> Vec<u64> {
-    let raw_total: u64 = parts.iter().sum();
-    if raw_total == 0 || used == 0 {
-        return parts.iter().map(|_| 0).collect();
-    }
-    let ratio = used as f64 / raw_total as f64;
-    let mut scaled: Vec<u64> = parts
-        .iter()
-        .map(|&part| ((part as f64) * ratio).round() as u64)
-        .collect();
-    // Keep the bar total coherent: adjust the largest bucket if rounding drifts.
-    let scaled_sum: u64 = scaled.iter().sum();
-    if scaled_sum != used
-        && let Some((idx, _)) = scaled
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, value)| *value)
-    {
-        if scaled_sum > used {
-            scaled[idx] = scaled[idx].saturating_sub(scaled_sum - used);
-        } else {
-            scaled[idx] = scaled[idx].saturating_add(used - scaled_sum);
-        }
-    }
-    scaled
-}
-
-/// Project Pi stats (+ optional message estimate) into Grok `SessionInfoResponse` JSON.
-///
-/// Shape matches `xai_grok_shell::session::SessionInfoResponse` so the pager can
-/// deserialize into `ContextInfo` and push `RenderBlock::context_info`.
-fn build_session_info_response(
-    stats: &Value,
-    messages: Option<&Value>,
-    session_id: &str,
-    cwd: &str,
-    model: Option<&PiModel>,
-    cached_tokens: Option<u64>,
-) -> Value {
-    let used = context_tokens_from_stats(stats)
-        .or(cached_tokens)
-        .unwrap_or(0);
-    let total = context_window_from_stats(stats)
-        .or_else(|| model.and_then(|m| m.context_window))
-        .unwrap_or(0);
-    let estimate = messages
-        .map(estimate_message_tokens)
-        .unwrap_or_default();
-    // When message estimation fails (RPC error / empty transcript), put the
-    // whole window into Messages so the bar is not 100% "Reasoning/overhead".
-    let raw_parts = [estimate.messages, estimate.tool_payload];
-    let raw_total: u64 = raw_parts.iter().sum();
-    let message_tokens = if used == 0 {
-        0
-    } else if raw_total == 0 {
-        used
-    } else {
-        scale_token_parts(&raw_parts, used)
-            .first()
-            .copied()
-            .unwrap_or(used)
-    };
-    // tool_payload becomes Reasoning/overhead via used - system - messages.
-    // System prompt / tool definitions are not exposed over Pi RPC, so they stay 0
-    // (pi-context can read them in-process; we cannot without expanding RPC).
-    let free_tokens = total.saturating_sub(used);
-    let usage_pct = usage_pct_from_stats(stats, used, total);
-    let turns = number(stats, &["userMessages", "user_messages"]).unwrap_or(0);
-    let tool_call_count = number(stats, &["toolCalls", "tool_calls"]).unwrap_or(0);
-    let message_count = number(stats, &["totalMessages", "total_messages"]).unwrap_or(0);
-    let model_id = model.map(|m| m.id.clone());
-    let model_label = model.map(|m| {
-        if m.label.is_empty() {
-            m.id.clone()
-        } else {
-            m.label.clone()
-        }
-    });
-
-    // Build without explicit JSON nulls so Option fields that lack
-    // `#[serde(default)]` never see `null` on the wire.
-    let mut response = json!({
-        "sessionId": session_id,
-        "cwd": cwd,
-        "agentName": "pi",
-        "showModelFingerprint": false,
-        "turns": turns,
-        "turnIndex": turns.saturating_sub(1),
-        "context": {
-            "used": used,
-            "total": total,
-            "systemPromptTokens": 0,
-            "toolDefinitionsCount": 0,
-            "toolDefinitionsTokens": 0,
-            "compactionCount": estimate.compaction_count,
-            "turnCount": turns,
-            "toolCallCount": tool_call_count,
-            "messageCount": message_count,
-            "messageTokens": message_tokens,
-            "freeTokens": free_tokens,
-            "usagePct": usage_pct,
-            "autoCompactThresholdPercent": 85_u8,
-        }
-    });
-    if let Some(obj) = response.as_object_mut() {
-        if let Some(id) = model_id {
-            obj.insert("model".into(), Value::String(id));
-        }
-        if let Some(label) = model_label {
-            obj.insert("modelDisplayName".into(), Value::String(label));
-        }
-    }
-    response
-}
-
-/// Approximate context tokens from a Pi assistant `usage` object.
-///
-/// Mirrors Pi's `calculateContextTokens`: prefer `totalTokens`, else sum
-/// input/output/cache components.
-fn context_tokens_from_usage(usage: &Value) -> Option<u64> {
-    if let Some(total) = usage
-        .get("totalTokens")
-        .or_else(|| usage.get("total_tokens"))
-        .and_then(Value::as_u64)
-        .filter(|&tokens| tokens > 0)
-    {
-        return Some(total);
-    }
-    let field = |names: &[&str]| -> u64 {
-        names
-            .iter()
-            .find_map(|name| usage.get(*name).and_then(Value::as_u64))
-            .unwrap_or(0)
-    };
-    let total = field(&["input"])
-        + field(&["output"])
-        + field(&["cacheRead", "cache_read"])
-        + field(&["cacheWrite", "cache_write"]);
-    (total > 0).then_some(total)
-}
-
-fn history_tool_content(content: Vec<PiToolContent>) -> Vec<acp::ToolCallContent> {
-    content
-        .into_iter()
-        .map(|item| match item {
-            PiToolContent::Text(text) => {
-                acp::ToolCallContent::from(acp::ContentBlock::Text(acp::TextContent::new(text)))
-            }
-            PiToolContent::Image { data, mime_type } => acp::ToolCallContent::from(
-                acp::ContentBlock::Image(acp::ImageContent::new(data, mime_type)),
-            ),
-        })
-        .collect()
-}
-
-fn tool_content(value: &Value) -> Vec<acp::ToolCallContent> {
-    let source = value.get("content").unwrap_or(value);
-    let mut output = Vec::new();
-    match source {
-        Value::Array(items) => {
-            for item in items {
-                let kind = string(item, &["type", "kind"])
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if kind == "image"
-                    && let (Some(data), Some(mime_type)) = (
-                        string(item, &["data"]),
-                        string(item, &["mimeType", "mime_type"]),
-                    )
-                {
-                    output.push(acp::ToolCallContent::from(acp::ContentBlock::Image(
-                        acp::ImageContent::new(data, mime_type),
-                    )));
-                } else {
-                    let text = string(item, &["text", "content", "message", "output"])
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(|| json_text(item));
-                    if !text.is_empty() {
-                        output.push(acp::ToolCallContent::from(acp::ContentBlock::Text(
-                            acp::TextContent::new(text),
-                        )));
-                    }
-                }
-            }
-        }
-        _ => {
-            let text = json_text(source);
-            if !text.is_empty() {
-                output.push(acp::ToolCallContent::from(acp::ContentBlock::Text(
-                    acp::TextContent::new(text),
-                )));
-            }
-        }
-    }
-    output
-}
-
-/// Convert Pi's edit/write input contract into ACP's native diff payload.
-///
-/// The Pager's Edit card and viewer intentionally render only `Diff` content;
-/// ordinary text results do not provide the old/new source needed for a hunk.
-fn edit_diff_content(tool_name: &str, args: Option<&Value>) -> Option<Vec<acp::ToolCallContent>> {
-    if tool_kind(tool_name) != acp::ToolKind::Edit {
-        return None;
-    }
-    let args = args?;
-    let path = string(args, &["path", "filePath", "file_path", "target_file"])?;
-    if let Some(edits) = args.get("edits").and_then(Value::as_array) {
-        let diffs = edits
-            .iter()
-            .filter_map(|edit| {
-                let old_text = string(edit, &["oldText", "old_text"])?;
-                let new_text = string(edit, &["newText", "new_text"])?;
-                Some(acp::ToolCallContent::Diff(
-                    acp::Diff::new(path, new_text.to_owned()).old_text(Some(old_text.to_owned())),
-                ))
-            })
-            .collect::<Vec<_>>();
-        return (!diffs.is_empty()).then_some(diffs);
-    }
-    let new_text = string(args, &["newText", "new_text", "content"])?;
-    let old_text = string(args, &["oldText", "old_text"]).map(ToOwned::to_owned);
-    Some(vec![acp::ToolCallContent::Diff(
-        acp::Diff::new(path, new_text.to_owned()).old_text(old_text),
-    )])
-}
-
-fn tool_kind(name: &str) -> acp::ToolKind {
-    let name = name.to_ascii_lowercase();
-    // Exact Pi builtin names first (avoid substring false-positives).
-    match name.as_str() {
-        "read" => return acp::ToolKind::Read,
-        "bash" => return acp::ToolKind::Execute,
-        "edit" | "write" => return acp::ToolKind::Edit,
-        "grep" | "find" => return acp::ToolKind::Search,
-        // ListDir is detected in the pager via `raw_input.target_directory`
-        // (there is no ACP ListDir kind). Keep Other so that branch can match.
-        "ls" => return acp::ToolKind::Other,
-        _ => {}
-    }
-    if name.contains("read") {
-        acp::ToolKind::Read
-    } else if name.contains("write") || name.contains("edit") || name.contains("patch") {
-        acp::ToolKind::Edit
-    } else if name.contains("delete") || name.contains("remove") {
-        acp::ToolKind::Delete
-    } else if name.contains("move") || name.contains("rename") {
-        acp::ToolKind::Move
-    } else if name.contains("search") || name.contains("grep") || name.contains("find") {
-        acp::ToolKind::Search
-    } else if name.contains("bash") || name.contains("shell") || name.contains("exec") {
-        acp::ToolKind::Execute
-    } else if name.contains("fetch") || name.contains("web") {
-        acp::ToolKind::Fetch
-    } else {
-        acp::ToolKind::Other
-    }
-}
-
-fn is_find_tool(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name == "find" || name == "glob" || name.ends_with("_find") || name.contains("glob_file")
-}
-
-fn is_ls_tool(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name == "ls" || name == "list_dir" || name == "listdir" || name == "list_directory"
-}
-
-/// Rewrite Pi tool args into shapes the native Grok cards already understand.
-///
-/// - `write` → `variant: "Write"` so Edit cards show "Creating "
-/// - `ls` → `target_directory` (ListDir card key)
-/// - `grep` → `-i` alias for `ignoreCase`
-/// - `find` → `output_mode: files_with_matches`
-fn normalize_tool_raw_input(name: &str, args: Option<Value>) -> Option<Value> {
-    let mut args = args?;
-    let Some(obj) = args.as_object_mut() else {
-        return Some(args);
-    };
-    let lower = name.to_ascii_lowercase();
-
-    if lower == "write" || lower.ends_with("_write") {
-        obj.entry("variant".to_string())
-            .or_insert_with(|| json!("Write"));
-    }
-
-    if is_ls_tool(name) {
-        if let Some(path) = obj.get("path").cloned() {
-            obj.entry("target_directory".to_string()).or_insert(path);
-        } else {
-            obj.entry("target_directory".to_string())
-                .or_insert_with(|| json!("."));
-        }
-    }
-
-    if is_find_tool(name) {
-        obj.entry("output_mode".to_string())
-            .or_insert_with(|| json!("files_with_matches"));
-        // Prefer `pattern` as the search term; copy glob-like patterns into
-        // `glob_pattern` for extractors that look for it.
-        if let Some(pattern) = obj.get("pattern").cloned() {
-            obj.entry("glob_pattern".to_string()).or_insert(pattern);
-        }
-    }
-
-    if lower == "grep" || lower.contains("grep") {
-        if let Some(ignore_case) = obj.get("ignoreCase").cloned() {
-            obj.entry("-i".to_string()).or_insert(ignore_case);
-        }
-    }
-
-    Some(args)
-}
-
-/// Project Pi tool results into the typed `raw_output` shapes native Grok cards
-/// deserialize (`ToolOutput::ReadFile` / `Bash` / `GrepSearch` / `ListDir`).
-///
-/// Without this conversion the Read card has no path/line metadata, the
-/// Execute card/viewer has command only, and Search/ListDir cards show empty
-/// structured results — Pi's payload is text `content`, not Grok's tagged
-/// tool output enum.
-fn normalize_tool_raw_output(
-    name: &str,
-    args: Option<&Value>,
-    result: &Value,
-    is_error: bool,
-) -> Value {
-    if is_ls_tool(name) {
-        return ls_tool_output(args, result, is_error);
-    }
-    match tool_kind(name) {
-        acp::ToolKind::Read => read_tool_output(args, result, is_error),
-        acp::ToolKind::Execute => {
-            let command = args
-                .and_then(|value| string(value, &["command", "cmd"]))
-                .unwrap_or_default()
-                .to_string();
-            bash_tool_output(&command, result, is_error)
-        }
-        acp::ToolKind::Search => {
-            if is_find_tool(name) {
-                find_tool_output(result, is_error)
-            } else {
-                grep_tool_output(result, is_error)
-            }
-        }
-        _ => result.clone(),
-    }
-}
-
-fn pi_result_text(value: &Value) -> String {
-    if let Some(text) = value.get("output").and_then(Value::as_str) {
-        return text.to_string();
-    }
-    let source = value.get("content").unwrap_or(value);
-    match source {
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|item| {
-                string(item, &["text", "content", "message", "output"])
-                    .map(str::to_owned)
-                    .or_else(|| item.as_str().map(str::to_owned))
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Value::String(text) => text.clone(),
-        _ => {
-            let text = json_text(source);
-            if text == "null" { String::new() } else { text }
-        }
-    }
-}
-
-fn read_tool_output(args: Option<&Value>, result: &Value, is_error: bool) -> Value {
-    let text = pi_result_text(result);
-    if is_error {
-        let message = if text.trim().is_empty() {
-            "Read failed".to_string()
-        } else {
-            text
-        };
-        return json!({
-            "type": "ReadFile",
-            "FileReadError": message,
-        });
-    }
-
-    let path = args
-        .and_then(|value| string(value, &["path", "filePath", "file_path", "target_file"]))
-        .unwrap_or_default()
-        .to_string();
-    let offset = args
-        .and_then(|value| value.get("offset"))
-        .and_then(Value::as_u64)
-        .map(|n| n as usize);
-    let limit = args
-        .and_then(|value| value.get("limit"))
-        .and_then(Value::as_u64)
-        .map(|n| n as usize);
-
-    // Strip Pi continuation footers for line counting; keep full text for content.
-    let body = text
-        .split("\n\n[")
-        .next()
-        .unwrap_or(text.as_str())
-        .trim_end_matches('\n');
-    let content_lines = if body.is_empty() {
-        0
-    } else {
-        body.lines().count()
-    };
-    let total_from_footer = text
-        .rsplit_once(" of ")
-        .and_then(|(_, rest)| {
-            rest.split(|c: char| !c.is_ascii_digit())
-                .find(|part| !part.is_empty())
-                .and_then(|digits| digits.parse::<usize>().ok())
-        });
-    let start_index = offset.unwrap_or(1).saturating_sub(1);
-    let total_lines = total_from_footer
-        .unwrap_or(start_index.saturating_add(content_lines))
-        .max(content_lines);
-
-    // Pager Read cards treat FileContent.offset as a 0-based skip count
-    // (`start = offset + 1`). Pi's offset is 1-indexed. When Pi omits a window,
-    // still publish a 0-based full-file range so the header can show line counts.
-    let (stored_offset, stored_limit) = match (offset, limit) {
-        (None, None) if content_lines > 0 => (Some(0usize), Some(content_lines)),
-        (offset, limit) => (offset.map(|value| value.saturating_sub(1)), limit),
-    };
-
-    json!({
-        "type": "ReadFile",
-        "FileContent": {
-            "content": text,
-            "absolute_path": path,
-            "offset": stored_offset,
-            "limit": stored_limit,
-            "raw_output": body,
-            "total_lines": total_lines,
-        }
-    })
-}
-
-/// Project Pi `grep` text (`path:line: content`) into `ToolOutput::GrepSearch`.
-fn grep_tool_output(result: &Value, is_error: bool) -> Value {
-    let text = pi_result_text(result);
-    let trimmed = text.trim();
-    if is_error {
-        return json!({
-            "type": "GrepSearch",
-            "stdout": text.as_bytes().to_vec(),
-            "stderr": text.as_bytes().to_vec(),
-            "exit_code": 2,
-            "match_count": 0,
-            "file_matches": [],
-        });
-    }
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("No matches found") {
-        return json!({
-            "type": "GrepSearch",
-            "stdout": text.as_bytes().to_vec(),
-            "stderr": Vec::<u8>::new(),
-            "exit_code": 1,
-            "match_count": 0,
-            "file_matches": [],
-        });
-    }
-
-    let (file_matches, match_count) = parse_pi_grep_matches(&text);
-    json!({
-        "type": "GrepSearch",
-        "stdout": text.as_bytes().to_vec(),
-        "stderr": Vec::<u8>::new(),
-        "exit_code": 0,
-        "match_count": match_count,
-        "file_matches": file_matches,
-    })
-}
-
-/// Project Pi `find` path list into `ToolOutput::GrepSearch` (files_with_matches).
-fn find_tool_output(result: &Value, is_error: bool) -> Value {
-    let text = pi_result_text(result);
-    let trimmed = text.trim();
-    if is_error {
-        return json!({
-            "type": "GrepSearch",
-            "stdout": text.as_bytes().to_vec(),
-            "stderr": text.as_bytes().to_vec(),
-            "exit_code": 2,
-            "match_count": 0,
-            "file_matches": [],
-        });
-    }
-    if trimmed.is_empty()
-        || trimmed.eq_ignore_ascii_case("No files found matching pattern")
-        || trimmed.eq_ignore_ascii_case("No files found")
-    {
-        return json!({
-            "type": "GrepSearch",
-            "stdout": text.as_bytes().to_vec(),
-            "stderr": Vec::<u8>::new(),
-            "exit_code": 0,
-            "match_count": 0,
-            "file_matches": [],
-        });
-    }
-
-    // One path per line. Store as stdout so the pager can also recover
-    // file_paths via parse_file_paths_from_stdout when file_matches is empty.
-    let paths: Vec<&str> = trimmed
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    let match_count = paths.len();
-    json!({
-        "type": "GrepSearch",
-        "stdout": text.as_bytes().to_vec(),
-        "stderr": Vec::<u8>::new(),
-        "exit_code": 0,
-        "match_count": match_count,
-        "file_matches": [],
-    })
-}
-
-/// Project Pi `ls` listing into `ToolOutput::ListDir`.
-fn ls_tool_output(args: Option<&Value>, result: &Value, is_error: bool) -> Value {
-    let text = pi_result_text(result);
-    let path = args
-        .and_then(|value| string(value, &["path", "target_directory", "targetDirectory"]))
-        .unwrap_or(".")
-        .to_string();
-
-    if is_error {
-        let message = if text.trim().is_empty() {
-            "List directory failed".to_string()
-        } else {
-            text
-        };
-        // Prefer NotFound when Pi's message looks like a missing path.
-        if message.to_ascii_lowercase().contains("not found")
-            || message.to_ascii_lowercase().contains("no such file")
-        {
-            return json!({ "type": "ListDir", "NotFound": message });
-        }
-        if message.to_ascii_lowercase().contains("not a directory") {
-            return json!({ "type": "ListDir", "NotADirectory": message });
-        }
-        if message.to_ascii_lowercase().contains("permission") {
-            return json!({ "type": "ListDir", "PermissionDenied": message });
-        }
-        return json!({ "type": "ListDir", "Error": message });
-    }
-
-    json!({
-        "type": "ListDir",
-        "Content": {
-            "content": text,
-            "absolute_root_path": path,
-        }
-    })
-}
-
-/// Parse Pi grep output lines:
-/// - match: `path:line: content`
-/// - context: `path-line- content` (ignored for match_count)
-fn parse_pi_grep_matches(text: &str) -> (Vec<Value>, usize) {
-    // path -> ordered line matches
-    let mut order: Vec<String> = Vec::new();
-    let mut by_path: IndexMap<String, Vec<Value>> = IndexMap::new();
-    let mut match_count = 0usize;
-
-    for line in text.lines() {
-        let line = line.trim_end();
-        if line.is_empty() {
-            continue;
-        }
-        // Prefer match lines `path:N: rest` over context `path-N- rest`.
-        if let Some((path, line_number, content)) = split_pi_grep_match_line(line) {
-            match_count += 1;
-            if !by_path.contains_key(path) {
-                order.push(path.to_string());
-            }
-            by_path.entry(path.to_string()).or_default().push(json!({
-                "line_number": line_number,
-                "content": content,
-            }));
-        }
-    }
-
-    let file_matches = order
-        .into_iter()
-        .filter_map(|path| {
-            let matches = by_path.swap_remove(&path)?;
-            Some(json!({
-                "path": path,
-                "matches": matches,
-            }))
-        })
-        .collect();
-    (file_matches, match_count)
-}
-
-fn split_pi_grep_match_line(line: &str) -> Option<(&str, usize, &str)> {
-    // Format: `relative/path:12: content` — path may contain colons on Windows
-    // (`C:\...`), so scan from the right for `:digits:`.
-    let bytes = line.as_bytes();
-    let mut i = bytes.len();
-    // Find last ": <content>" separator after a line number.
-    while i > 0 {
-        // find `:` that starts content
-        if let Some(colon_content) = line[..i].rfind(':') {
-            let after = &line[colon_content + 1..];
-            // content may start with space
-            let before = &line[..colon_content];
-            if let Some(colon_line) = before.rfind(':') {
-                let line_str = &before[colon_line + 1..];
-                if let Ok(line_number) = line_str.parse::<usize>() {
-                    let path = &before[..colon_line];
-                    if !path.is_empty() && line_number > 0 {
-                        let content = after.strip_prefix(' ').unwrap_or(after);
-                        return Some((path, line_number, content));
-                    }
-                }
-            }
-            i = colon_content;
-        } else {
-            break;
-        }
-    }
-    None
-}
-
-fn bash_tool_output(command: &str, result: &Value, is_error: bool) -> Value {
-    let text = if result.get("output").and_then(Value::as_str).is_some()
-        && result.get("content").is_none()
-    {
-        // Direct Pi `bash` RPC response: { output, exitCode, ... }.
-        result
-            .get("output")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    } else {
-        pi_result_text(result)
-    };
-
-    let exit_code = result
-        .get("exitCode")
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            result
-                .get("details")
-                .and_then(|details| details.get("exitCode"))
-                .and_then(Value::as_i64)
-        })
-        .unwrap_or(if is_error { 1 } else { 0 });
-
-    let truncated = result
-        .get("truncated")
-        .and_then(Value::as_bool)
-        .or_else(|| {
-            result
-                .pointer("/details/truncation/truncated")
-                .and_then(Value::as_bool)
-        })
-        .unwrap_or(false);
-
-    let output_file = result
-        .get("fullOutputPath")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            result
-                .pointer("/details/fullOutputPath")
-                .and_then(Value::as_str)
-        })
-        .unwrap_or("")
-        .to_string();
-
-    let bytes = text.as_bytes().to_vec();
-    let total_bytes = bytes.len();
-    json!({
-        "type": "Bash",
-        "output": bytes,
-        "output_for_prompt": text,
-        "exit_code": exit_code,
-        "command": command,
-        "truncated": truncated,
-        "signal": null,
-        "timed_out": false,
-        "description": null,
-        "current_dir": "",
-        "output_file": output_file,
-        "total_bytes": total_bytes,
-        "was_bare_echo": false,
-    })
-}
-
-fn direct_bash_command(blocks: &[acp::ContentBlock]) -> Option<String> {
-    blocks.iter().find_map(|block| {
-        let acp::ContentBlock::Text(text) = block else {
-            return None;
-        };
-        text.meta
-            .as_ref()
-            .and_then(|meta| meta.get("bash_command"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-            .map(ToOwned::to_owned)
-    })
-}
-
-/// Stamp client `promptId` on PromptResponse so the pager can discard queued
-/// mid-turn RPC completions that never became `current_prompt_id`.
-fn prompt_response(
-    reason: acp::StopReason,
-    client_prompt_id: Option<&str>,
-) -> acp::PromptResponse {
-    let mut response = acp::PromptResponse::new(reason);
-    if let Some(prompt_id) = client_prompt_id.filter(|id| !id.is_empty()) {
-        let mut meta = acp::Meta::new();
-        meta.insert("promptId".into(), Value::String(prompt_id.to_string()));
-        response = response.meta(Some(meta));
-    }
-    response
-}
-
-fn prompt_streaming_behavior(
-    already_active: bool,
-    meta: Option<&acp::Meta>,
-) -> Option<&'static str> {
-    if !already_active {
-        return None;
-    }
-    // Cancel-and-send / send-now is an interrupt (steer).
-    if meta
-        .and_then(|meta| meta.get("sendNow"))
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
-        return Some("steer");
-    }
-    // Explicit followUp meta wins; otherwise mid-turn prompts queue as follow-up
-    // (FEATURE_MATRIX: default active-turn prompt → Pi follow_up).
-    if meta
-        .and_then(|meta| meta.get("followUp"))
-        .and_then(Value::as_bool)
-        == Some(false)
-    {
-        return Some("steer");
-    }
-    Some("followUp")
-}
-
-fn queue_lane_for_behavior(behavior: &str) -> Option<QueueLane> {
-    match behavior {
-        "steer" => Some(QueueLane::Steering),
-        "followUp" => Some(QueueLane::FollowUp),
-        _ => None,
-    }
-}
-
-fn format_bash_result(result: &Value) -> String {
-    let mut text = result
-        .get("output")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let mut notes = Vec::new();
-    if result.get("cancelled").and_then(Value::as_bool) == Some(true) {
-        notes.push("Command cancelled".to_string());
-    } else if let Some(exit_code) = result.get("exitCode").and_then(Value::as_i64) {
-        notes.push(format!("Exit code: {exit_code}"));
-    }
-    if result.get("truncated").and_then(Value::as_bool) == Some(true) {
-        let suffix = result
-            .get("fullOutputPath")
-            .and_then(Value::as_str)
-            .map(|path| format!("Output truncated; full output: {path}"))
-            .unwrap_or_else(|| "Output truncated".to_string());
-        notes.push(suffix);
-    }
-    if !notes.is_empty() {
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&notes.join("\n"));
-    }
-    if text.is_empty() {
-        "Command completed with no output".to_string()
-    } else {
-        text
-    }
-}
-
-fn prompt_to_pi(blocks: &[acp::ContentBlock]) -> (String, Vec<Value>) {
-    let mut parts = Vec::new();
-    let mut images = Vec::new();
-    for block in blocks {
-        match block {
-            acp::ContentBlock::Text(text) => parts.push(text.text.clone()),
-            acp::ContentBlock::Image(image) => images.push(json!({
-                "type": "image",
-                "data": image.data,
-                "mimeType": image.mime_type,
-            })),
-            acp::ContentBlock::ResourceLink(link) => {
-                parts.push(format!("[resource] {}", link.uri));
-            }
-            acp::ContentBlock::Resource(resource) => {
-                parts.push(json_text(
-                    &serde_json::to_value(resource).unwrap_or(Value::Null),
-                ));
-            }
-            _ => {}
-        }
-    }
-    (parts.join("\n\n"), images)
 }
 
 fn message_role(event: &Value) -> Option<&str> {
@@ -3006,6 +2355,46 @@ mod tests {
     }
 
     #[test]
+    fn model_catalog_includes_provider_and_detail_description() {
+        let models = vec![PiModel {
+            provider: "anthropic".into(),
+            id: "claude-haiku-4-5".into(),
+            label: "Claude Haiku 4.5".into(),
+            context_window: Some(200_000),
+            max_tokens: Some(64_000),
+            api: Some("anthropic-messages".into()),
+            base_url: Some("https://api.anthropic.com".into()),
+            reasoning: true,
+            accepts_images: true,
+            input: vec!["text".into(), "image".into()],
+            cost_input: Some(1.0),
+            cost_output: Some(5.0),
+            cost_cache_read: Some(0.1),
+            cost_cache_write: Some(1.25),
+            thinking_levels: vec!["off".into(), "low".into(), "medium".into(), "high".into()],
+        }];
+        let (available, current) = build_model_catalog(&models, models.first(), "medium");
+        assert!(current.is_some());
+        let id = acp::ModelId::new("anthropic::claude-haiku-4-5");
+        let info = available.get(&id).expect("catalog entry");
+        assert_eq!(info.name, "Claude Haiku 4.5");
+        let description = info.description.as_deref().unwrap_or("");
+        assert!(!description.contains("[anthropic]"), "provider stays on left: {description}");
+        assert!(description.contains("ctx 200k"), "{description}");
+        assert!(description.contains("out 64k"), "{description}");
+        assert!(description.contains("api anth"), "{description}");
+        assert!(description.contains("in txt+img"), "{description}");
+        assert!(description.contains("⚡"), "{description}");
+        assert!(description.contains("$1 / $5"), "{description}");
+        let meta = info.meta.as_ref().expect("meta");
+        assert_eq!(meta.get("provider").and_then(|v| v.as_str()), Some("anthropic"));
+        assert_eq!(meta.get("modelId").and_then(|v| v.as_str()), Some("claude-haiku-4-5"));
+        assert_eq!(meta.get("api").and_then(|v| v.as_str()), Some("anthropic-messages"));
+        assert_eq!(meta.get("totalContextTokens").and_then(|v| v.as_u64()), Some(200_000));
+        assert_eq!(meta.get("maxTokens").and_then(|v| v.as_u64()), Some(64_000));
+    }
+
+    #[test]
     fn command_catalog_is_pi_owned_and_deduplicated() {
         let commands = vec![
             PiCommand {
@@ -3042,451 +2431,6 @@ mod tests {
         assert!(text.contains("Pi skill command"));
         assert!(!text.contains(NAVIGATE_TREE_COMMAND));
         assert!(!text.contains(LABEL_TREE_COMMAND));
-    }
-
-    #[test]
-    fn grok_direct_bash_meta_maps_to_pi_bash() {
-        let mut meta = acp::Meta::new();
-        meta.insert("bash_command".into(), json!("git status"));
-        let blocks = vec![acp::ContentBlock::Text(
-            acp::TextContent::new("!git status").meta(Some(meta)),
-        )];
-        assert_eq!(direct_bash_command(&blocks).as_deref(), Some("git status"));
-    }
-
-    #[test]
-    fn prompt_response_echoes_client_prompt_id() {
-        let response = prompt_response(acp::StopReason::EndTurn, Some("client-uuid"));
-        assert_eq!(response.stop_reason, acp::StopReason::EndTurn);
-        assert_eq!(
-            response
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.get("promptId"))
-                .and_then(Value::as_str),
-            Some("client-uuid")
-        );
-        let bare = prompt_response(acp::StopReason::Cancelled, None);
-        assert!(bare.meta.is_none());
-    }
-
-    #[test]
-    fn pi_tui_queue_modes_map_to_pi_streaming_behavior() {
-        assert_eq!(prompt_streaming_behavior(false, None), None);
-        // Mid-turn default is follow-up (wait for turn), not steer.
-        assert_eq!(prompt_streaming_behavior(true, None), Some("followUp"));
-
-        let mut meta = acp::Meta::new();
-        meta.insert("followUp".into(), Value::Bool(true));
-        assert_eq!(
-            prompt_streaming_behavior(true, Some(&meta)),
-            Some("followUp")
-        );
-
-        let mut send_now = acp::Meta::new();
-        send_now.insert("sendNow".into(), Value::Bool(true));
-        assert_eq!(
-            prompt_streaming_behavior(true, Some(&send_now)),
-            Some("steer")
-        );
-
-        let mut force_steer = acp::Meta::new();
-        force_steer.insert("followUp".into(), Value::Bool(false));
-        assert_eq!(
-            prompt_streaming_behavior(true, Some(&force_steer)),
-            Some("steer")
-        );
-    }
-
-    #[test]
-    fn pi_read_maps_to_native_read_card() {
-        assert_eq!(tool_kind("read"), acp::ToolKind::Read);
-        assert_eq!(tool_kind("use_skill"), acp::ToolKind::Other);
-    }
-
-    #[test]
-    fn bash_result_is_presented_in_native_tool_card_text() {
-        let text = format_bash_result(&json!({
-            "output": "ok",
-            "exitCode": 0,
-            "cancelled": false,
-            "truncated": true,
-            "fullOutputPath": "/tmp/pi-bash.log",
-        }));
-        assert!(text.contains("ok"));
-        assert!(text.contains("Exit code: 0"));
-        assert!(text.contains("/tmp/pi-bash.log"));
-    }
-
-    #[test]
-    fn pi_read_result_projects_native_readfile_raw_output() {
-        let raw = normalize_tool_raw_output(
-            "read",
-            Some(&json!({ "path": "src/lib.rs", "offset": 10, "limit": 20 })),
-            &json!({
-                "content": [{ "type": "text", "text": "fn main() {}\n// end\n\n[Showing lines 10-11 of 42. Use offset=12 to continue.]" }],
-            }),
-            false,
-        );
-        assert_eq!(raw.get("type").and_then(Value::as_str), Some("ReadFile"));
-        let file = raw.get("FileContent").expect("FileContent variant");
-        assert_eq!(
-            file.get("absolute_path").and_then(Value::as_str),
-            Some("src/lib.rs")
-        );
-        assert_eq!(file.get("offset").and_then(Value::as_u64), Some(9));
-        assert_eq!(file.get("limit").and_then(Value::as_u64), Some(20));
-        assert_eq!(file.get("total_lines").and_then(Value::as_u64), Some(42));
-        assert!(
-            file.get("raw_output")
-                .and_then(Value::as_str)
-                .is_some_and(|text| text.contains("fn main()"))
-        );
-    }
-
-    #[test]
-    fn context_tokens_prefer_session_stats_and_usage_total() {
-        assert_eq!(
-            context_tokens_from_stats(&json!({
-                "contextUsage": { "tokens": 60_000, "contextWindow": 200_000, "percent": 30.0 }
-            })),
-            Some(60_000)
-        );
-        assert_eq!(
-            context_tokens_from_stats(&json!({
-                "contextUsage": { "tokens": null, "contextWindow": 200_000, "percent": null }
-            })),
-            None
-        );
-        assert_eq!(
-            context_tokens_from_usage(&json!({
-                "totalTokens": 12_345,
-                "input": 1,
-                "output": 2,
-            })),
-            Some(12_345)
-        );
-        assert_eq!(
-            context_tokens_from_usage(&json!({
-                "input": 100,
-                "output": 50,
-                "cacheRead": 20,
-                "cacheWrite": 5,
-            })),
-            Some(175)
-        );
-    }
-
-    #[test]
-    fn session_info_maps_pi_stats_into_native_context_shape() {
-        let model = PiModel {
-            provider: "openai".into(),
-            id: "gpt-test".into(),
-            label: "GPT Test".into(),
-            context_window: Some(200_000),
-            reasoning: false,
-            accepts_images: false,
-            thinking_levels: vec!["off".into()],
-        };
-        let stats = json!({
-            "sessionId": "sess-1",
-            "userMessages": 3,
-            "assistantMessages": 2,
-            "toolCalls": 4,
-            "toolResults": 4,
-            "totalMessages": 9,
-            "contextUsage": { "tokens": 10_000, "contextWindow": 200_000, "percent": 5.0 }
-        });
-        let messages = json!({
-            "messages": [
-                { "role": "user", "content": "hello world" },
-                {
-                    "role": "assistant",
-                    "content": [
-                        { "type": "text", "text": "thinking out loud" },
-                        {
-                            "type": "toolCall",
-                            "id": "t1",
-                            "name": "read",
-                            "arguments": { "path": "a.rs" }
-                        }
-                    ]
-                },
-                {
-                    "role": "toolResult",
-                    "toolCallId": "t1",
-                    "content": [{ "type": "text", "text": "fn main() {}" }]
-                }
-            ]
-        });
-        let response = build_session_info_response(
-            &stats,
-            Some(&messages),
-            "sess-1",
-            "/repo",
-            Some(&model),
-            None,
-        );
-        assert_eq!(response["sessionId"], json!("sess-1"));
-        assert_eq!(response["cwd"], json!("/repo"));
-        assert_eq!(response["model"], json!("gpt-test"));
-        assert_eq!(response["modelDisplayName"], json!("GPT Test"));
-        assert_eq!(response["agentName"], json!("pi"));
-        assert_eq!(response["turns"], json!(3));
-        assert_eq!(response["context"]["used"], json!(10_000));
-        assert_eq!(response["context"]["total"], json!(200_000));
-        assert_eq!(response["context"]["freeTokens"], json!(190_000));
-        assert_eq!(response["context"]["usagePct"], json!(5));
-        assert_eq!(response["context"]["toolCallCount"], json!(4));
-        assert_eq!(response["context"]["messageCount"], json!(9));
-        assert_eq!(response["context"]["turnCount"], json!(3));
-        // Message bucket must be non-zero when text is present and scales into used.
-        assert!(response["context"]["messageTokens"].as_u64().unwrap_or(0) > 0);
-        let message_tokens = response["context"]["messageTokens"].as_u64().unwrap();
-        assert!(message_tokens <= 10_000);
-        // system stays 0 without RPC access; overhead fills the rest of used.
-        assert_eq!(response["context"]["systemPromptTokens"], json!(0));
-    }
-
-    #[test]
-    fn session_info_falls_back_to_cached_tokens_when_stats_null() {
-        let stats = json!({
-            "userMessages": 1,
-            "toolCalls": 0,
-            "totalMessages": 1,
-            "contextUsage": { "tokens": null, "contextWindow": 100_000, "percent": null }
-        });
-        let response = build_session_info_response(
-            &stats,
-            None,
-            "sess-2",
-            "/tmp",
-            None,
-            Some(42_000),
-        );
-        assert_eq!(response["context"]["used"], json!(42_000));
-        assert_eq!(response["context"]["total"], json!(100_000));
-        assert_eq!(response["context"]["freeTokens"], json!(58_000));
-        // No message estimate → put the full used window into Messages.
-        assert_eq!(response["context"]["messageTokens"], json!(42_000));
-        assert!(response.get("model").is_none());
-        assert!(response.get("resolvedModelId").is_none());
-    }
-
-    #[test]
-    fn entries_payload_projects_message_roles() {
-        let entries = json!({
-            "entries": [
-                { "type": "message", "message": { "role": "user", "content": "hi there" } },
-                {
-                    "type": "message",
-                    "message": {
-                        "role": "assistant",
-                        "content": [{ "type": "text", "text": "hello" }]
-                    }
-                }
-            ]
-        });
-        let messages = entries_to_messages_value(entries);
-        let estimate = estimate_message_tokens(&messages);
-        assert!(estimate.messages > 0);
-    }
-
-    #[test]
-    fn scale_token_parts_preserves_used_total() {
-        assert_eq!(scale_token_parts(&[75, 25], 1_000), vec![750, 250]);
-        let scaled = scale_token_parts(&[1, 1, 1], 10);
-        assert_eq!(scaled.iter().sum::<u64>(), 10);
-    }
-
-    #[test]
-    fn pi_bash_result_projects_native_bash_raw_output() {
-        let raw = normalize_tool_raw_output(
-            "bash",
-            Some(&json!({ "command": "ls -la" })),
-            &json!({
-                "content": [{ "type": "text", "text": "total 48\nREADME.md\n" }],
-                "details": { "fullOutputPath": null },
-            }),
-            false,
-        );
-        assert_eq!(raw.get("type").and_then(Value::as_str), Some("Bash"));
-        assert_eq!(raw.get("command").and_then(Value::as_str), Some("ls -la"));
-        assert_eq!(raw.get("exit_code").and_then(Value::as_i64), Some(0));
-        let output = raw
-            .get("output_for_prompt")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        assert!(output.contains("README.md"));
-
-        let direct = bash_tool_output(
-            "echo hi",
-            &json!({
-                "output": "hi\n",
-                "exitCode": 0,
-                "truncated": false,
-            }),
-            false,
-        );
-        assert_eq!(direct.get("type").and_then(Value::as_str), Some("Bash"));
-        assert_eq!(
-            direct.get("output_for_prompt").and_then(Value::as_str),
-            Some("hi\n")
-        );
-    }
-
-    #[test]
-    fn pi_edit_and_write_inputs_produce_native_diff_content() {
-        let edit = edit_diff_content(
-            "edit",
-            Some(&json!({
-                "path": "README.md",
-                "oldText": "before\n",
-                "newText": "after\n",
-            })),
-        )
-        .expect("edit input must become a diff");
-        let acp::ToolCallContent::Diff(diff) = &edit[0] else {
-            panic!("edit input must produce ACP Diff content");
-        };
-        assert_eq!(diff.path.to_string_lossy(), "README.md");
-        assert_eq!(diff.old_text.as_deref(), Some("before\n"));
-        assert_eq!(diff.new_text, "after\n");
-
-        let current_edit = edit_diff_content(
-            "edit",
-            Some(&json!({
-                "path": "README.md",
-                "edits": [
-                    { "oldText": "before\n", "newText": "after\n" },
-                    { "oldText": "first\n", "newText": "second\n" },
-                ],
-            })),
-        )
-        .expect("current edit input must become diffs");
-        assert_eq!(current_edit.len(), 2);
-
-        let write = edit_diff_content(
-            "write",
-            Some(&json!({ "path": "README.md", "content": "new file\n" })),
-        )
-        .expect("write input must become a diff");
-        let acp::ToolCallContent::Diff(diff) = &write[0] else {
-            panic!("write input must produce ACP Diff content");
-        };
-        assert_eq!(diff.old_text, None);
-        assert_eq!(diff.new_text, "new file\n");
-    }
-
-    #[test]
-    fn pi_builtin_tool_kinds() {
-        assert_eq!(tool_kind("read"), acp::ToolKind::Read);
-        assert_eq!(tool_kind("bash"), acp::ToolKind::Execute);
-        assert_eq!(tool_kind("edit"), acp::ToolKind::Edit);
-        assert_eq!(tool_kind("write"), acp::ToolKind::Edit);
-        assert_eq!(tool_kind("grep"), acp::ToolKind::Search);
-        assert_eq!(tool_kind("find"), acp::ToolKind::Search);
-        assert_eq!(tool_kind("ls"), acp::ToolKind::Other);
-    }
-
-    #[test]
-    fn pi_write_raw_input_gets_write_variant() {
-        let args = normalize_tool_raw_input(
-            "write",
-            Some(json!({ "path": "a.rs", "content": "x" })),
-        )
-        .unwrap();
-        assert_eq!(args.get("variant").and_then(Value::as_str), Some("Write"));
-    }
-
-    #[test]
-    fn pi_ls_raw_input_gets_target_directory() {
-        let args =
-            normalize_tool_raw_input("ls", Some(json!({ "path": "src" }))).unwrap();
-        assert_eq!(
-            args.get("target_directory").and_then(Value::as_str),
-            Some("src")
-        );
-    }
-
-    #[test]
-    fn pi_grep_result_projects_native_grepsearch() {
-        let raw = normalize_tool_raw_output(
-            "grep",
-            Some(&json!({ "pattern": "fn main", "path": "." })),
-            &json!({
-                "content": [{
-                    "type": "text",
-                    "text": "src/main.rs:10: fn main() {\nsrc/lib.rs:3: fn main_helper() {\n"
-                }],
-            }),
-            false,
-        );
-        assert_eq!(raw.get("type").and_then(Value::as_str), Some("GrepSearch"));
-        assert_eq!(raw.get("match_count").and_then(Value::as_u64), Some(2));
-        let files = raw.get("file_matches").and_then(Value::as_array).unwrap();
-        assert_eq!(files.len(), 2);
-        assert_eq!(
-            files[0].get("path").and_then(Value::as_str),
-            Some("src/main.rs")
-        );
-        assert_eq!(
-            files[0]
-                .get("matches")
-                .and_then(Value::as_array)
-                .unwrap()[0]
-                .get("line_number")
-                .and_then(Value::as_u64),
-            Some(10)
-        );
-    }
-
-    #[test]
-    fn pi_find_result_projects_files_with_matches() {
-        let raw = normalize_tool_raw_output(
-            "find",
-            Some(&json!({ "pattern": "*.rs" })),
-            &json!({
-                "content": [{ "type": "text", "text": "src/a.rs\nsrc/b.rs\n" }],
-            }),
-            false,
-        );
-        assert_eq!(raw.get("type").and_then(Value::as_str), Some("GrepSearch"));
-        assert_eq!(raw.get("match_count").and_then(Value::as_u64), Some(2));
-    }
-
-    #[test]
-    fn pi_ls_result_projects_native_listdir() {
-        let raw = normalize_tool_raw_output(
-            "ls",
-            Some(&json!({ "path": "src" })),
-            &json!({
-                "content": [{ "type": "text", "text": "main.rs\nlib.rs\n" }],
-            }),
-            false,
-        );
-        assert_eq!(raw.get("type").and_then(Value::as_str), Some("ListDir"));
-        let content = raw.get("Content").expect("ListDir Content");
-        assert_eq!(
-            content.get("absolute_root_path").and_then(Value::as_str),
-            Some("src")
-        );
-        assert!(
-            content
-                .get("content")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.contains("main.rs"))
-        );
-    }
-
-    #[test]
-    fn pi_grep_match_line_parser() {
-        let (path, line, content) =
-            split_pi_grep_match_line("crates/foo/bar.rs:42: let x = 1;").unwrap();
-        assert_eq!(path, "crates/foo/bar.rs");
-        assert_eq!(line, 42);
-        assert_eq!(content, "let x = 1;");
-        assert!(split_pi_grep_match_line("crates/foo/bar.rs-42- context").is_none());
     }
 
     #[test]
