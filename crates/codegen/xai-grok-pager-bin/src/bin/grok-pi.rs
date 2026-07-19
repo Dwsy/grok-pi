@@ -185,10 +185,13 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| write_context_extension())
         .transpose()
         .context("failed to create Pi context breakdown extension")?;
-    let native_commands_extension = bridge_extensions_enabled
-        .then(|| write_native_commands_extension())
-        .transpose()
-        .context("failed to create Pi native commands extension")?;
+    // Pi's interactive component internals are not a stable extension API.
+    // Keep this experiment opt-in so a Pi upgrade cannot block the core RPC host.
+    let native_commands_extension = (bridge_extensions_enabled
+        && env_flag_default_off("PI_GROK_NATIVE_COMMANDS"))
+    .then(|| write_native_commands_extension())
+    .transpose()
+    .context("failed to create Pi native commands extension")?;
     let remote_tui_enabled = bridge_extensions_enabled && env_flag_default_on("PI_GROK_REMOTE_TUI");
     let remote_tui_extension = if remote_tui_enabled {
         Some(write_remote_tui_extension().context("failed to create Pi remote-tui extension")?)
@@ -407,9 +410,20 @@ fn env_flag_default_on(name: &str) -> bool {
     }
 }
 
+/// Experimental features default to OFF and require an explicit truthy value.
+fn env_flag_default_off(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "on" | "yes"
+        ),
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod env_flag_tests {
-    use super::{Args, env_flag_default_on};
+    use super::{Args, env_flag_default_off, env_flag_default_on};
     use clap::Parser;
 
     #[test]
@@ -419,6 +433,27 @@ mod env_flag_tests {
             std::env::remove_var("PI_GROK_TEST_FLAG_DEFAULT_ON");
         }
         assert!(env_flag_default_on("PI_GROK_TEST_FLAG_DEFAULT_ON"));
+    }
+
+    #[test]
+    fn native_commands_default_off() {
+        // SAFETY: test-only env mutation in this unit test process.
+        unsafe {
+            std::env::remove_var("PI_GROK_NATIVE_COMMANDS");
+        }
+        assert!(!env_flag_default_off("PI_GROK_NATIVE_COMMANDS"));
+    }
+
+    #[test]
+    fn experimental_flags_require_an_explicit_opt_in() {
+        // SAFETY: test-only env mutation in this unit test process.
+        unsafe {
+            std::env::set_var("PI_GROK_NATIVE_COMMANDS", "yes");
+        }
+        assert!(env_flag_default_off("PI_GROK_NATIVE_COMMANDS"));
+        unsafe {
+            std::env::remove_var("PI_GROK_NATIVE_COMMANDS");
+        }
     }
 
     #[test]
