@@ -16,31 +16,6 @@ flowchart LR
     Adapter <--> Pi[pi --mode rpc\nPi Agent Core]
 ```
 
-This preserves Grok's production terminal experience—including input, command completion, Markdown, tool cards, diffs, scrollback, dialogs, and terminal lifecycle—while retaining Pi as the single owner of agent behavior.
-
-## Core invariants
-
-These rules define the integration and should hold for every future change:
-
-1. **Grok Pager is the only TUI.** Terminal initialization/restoration, keyboard and mouse input, `PromptWidget`, slash completion, `QuestionView`, Markdown, tool cards, diffs, and scrollback come from the upstream Grok Build codebase.
-2. **Pi is the only agent core.** Providers, model selection, the agent loop, tools, extensions, session persistence, retries, and compaction stay in Pi.
-3. **The adapter is headless.** It may spawn Pi, correlate JSONL requests, maintain protocol state, and translate Pi JSON ↔ ACP. It must not own a terminal, render widgets, run a keyboard loop, or depend on Ratatui/Crossterm.
-4. **Reuse native surfaces; do not imitate them.** A Pi capability is mapped only through an existing Grok surface. If there is no native surface, document the boundary rather than add a private ASCII UI or a duplicate slash-command system.
-5. **Protocol facts come from source.** Pi RPC behavior is defined in `pi-main/packages/coding-agent/src/modes/rpc/`; ACP and TUI behavior are defined in the Grok workspace.
-
-## What you get
-
-| Area | Delivery |
-|---|---|
-| Terminal and rendering | Grok production Pager, minimal/scrollback renderer, Markdown pipeline, tool cards, diffs, scrollback, copy/find/transcript/export |
-| Input and commands | Native `PromptWidget`, multiline/Vim support, native slash dropdown, Grok command registry with dynamic Pi command catalog |
-| Pi runtime | Pi JSONL RPC process, streaming messages/thoughts, tools, Bash, retry, compaction, model and effort selection, session history |
-| Extension UI | Native toast, sticky/persistent banners, terminal title, editor text, and `QuestionView` for select/confirm/input/editor |
-| Pi subagents | Bundled lifecycle-only Pi extension owns child `AgentSession` instances; the adapter projects their bridge events into Grok's existing SubagentBlock, Tasks Pane, child AgentView, and cancel flow |
-| Session flow | Native `/new`, `/rename`, `/compact`, model/effort controls; Pi remains the persistence owner |
-
-For field-level coverage and intentional omissions, see the [feature matrix](FEATURE_MATRIX.md).
-
 
 ## Install a release binary
 
@@ -75,6 +50,33 @@ Install Pi, then run `grok-pi`:
 npm install --global @earendil-works/pi-coding-agent
 grok-pi --pi-bin pi --pi-cwd /path/to/project -- --no-session
 ```
+
+
+This preserves Grok's production terminal experience—including input, command completion, Markdown, tool cards, diffs, scrollback, dialogs, and terminal lifecycle—while retaining Pi as the single owner of agent behavior.
+
+## Core invariants
+
+These rules define the integration and should hold for every future change:
+
+1. **Grok Pager is the only TUI.** Terminal initialization/restoration, keyboard and mouse input, `PromptWidget`, slash completion, `QuestionView`, Markdown, tool cards, diffs, and scrollback come from the upstream Grok Build codebase.
+2. **Pi is the only agent core.** Providers, model selection, the agent loop, tools, extensions, session persistence, retries, and compaction stay in Pi.
+3. **The adapter is headless.** It may spawn Pi, correlate JSONL requests, maintain protocol state, and translate Pi JSON ↔ ACP. It must not own a terminal, render widgets, run a keyboard loop, or depend on Ratatui/Crossterm.
+4. **Reuse native surfaces; do not imitate them.** A Pi capability is mapped only through an existing Grok surface. If there is no native surface, document the boundary rather than add a private ASCII UI or a duplicate slash-command system.
+5. **Protocol facts come from source.** Pi RPC behavior is defined in `pi-main/packages/coding-agent/src/modes/rpc/`; ACP and TUI behavior are defined in the Grok workspace.
+
+## What you get
+
+| Area | Delivery |
+|---|---|
+| Terminal and rendering | Grok production Pager, minimal/scrollback renderer, Markdown pipeline, tool cards, diffs, scrollback, copy/find/transcript/export |
+| Input and commands | Native `PromptWidget`, multiline/Vim support, native slash dropdown, Grok command registry with dynamic Pi command catalog |
+| Pi runtime | Pi JSONL RPC process, streaming messages/thoughts, tools, Bash, retry, compaction, model and effort selection, session history |
+| Extension UI | Native toast, sticky/persistent banners, terminal title, editor text, and `QuestionView` for select/confirm/input/editor |
+| Pi subagents | Bundled lifecycle-only Pi extension owns child `AgentSession` instances; the adapter projects their bridge events into Grok's existing SubagentBlock, Tasks Pane, child AgentView, and cancel flow |
+| Session flow | Native `/new`, `/rename`, `/compact`, model/effort controls; Pi remains the persistence owner |
+
+For field-level coverage and intentional omissions, see the [feature matrix](FEATURE_MATRIX.md).
+
 
 ## Repository layout
 
