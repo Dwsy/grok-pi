@@ -56,6 +56,7 @@
 | Thinking effort | 适配 | Pi levels → Grok effort selector；xhigh/max 做能力归一化 |
 | New session | 适配 | Grok `/new` → Pi `new_session` |
 | Rename | 适配 | Grok `/rename` → Pi `set_session_name` |
+| Resume session catalog | 适配 | `/resume` 经无界面 adapter 读取 Pi JSONL 元数据。已命名会话显示原生 `named` 标记；展开 Pi 行可显示 CWD/会话路径、开始/更新时间、模型、消息数、已持久化的 token 总数与成本（仅在记录存在时）。目录继续按最近活动时间排序。 |
 | Session info / context snapshot | 适配 | Grok `x.ai/session/info` ← Pi stats（used/window/counts）+ message 估算 + 注入 extension 读 system/tool-defs/AGENTS；bridge 失败时 system/tools 回退 0 |
 | Session history replay | 适配 | `get_messages` → ACP replay，使用 Grok scrollback |
 | 启动时继续上一会话 | 适配 | `grok-pi --continue` / `-c` → Pi `--continue` |

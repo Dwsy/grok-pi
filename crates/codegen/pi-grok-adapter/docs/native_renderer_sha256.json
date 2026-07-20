@@ -266,7 +266,7 @@
     "crates/codegen/xai-grok-pager/src/views/queue_pane.rs": "c7f3977fd23d408ef5aa8014f845a2e73ec3843b291a97d40ec92476325cb810",
     "crates/codegen/xai-grok-pager/src/views/rewind.rs": "7f3d74876688d1cf41e2b473d5701b5ab6c9fc07a8fe60694bbcfe4d7d37e1b4",
     "crates/codegen/xai-grok-pager/src/views/scroll_debug_hud.rs": "d744611594f63837c24f6f48b1e9624e2a32c6d1804a4f5806c3eb0a8747d2ea",
-    "crates/codegen/xai-grok-pager/src/views/session_picker.rs": "533718ebeeff64e0fca5806094ca0147726e7e6434d68bb762239881c82bd2a1",
+    "crates/codegen/xai-grok-pager/src/views/session_picker.rs": "c3bf8a963d03bad1ada329dafa5cae3493d64a1b2c8bbd83ec7a09fc1515d61d",
     "crates/codegen/xai-grok-pager/src/views/session_title.rs": "e8db1eb873ac1f1f47f76b3f6c525b9f7092894eeef59377a952c666f3a8b214",
     "crates/codegen/xai-grok-pager/src/views/settings_modal.rs": "cb430ddea63d2c2658cb522cf3bb36d3ee428c010a190b38a33c10d5660b7c30",
     "crates/codegen/xai-grok-pager/src/views/shortcuts_bar.rs": "77527d33a7f2673b4cf9f478b658b697b0eeb48f5acb9eab158ff858be9ddf12",

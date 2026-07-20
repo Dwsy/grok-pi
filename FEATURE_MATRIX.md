@@ -57,6 +57,7 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 | Thinking effort | Adapted | Pi levels → Grok effort selector; xhigh/max normalized for capability |
 | New session | Adapted | Grok `/new` → Pi `new_session` |
 | Rename | Adapted | Grok `/rename` → Pi `set_session_name` |
+| Resume session catalog | Adapted | `/resume` reads Pi JSONL metadata through the headless adapter. Named sessions receive a native `named` badge; expanded Pi rows show CWD/session path, start/update time, model, message count, persisted token total and cost when recorded. Catalog remains ordered by latest activity. |
 | Session info / context snapshot | Adapted | Grok `x.ai/session/info` ← Pi stats (used/window/counts) + message estimate + injected extension reading system/tool-defs/AGENTS; on bridge failure system/tools fall back to 0 |
 | Session history replay | Adapted | `get_messages` → ACP replay, using Grok scrollback |
 | Continue previous session at startup | Adapted | `grok-pi --continue` / `-c` → Pi `--continue` |
