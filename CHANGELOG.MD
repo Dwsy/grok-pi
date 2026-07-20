@@ -4,6 +4,19 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.6] - 2026-07-20
+
+### Added
+
+- PSM session catalog in the adapter with enriched metadata and tree editor text support
+- Session picker sorting, expand-all, rich metadata display, and tree navigation
+
+### Fixed
+
+- Model picker height is now constrained to the available viewport
+- Remote TUI paste events are forwarded correctly
+- Subagents live traffic uses `appendEntry` with simplified recap emit
+
 ## [0.0.5] - 2026-07-18
 
 ### Added
