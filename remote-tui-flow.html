@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>REMOTE-TUI(7) · Pi-Grok 渲染流程</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#10161f; --panel2:#0c1118; --well:#080c12;
+    --ink:#d6e1ee; --dim:#8294ab; --faint:#4d5b74; --line:#1c2634; --line2:#26334a;
+    --green:#3fdc97; --cyan:#4cc9f0; --mag:#e07be0; --yel:#f5c451; --red:#f0717a; --blue:#6f9df5;
+    --disp:'Space Grotesk',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+    --body:'IBM Plex Sans',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:
+      radial-gradient(900px 480px at 8% -6%, rgba(76,201,240,.07), transparent 60%),
+      radial-gradient(800px 420px at 96% -2%, rgba(224,123,224,.06), transparent 55%),
+      var(--bg);
+    color:var(--ink); font-family:var(--body); line-height:1.6;
+    padding-bottom:40px; min-height:100vh; overflow-x:hidden;
+  }
+  /* ambient dot-grid, terminal-phosphor feel */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background-image:radial-gradient(rgba(130,148,171,.055) 1px, transparent 1px);
+    background-size:26px 26px;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:0 26px;position:relative;z-index:1}
+
+  /* ---------- tmux-style status bar ---------- */
+  .statusbar{
+    position:sticky;top:0;z-index:50;font-family:var(--mono);font-size:12px;
+    background:rgba(12,17,24,.92);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:0;height:34px;
+  }
+  .sb-seg{padding:0 14px;height:100%;display:flex;align-items:center;gap:8px;border-right:1px solid var(--line);white-space:nowrap}
+  .sb-seg.mode{background:var(--green);color:#06120c;font-weight:600}
+  .sb-seg .k{color:var(--faint)}
+  .sb-seg .v{color:var(--ink)}
+  .sb-seg .env{color:var(--yel)}
+  .sb-right{margin-left:auto;border-right:none;border-left:1px solid var(--line);color:var(--dim)}
+  .sb-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 9px var(--green);animation:blink 1.6s ease-in-out infinite}
+  .lang-toggle{font:600 10px var(--mono);color:var(--cyan);background:transparent;border:1px solid var(--line2);border-radius:4px;padding:2px 7px;cursor:pointer}.lang-toggle:hover{border-color:var(--cyan);color:#fff}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+
+  /* ---------- man-page header ---------- */
+  .manpage{
+    font-family:var(--mono);font-size:12px;color:var(--faint);
+    display:flex;justify-content:space-between;gap:16px;
+    padding:26px 0 0;letter-spacing:.06em;
+  }
+  .manpage b{color:var(--dim);font-weight:600}
+
+  /* ---------- title block (left-aligned, not a hero trio) ---------- */
+  .titleblock{display:grid;grid-template-columns:1.5fr .9fr;gap:28px;align-items:end;padding:18px 0 24px}
+  @media(max-width:880px){.titleblock{grid-template-columns:1fr}}
+  h1{font-family:var(--disp);font-size:clamp(42px,6.4vw,76px);font-weight:700;line-height:.98;letter-spacing:-.025em}
+  h1 .solid{display:block}
+  h1 .outline{
+    display:block;color:transparent;-webkit-text-stroke:1.5px var(--cyan);
+    text-stroke:1.5px var(--cyan);
+  }
+  h1 .cursor{display:inline-block;width:.5em;height:.9em;background:var(--green);vertical-align:-.06em;margin-left:.08em;animation:blink 1.1s steps(1) infinite}
+  .lede{font-size:15px;color:var(--dim);max-width:52ch;margin-top:16px}
+  .lede code{font-family:var(--mono);font-size:12.5px;color:var(--yel);background:rgba(245,196,81,.08);padding:1px 6px;border-radius:4px}
+  .synopsis{
+    font-family:var(--mono);font-size:12.5px;border:1px solid var(--line);border-left:3px solid var(--cyan);
+    background:var(--panel2);padding:16px 18px;border-radius:0 8px 8px 0;
+  }
+  .synopsis .sh{color:var(--cyan);font-weight:600;letter-spacing:.1em;font-size:11px;margin-bottom:8px}
+  .synopsis div{margin:5px 0;color:var(--dim)}
+  .synopsis .dir-r{color:var(--green)} .synopsis .dir-i{color:var(--mag)} .synopsis .dir-f{color:var(--yel)}
+
+  /* ---------- section headers ---------- */
+  .sechead{display:flex;align-items:baseline;gap:10px;margin:24px 0 4px}
+  .sechead .no{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .sechead h2{font-family:var(--disp);font-size:24px;font-weight:700;letter-spacing:-.01em}
+  .sechead .rule{flex:1;height:1px;background:var(--line);align-self:center}
+  .seclead{color:var(--dim);font-size:13px;margin-bottom:12px;max-width:70ch}
+
+  /* ---------- pipeline diagram ---------- */
+  .lab-shell{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(330px,.92fr);gap:16px;align-items:start}
+  .pipeline-panel,.demo-panel{min-width:0;background:rgba(16,22,31,.52);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .pipeline-panel .sechead,.demo-panel .sechead{margin-top:0}
+  .pipeline-panel .seclead,.demo-panel .seclead{margin-bottom:10px}
+  .pipe{position:relative;display:grid;grid-template-columns:1fr;gap:8px}
+  @media(max-width:960px){.lab-shell{grid-template-columns:1fr}.pipeline-panel,.demo-panel{padding:12px}}
+  @media(max-width:560px){.wrap{padding:0 14px}.statusbar{overflow-x:auto}.sb-seg{padding:0 9px}.titleblock{gap:18px}.lab-shell{gap:10px}}
+
+  .pipe-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:6;overflow:visible}
+  .pane{
+    background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;position:relative;
+    transition:border-color .3s,box-shadow .3s,transform .3s;
+  }
+  .pane:hover{transform:translateY(-3px)}
+  .pane[data-p=pi]{--c:var(--cyan)} .pane[data-p=adp]{--c:var(--mag)} .pane[data-p=pager]{--c:var(--green)}
+  .pane.hot{border-color:var(--c);box-shadow:0 0 0 1px var(--c),0 14px 44px -16px var(--c)}
+  .pane-bar{
+    display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--well);
+    border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px;
+  }
+  .pane-bar .lamp{width:9px;height:9px;border-radius:50%;background:var(--c);box-shadow:0 0 8px var(--c)}
+  .pane-bar .pname{color:var(--c);font-weight:600}
+  .pane-bar .lang{margin-left:auto;color:var(--faint);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+  .pane-body{padding:9px 10px 10px}
+  .pane .file{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-bottom:12px;word-break:break-all}
+  .node{
+    border:1px solid var(--line);background:var(--well);border-radius:7px;padding:7px 9px;margin-bottom:6px;
+    font-size:12.5px;color:var(--dim);transition:all .25s;position:relative;
+  }
+  .node:last-child{margin-bottom:0}
+  .node .t{display:block;color:var(--ink);font-weight:600;font-family:var(--mono);font-size:12px;margin-bottom:2px}
+  .node .t .n{color:var(--c);margin-right:6px}
+  .node code{font-family:var(--mono);font-size:11px;color:var(--yel)}
+  .node.active{border-color:var(--c);background:color-mix(in srgb,var(--c) 13%,var(--well));box-shadow:0 0 20px -6px var(--c);transform:translateX(3px)}
+  .node.active .t{color:#fff}
+
+  .legend{display:flex;gap:22px;flex-wrap:wrap;margin-top:18px;font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  .legend span{display:inline-flex;align-items:center;gap:8px}
+  .legend i{width:24px;height:3px;border-radius:2px;display:inline-block}
+
+  /* ---------- controls ---------- */
+  .controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:26px 0 4px}
+  .btn{
+    font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink);
+    background:var(--panel);border:1px solid var(--line2);border-radius:7px;padding:9px 16px;cursor:pointer;
+    transition:all .16s;display:inline-flex;align-items:center;gap:8px;
+  }
+  .btn:hover{border-color:var(--green);color:#fff;transform:translateY(-1px)}
+  .btn:active{transform:translateY(0)}
+  .btn.primary{background:rgba(63,220,151,.14);border-color:var(--green)}
+  .btn.ghost{background:transparent}
+  .step-readout{font-family:var(--mono);font-size:12.5px;color:var(--dim);margin-left:6px;min-width:250px}
+  .step-readout b{color:var(--yel);font-weight:600}
+
+  /* step sequencer */
+  .seq{display:flex;gap:6px;margin:16px 0 8px;flex-wrap:wrap}
+  .seq .chip{
+    font-family:var(--mono);font-size:10.5px;color:var(--faint);border:1px solid var(--line);
+    border-radius:5px;padding:4px 9px;cursor:pointer;transition:all .2s;white-space:nowrap;
+  }
+  .seq .chip:hover{color:var(--ink);border-color:var(--line2)}
+  .seq .chip.on{color:#06120c;background:var(--green);border-color:var(--green);font-weight:600}
+
+  /* ---------- terminal + keyfile ---------- */
+  .duo{display:grid;grid-template-columns:1fr;gap:10px;align-items:stretch}
+  .term{background:var(--well);border:1px solid var(--line);border-radius:10px;overflow:hidden;position:relative;box-shadow:0 26px 70px -34px rgba(0,0,0,.95)}
+  .term::after{ /* CRT scanlines */
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.018) 0 1px,transparent 1px 3px);
+  }
+  .term-bar{display:flex;align-items:center;gap:7px;padding:10px 14px;background:#0a0e15;border-bottom:1px solid var(--line)}
+  .term-bar .l{width:11px;height:11px;border-radius:50%}
+  .l.r{background:#ff5f57}.l.y{background:#febc2e}.l.g{background:#28c840}
+  .term-bar .tt{margin-left:10px;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  .term-body{padding:12px 13px 13px;font-family:var(--mono);font-size:11.5px;line-height:1.5;min-height:0}
+  .sb-line{color:var(--faint)} .sb-line .u{color:var(--green)} .sb-line .a{color:var(--dim)}
+  .wzone{margin:13px 0;border-left:2px solid var(--line);padding-left:15px;min-height:24px;transition:border-color .3s}
+  .wzone.live{border-left-color:var(--cyan)}
+  .wz-head{font-size:11px;color:var(--cyan);opacity:.85;margin-bottom:5px}
+  .fl{white-space:pre;border-radius:3px;transition:background .15s}
+  .fl .sel{color:#8fd8ff;font-weight:600}
+  .fl .dim{color:var(--faint)}
+  .fl.cur{background:rgba(76,201,240,.13)}
+  .editor{
+    margin-top:13px;display:flex;align-items:center;gap:10px;border:1px solid var(--line);
+    border-radius:8px;padding:10px 14px;background:#070b11;transition:all .3s;
+  }
+  .editor .sig{color:var(--green);font-weight:700}
+  .editor .ph{color:var(--faint)}
+  .editor .bc{display:inline-block;width:8px;height:15px;background:var(--green);animation:blink 1.1s steps(1) infinite;vertical-align:-2px}
+  .editor.armed{border-color:var(--mag);box-shadow:0 0 22px -9px var(--mag)}
+  .editor .tag{margin-left:auto;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--mag);border:1px solid var(--mag);border-radius:5px;padding:2px 8px;opacity:0;transition:opacity .3s}
+  .editor.armed .tag{opacity:1}
+  .keys{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap}
+  .kbd{
+    font-family:var(--mono);font-size:12px;color:var(--dim);background:var(--panel);
+    border:1px solid var(--line2);border-bottom-width:3px;border-radius:6px;padding:6px 12px;
+    cursor:pointer;user-select:none;transition:all .14s;
+  }
+  .kbd:hover{border-color:var(--mag);color:#fff;transform:translateY(-1px)}
+  .kbd:active{transform:translateY(1px);border-bottom-width:1px}
+  .kbd .s{color:var(--faint);font-size:10px;margin-left:7px}
+
+  /* keyfile inspector */
+  .kf{background:var(--panel2);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;overflow:hidden}
+  .kf-bar{display:flex;align-items:center;gap:9px;padding:10px 14px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px}
+  .kf-bar .ic{color:var(--yel)} .kf-bar .nm{color:var(--yel);font-weight:600}
+  .kf-bar .meta{margin-left:auto;color:var(--faint);font-size:10px}
+  .kf-path{font-family:var(--mono);font-size:10px;color:var(--faint);padding:8px 14px;border-bottom:1px dashed var(--line);word-break:break-all}
+  .kf-body{flex:1;padding:9px 11px;font-family:var(--mono);font-size:10.5px;line-height:1.55;overflow-y:auto;max-height:150px;min-height:92px}
+  .kf-line{display:flex;gap:10px;animation:kfin .35s ease}
+  @keyframes kfin{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+  .kf-line .ln{color:var(--faint);flex:none;width:2ch;text-align:right}
+  .kf-line .op-in{color:var(--mag)} .kf-line .op-cancel{color:var(--red)} .kf-line .op-meta{color:var(--cyan)}
+  .kf-line .dt{color:var(--dim)}
+  .kf-empty{color:var(--faint);font-style:italic}
+  .kf-foot{padding:9px 14px;border-top:1px solid var(--line);font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  .kf-foot b{color:var(--yel);font-weight:600}
+
+  /* ---------- design ledger (not equal cards) ---------- */
+  .ledger{border-top:1px solid var(--line)}
+  .row{
+    display:grid;grid-template-columns:64px 220px 1fr;gap:20px;padding:20px 4px;border-bottom:1px solid var(--line);
+    transition:background .2s;align-items:start;
+  }
+  @media(max-width:760px){.row{grid-template-columns:48px 1fr;}.row .why{grid-column:2}}
+  .row:hover{background:rgba(130,148,171,.045)}
+  .row .idx{font-family:var(--mono);font-size:13px;color:var(--faint);padding-top:2px}
+  .row .idx b{display:block;font-size:20px;color:var(--c);font-weight:600}
+  .row .what{font-family:var(--disp);font-weight:700;font-size:16px;color:var(--ink);display:flex;gap:10px;align-items:center}
+  .row .what i{width:9px;height:9px;border-radius:50%;background:var(--c);flex:none;box-shadow:0 0 8px var(--c)}
+  .row .why{color:var(--dim);font-size:14px}
+  .row .why code{font-family:var(--mono);font-size:12px;color:var(--yel);background:rgba(245,196,81,.07);padding:1px 5px;border-radius:4px}
+
+  /* reveal on scroll */
+  .reveal{opacity:0;transform:translateY(18px);transition:opacity .6s ease,transform .6s ease}
+  .reveal.in{opacity:1;transform:none}
+
+  footer{margin-top:28px;padding-top:22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  footer .inv{color:var(--dim)} footer code{color:var(--yel)}
+</style>
+</head>
+<body>
+
+<!-- tmux-style status bar -->
+<div class="statusbar">
+  <div class="sb-seg mode">⣿ grok-pi</div>
+  <div class="sb-seg"><span class="k" id="status-session-label">session</span><span class="v">remote-tui*</span></div>
+  <div class="sb-seg"><span class="env">PI_GROK_REMOTE_TUI=1</span></div>
+  <div class="sb-seg"><span class="k" id="status-mode-label">mode</span><span class="v">rpc</span></div>
+  <div class="sb-seg"><span class="sb-dot"></span><span class="v" id="status-live-label">live</span></div>
+  <div class="sb-seg"><button class="lang-toggle" id="langToggle" type="button">EN</button></div>
+  <div class="sb-seg sb-right" id="clock">--:--:--</div>
+</div>
+
+<div class="wrap">
+
+  <div class="manpage">
+    <span><b>REMOTE-TUI(7)</b></span>
+    <span id="manpage-label">Pi-Grok 架构 · 可视化</span>
+    <span><b>REMOTE-TUI(7)</b></span>
+  </div>
+
+  <div class="titleblock">
+    <div>
+      <h1><span class="solid">Remote TUI</span><span class="outline" id="hero-title">渲染流程<span class="cursor"></span></span></h1>
+      <p class="lede" id="lede">
+        在 <code>pi --mode rpc</code> 下，<code>ctx.ui.custom</code> 是永远 reject 的空操作。
+        本项目<b>不改 Pi 源码</b>将其恢复——组件在 Pi 进程内渲染成文本帧，经 <code>setWidget</code>
+        向上投影到 Grok Pager；按键经临时 <code>keyfile</code> 旁路向下回传。
+      </p>
+    </div>
+    <div class="synopsis">
+      <div class="sh" id="synopsis-label">SYNOPSIS</div>
+      <div><span class="dir-r">render ─▶</span> <span id="synopsis-render">组件 → setWidget → Pager</span></div>
+      <div><span class="dir-i">input &nbsp;◀─</span> <span id="synopsis-input">键盘 → keyfile → 组件</span></div>
+      <div><span class="dir-f">file &nbsp;&nbsp;··</span> <span id="synopsis-file">$TMPDIR/*.jsonl（不走 RPC）</span></div>
+    </div>
+  </div>
+
+  <div class="lab-shell">
+  <!-- ============ 01 PIPELINE ============ -->
+  <section class="pipeline-panel">
+  <div class="sechead reveal"><span class="no">01</span><h2 id="pipeline-title">进程管道</h2><span class="rule"></span></div>
+  <p class="seclead reveal" id="pipeline-lead">三个进程、两条通道。绿色为渲染方向（组件→屏幕），品红为输入方向（键盘→组件），黄色为临时文件。</p>
+
+  <div class="controls reveal">
+    <button class="btn primary" id="play">▶ 播放完整流程</button>
+    <button class="btn" id="step">⏭ 单步</button>
+    <button class="btn ghost" id="reset">↺ 重置</button>
+    <span class="step-readout" id="readout">就绪 · 点击播放或按 ↓ 开始</span>
+  </div>
+  <div class="seq reveal" id="seq"></div>
+
+  <div class="pipe reveal" id="pipe">
+    <svg class="pipe-svg" id="svg"></svg>
+
+    <div class="pane" data-p="pi" id="pane-pi">
+      <div class="pane-bar"><span class="lamp"></span><span class="pname">pi-grok-remote-tui</span><span class="lang" id="pane-pi-lang">node · pi 子进程</span></div>
+      <div class="pane-body">
+        <div class="file">extensions/pi-grok-remote-tui/index.ts</div>
+        <div class="node" data-k="patch"><span class="t"><span class="n">①</span><span id="node-patch-title">monkey-patch</span></span><span id="node-patch-body">session_start 替换 <code>ctx.ui.custom</code></span></div>
+        <div class="node" data-k="build"><span class="t"><span class="n">②</span><span id="node-build-title">构造组件</span></span><span id="node-build-body">tuiStub · themeStub · KeybindingsManager</span></div>
+        <div class="node" data-k="render"><span class="t"><span class="n">③</span><span id="node-render-title">pushFrame</span></span><span id="node-render-body"><code>render(width)</code> · 剔除 CURSOR_MARKER</span></div>
+        <div class="node" data-k="watch"><span class="t"><span class="n">⑧</span><span id="node-watch-title">drainKeys</span></span><span id="node-watch-body">fs.watch keyfile → <code>handleInput</code></span></div>
+      </div>
+    </div>
+
+    <div class="pane" data-p="adp" id="pane-adp">
+      <div class="pane-bar"><span class="lamp"></span><span class="pname">pi-grok-adapter</span><span class="lang" id="pane-adapter-lang">rust · headless</span></div>
+      <div class="pane-body">
+        <div class="file">crates/codegen/pi-grok-adapter/src/pi_adapter.rs</div>
+        <div class="node" data-k="fwd"><span class="t"><span class="n">④</span><span id="node-fwd-title">转发帧</span></span><span id="node-fwd-body">remote_tui_frame → <code>pi/ui/remote_tui</code></span></div>
+        <div class="node" data-k="wkf"><span class="t"><span class="n">⑦</span><span id="node-wkf-title">写 keyfile</span></span><span id="node-wkf-body">读 meta{id,keysPath} · JSONL 追加</span></div>
+      </div>
+    </div>
+
+    <div class="pane" data-p="pager" id="pane-pager">
+      <div class="pane-bar"><span class="lamp"></span><span class="pname">Grok Pager</span><span class="lang" id="pane-pager-lang">rust · 唯一渲染者</span></div>
+      <div class="pane-body">
+        <div class="file">crates/codegen/xai-grok-pager/src/app/app_view.rs</div>
+        <div class="node" data-k="apply"><span class="t"><span class="n">⑤</span><span id="node-apply-title">apply_remote_tui</span></span><span id="node-apply-body">存入 widgets · 特判保留多行</span></div>
+        <div class="node" data-k="draw"><span class="t"><span class="n">⑤</span><span id="node-draw-title">渲染到屏幕</span></span><span id="node-draw-body">投影到编辑器上方 aboveEditor</span></div>
+        <div class="node" data-k="key"><span class="t"><span class="n">⑥</span><span id="node-key-title">捕获按键</span></span><span id="node-key-body">remote_tui_key_sequence · Esc→cancel</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend reveal">
+    <span><i style="background:var(--green)"></i><span id="legend-render">渲染方向 · setWidget 投影</span></span>
+    <span><i style="background:var(--mag)"></i><span id="legend-input">输入方向 · keyfile 旁路</span></span>
+    <span><i style="background:var(--yel)"></i><span id="legend-file">临时文件 · 不走 Pi RPC</span></span>
+  </div>
+  </section>
+
+  <!-- ============ 02 LIVE ============ -->
+  <section class="demo-panel">
+  <div class="sechead reveal"><span class="no">02</span><h2 id="live-title">实时演示</h2><span class="rule"></span></div>
+  <p class="seclead reveal" id="live-lead">这是一块真实的 Grok Pager 屏幕。按 <b style="color:var(--ink)">↑ ↓ Enter Esc</b>（或点按键）驱动 Pi 探针组件；每次按键都会走完完整回路，并在右侧 keyfile 中追加一行 JSONL。</p>
+
+  <div class="duo reveal">
+    <div class="term">
+      <div class="term-bar"><span class="l r"></span><span class="l y"></span><span class="l g"></span><span class="tt">grok-pi — /remote-tui</span></div>
+      <div class="term-body">
+        <div id="scrollback">
+          <div class="sb-line"><span class="u">▸</span> /remote-tui</div>
+          <div class="sb-line"><span class="a" id="terminal-start">&nbsp;&nbsp;启动实验性 Remote TUI 探针…</span></div>
+        </div>
+        <div class="wzone" id="wzone">
+          <div class="wz-head" id="wzHead" style="display:none">[Remote TUI experimental] · setWidget("remote_tui", …, aboveEditor)</div>
+          <div id="frame"></div>
+        </div>
+        <div class="editor" id="editor">
+          <span class="sig">❯</span><span class="ph" id="ph">输入消息…</span><span class="bc"></span>
+          <span class="tag" id="editor-tag">键盘已武装 · 转发至组件</span>
+        </div>
+        <div class="keys">
+          <span class="kbd" data-key="up">↑<span class="s">\x1b[A</span></span>
+          <span class="kbd" data-key="down">↓<span class="s">\x1b[B</span></span>
+          <span class="kbd" data-key="enter">Enter<span class="s">\r</span></span>
+          <span class="kbd" data-key="esc">Esc<span class="s">cancel</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="kf">
+      <div class="kf-bar"><span class="ic">⌨</span><span class="nm" id="keyfile-title">keyfile 检视器</span><span class="meta" id="keyfile-meta">旁路通道 · 实时追加</span></div>
+      <div class="kf-path">$TMPDIR/pi-grok-remote-tui-keys-{id}.jsonl</div>
+      <div class="kf-body" id="kfBody"><div class="kf-empty" id="kf-empty">// 尚无事件 · 与组件交互后，这里会出现 JSONL 行</div></div>
+      <div class="kf-foot" id="keyfile-foot">adapter 追加 <b>{op,data}</b> · 扩展 <b>fs.watch</b> 消费 · <b>不走 Pi RPC</b></div>
+    </div>
+  </div>
+  </section>
+  </div>
+
+  <!-- ============ 03 DESIGN ============ -->
+  <div class="sechead reveal"><span class="no">03</span><h2 id="design-title">关键设计点</h2><span class="rule"></span></div>
+  <p class="seclead reveal" id="design-lead">每个环节都在守住架构不变量：不改 Pi 源码、不新建第二个 TUI。</p>
+
+  <div class="ledger reveal">
+    <div class="row" style="--c:var(--cyan)"><div class="idx"><span class="design-label">设计</span><b>01</b></div><div class="what"><i></i><span>组件运行位置</span></div><div class="why">在 Pi 子进程<b>进程内</b>运行，复用 Pi 真实组件逻辑，行为与交互式 Pi 完全一致。</div></div>
+    <div class="row" style="--c:var(--green)"><div class="idx"><span class="design-label">设计</span><b>02</b></div><div class="what"><i></i><span>帧传输通道</span></div><div class="why">复用已有 <code>setWidget</code> 通道，不新建 TUI，由原生 Pager 作为唯一渲染者。</div></div>
+    <div class="row" style="--c:var(--green)"><div class="idx"><span class="design-label">设计</span><b>03</b></div><div class="what"><i></i><span>多行帧保留</span></div><div class="why">Pager 对 <code>remote_tui</code> key 特判，富组件多行帧不会被压成状态条一行。</div></div>
+    <div class="row" style="--c:var(--yel)"><div class="idx"><span class="design-label">设计</span><b>04</b></div><div class="what"><i></i><span>输入旁路</span></div><div class="why">无法给 Pi 加自定义 stdin RPC，改用临时 <code>keyfile</code>（JSONL）文件系统旁路回传按键。</div></div>
+    <div class="row" style="--c:var(--cyan)"><div class="idx"><span class="design-label">设计</span><b>05</b></div><div class="what"><i></i><span>光标标记剔除</span></div><div class="why">剔除 <code>CURSOR_MARKER</code>——Pager 自己渲染帧，转发会泄漏 <code>pi:c</code> payload。</div></div>
+    <div class="row" style="--c:var(--mag)"><div class="idx"><span class="design-label">设计</span><b>06</b></div><div class="what"><i></i><span>键盘武装</span></div><div class="why"><code>remote_tui_id</code> 存在即拦截按键，使其流向组件而非 prompt 编辑器；Esc 优先走 cancel。</div></div>
+  </div>
+
+  <footer>
+    <span class="inv" id="footer-inv">默认开启 · <code>PI_GROK_REMOTE_TUI=1</code> · 设为 <code>0</code> 关闭</span>
+    <span id="footer-flow">渲染走官方 setWidget 向上投影 · 输入走 keyfile 旁路向下回传</span>
+  </footer>
+
+</div>
+
+<script>
+/* ================= state ================= */
+const ITEMS=[{l:"Alpha",d:"first choice"},{l:"Beta",d:"second choice"},{l:"Gamma",d:"third choice"},{l:"Delta",d:"fourth choice"}];
+let lang=(navigator.language||"zh").toLowerCase().startsWith("zh")?"zh":"en";
+const COPY={
+  zh:{toggle:"EN",selectedLog:"✓ Remote TUI selected: {item}",cancelledLog:"✗ Remote TUI cancelled",terminalStart:"&nbsp;&nbsp;启动实验性 Remote TUI 探针…",editorTag:"键盘已武装 · 转发至组件",placeholder:"输入消息…",widgetHead:"[Remote TUI experimental] · setWidget(\"remote_tui\", …, aboveEditor)",selectTitle:"Select an item (probe):",confirmHint:"Enter confirm · Esc cancel",selected:"✓ done(\"<b>{item}</b>\") · 组件关闭",cancelled:"✗ Esc → <b>RemoteTuiCancel</b> · 组件关闭",manpage:"Pi-Grok 架构 · 可视化",lede:"在 <code>pi --mode rpc</code> 下，<code>ctx.ui.custom</code> 是永远 reject 的空操作。本项目<b>不改 Pi 源码</b>将其恢复——组件在 Pi 进程内渲染成文本帧，经 <code>setWidget</code> 向上投影到 Grok Pager；按键经临时 <code>keyfile</code> 旁路向下回传。",hero:"渲染流程",pipeline:"进程管道",pipelineLead:"三个进程、两条通道。绿色为渲染方向（组件→屏幕），品红为输入方向（键盘→组件），黄色为临时文件。",live:"实时演示",liveLead:"这是一块 Grok Pager 屏幕。按 ↑ ↓ Enter Esc（或点击按键）驱动探针组件；每次按键都会走完完整回路，并在 keyfile 中追加一行 JSONL。",design:"关键设计点",designLead:"每个环节都遵守架构边界：不改 Pi 源码，不创建第二套 TUI。",ready:"就绪 · 点击播放或按 ↓ 开始",play:"▶ 播放完整流程",pause:"⏸ 暂停",step:"⏭ 单步",reset:"↺ 重置",render:"渲染方向 · setWidget 投影",input:"输入方向 · keyfile 旁路",file:"临时文件 · 不走 Pi RPC",keyfile:"keyfile 检视器",keyMeta:"旁路通道 · 实时追加",keyEmpty:"// 尚无事件 · 与组件交互后，这里会出现 JSONL 行",keyFoot:"adapter 追加 <b>{op,data}</b> · 扩展 <b>fs.watch</b> 消费 · <b>不走 Pi RPC</b>",footer:"默认开启 · <code>PI_GROK_REMOTE_TUI=1</code> · 设为 <code>0</code> 关闭",footerFlow:"渲染走官方 setWidget 向上投影 · 输入走 keyfile 旁路向下回传"},
+  en:{toggle:"中文",selectedLog:"✓ Remote TUI selected: {item}",cancelledLog:"✗ Remote TUI cancelled",terminalStart:"&nbsp;&nbsp;Starting experimental Remote TUI probe…",editorTag:"Keyboard armed · forwarding to component",placeholder:"Type a message…",widgetHead:"[Remote TUI experimental] · setWidget(\"remote_tui\", …, aboveEditor)",selectTitle:"Select an item (probe):",confirmHint:"Enter confirm · Esc cancel",selected:"✓ done(\"<b>{item}</b>\") · component closed",cancelled:"✗ Esc → <b>RemoteTuiCancel</b> · component closed",manpage:"Pi-Grok architecture · visualization",lede:"Under <code>pi --mode rpc</code>, <code>ctx.ui.custom</code> is a rejected no-op. This bridge restores it <b>without changing Pi source</b>: components render inside the Pi process, frames travel through <code>setWidget</code> to Grok Pager, and keys return through a temporary <code>keyfile</code> side channel.",hero:"Render Flow",pipeline:"Process pipeline",pipelineLead:"Three processes, two channels. Green is render flow, magenta is input flow, and yellow is the temporary file path.",live:"Live demo",liveLead:"This is a Grok Pager surface. Use ↑ ↓ Enter Esc (or click a key) to drive the probe component; each key completes the full round trip and appends one JSONL record to the keyfile.",design:"Design constraints",designLead:"Every stage preserves the architecture boundary: no Pi source changes and no second TUI.",ready:"Ready · click play or press ↓ to start",play:"▶ Play flow",pause:"⏸ Pause",step:"⏭ Step",reset:"↺ Reset",render:"Render flow · setWidget projection",input:"Input flow · keyfile side channel",file:"Temp file · outside Pi RPC",keyfile:"keyfile inspector",keyMeta:"Side channel · live append",keyEmpty:"// No events · interact with the component to append JSONL",keyFoot:"adapter appends <b>{op,data}</b> · extension consumes via <b>fs.watch</b> · <b>outside Pi RPC</b>",footer:"Enabled by default · <code>PI_GROK_REMOTE_TUI=1</code> · set to <code>0</code> to disable",footerFlow:"Render uses setWidget projection · input returns through the keyfile side channel"}
+};
+const NODE_COPY={
+  zh:{patchTitle:"monkey-patch",patchBody:"session_start 替换 <code>ctx.ui.custom</code>",buildTitle:"构造组件",buildBody:"tuiStub · themeStub · KeybindingsManager",renderTitle:"pushFrame",renderBody:"<code>render(width)</code> · 剔除 CURSOR_MARKER",watchTitle:"drainKeys",watchBody:"fs.watch keyfile → <code>handleInput</code>",fwdTitle:"转发帧",fwdBody:"remote_tui_frame → <code>pi/ui/remote_tui</code>",wkfTitle:"写 keyfile",wkfBody:"读 meta{id,keysPath} · JSONL 追加",applyTitle:"apply_remote_tui",applyBody:"存入 widgets · 特判保留多行",drawTitle:"渲染到屏幕",drawBody:"投影到编辑器上方 aboveEditor",keyTitle:"捕获按键",keyBody:"remote_tui_key_sequence · Esc→cancel"},
+  en:{patchTitle:"monkey-patch",patchBody:"session_start replaces <code>ctx.ui.custom</code>",buildTitle:"build component",buildBody:"tuiStub · themeStub · KeybindingsManager",renderTitle:"pushFrame",renderBody:"<code>render(width)</code> · strip CURSOR_MARKER",watchTitle:"drainKeys",watchBody:"fs.watch keyfile → <code>handleInput</code>",fwdTitle:"forward frame",fwdBody:"remote_tui_frame → <code>pi/ui/remote_tui</code>",wkfTitle:"write keyfile",wkfBody:"read meta{id,keysPath} · append JSONL",applyTitle:"apply_remote_tui",applyBody:"store in widgets · preserve multiline frame",drawTitle:"render to screen",drawBody:"project above the editor",keyTitle:"capture keys",keyBody:"remote_tui_key_sequence · Esc→cancel"}
+};
+const DESIGN_COPY={
+  zh:{label:"设计",titles:["组件运行位置","帧传输通道","多行帧保留","输入旁路","光标标记剔除","键盘武装"],why:["在 Pi 子进程<b>进程内</b>运行，复用 Pi 真实组件逻辑，行为与交互式 Pi 一致。","复用已有 <code>setWidget</code> 通道，不新建 TUI，由原生 Pager 作为唯一渲染者。","Pager 对 <code>remote_tui</code> key 特判，富组件多行帧不会被压成状态条一行。","无法给 Pi 加自定义 stdin RPC，改用临时 <code>keyfile</code>（JSONL）文件系统旁路回传按键。","剔除 <code>CURSOR_MARKER</code>——Pager 自己渲染帧，转发会泄漏 <code>pi:c</code> payload。","<code>remote_tui_id</code> 存在即拦截按键，使其流向组件而非 prompt 编辑器；Esc 优先走 cancel。"]},
+  en:{label:"Design",titles:["Component runtime","Frame transport","Multiline frames","Input side channel","Cursor marker removal","Keyboard capture"],why:["Runs <b>inside</b> the Pi child process and reuses Pi's real component logic.","Reuses <code>setWidget</code>; the native Pager remains the sole renderer.","The <code>remote_tui</code> path preserves rich multiline frames instead of collapsing them into a status line.","A temporary <code>keyfile</code> carries JSONL input without extending Pi stdin RPC.","<code>CURSOR_MARKER</code> is removed because the Pager renders the frame itself.","When <code>remote_tui_id</code> exists, keys go to the component instead of the prompt; Esc cancels first."]}
+};
+const t=()=>COPY[lang];
+function setCopy(){
+  document.documentElement.lang=lang==="zh"?"zh-CN":"en";
+  const set=(id,value)=>{const el=$(id);if(el)el.innerHTML=value};
+  set("#langToggle",t().toggle);set("#manpage-label",t().manpage);set("#lede",t().lede);set("#terminal-start",t().terminalStart);set("#editor-tag",t().editorTag);set("#ph",t().placeholder);set("#wzHead",t().widgetHead);set("#hero-title",t().hero);set("#pipeline-title",t().pipeline);set("#pipeline-lead",t().pipelineLead);set("#live-title",t().live);set("#live-lead",t().liveLead);set("#design-title",t().design);set("#design-lead",t().designLead);
+  set("#synopsis-render",lang==="zh"?"组件 → setWidget → Pager":"component → setWidget → Pager");set("#synopsis-input",lang==="zh"?"键盘 → keyfile → 组件":"keyboard → keyfile → component");set("#synopsis-file",lang==="zh"?"$TMPDIR/*.jsonl（不走 RPC）":"$TMPDIR/*.jsonl (outside RPC)");set("#status-session-label",lang==="zh"?"会话":"session");set("#status-mode-label",lang==="zh"?"模式":"mode");set("#status-live-label",lang==="zh"?"实时":"live");set("#pane-pi-lang",lang==="zh"?"node · pi 子进程":"node · Pi child");set("#pane-adapter-lang",lang==="zh"?"rust · headless":"rust · headless");set("#pane-pager-lang",lang==="zh"?"rust · 唯一渲染者":"rust · sole renderer");
+  const n=NODE_COPY[lang];Object.entries(n).forEach(([key,value])=>set(`#node-${key.replace(/Title|Body$/,(m)=>`-${m.toLowerCase()}`)}`,value));
+  const d=DESIGN_COPY[lang];$$('.design-label').forEach(el=>el.textContent=d.label);$$('.row .what span').forEach((el,i)=>el.textContent=d.titles[i]);$$('.row .why').forEach((el,i)=>el.innerHTML=d.why[i]);
+  set("#legend-render",t().render);set("#legend-input",t().input);set("#legend-file",t().file);set("#keyfile-title",t().keyfile);set("#keyfile-meta",t().keyMeta);set("#keyfile-foot",t().keyFoot);set("#footer-inv",t().footer);set("#footer-flow",t().footerFlow);
+  $("#play").innerHTML=playing?t().pause:t().play;$("#step").innerHTML=t().step;$("#reset").innerHTML=t().reset;
+  if(idx<0)$("#readout").innerHTML=t().ready;
+  buildSequence();renderFrame();
+}
+function toggleLanguage(){lang=lang==="zh"?"en":"zh";localStorage.setItem("grok-pi-demo-lang",lang);setCopy()}
+lang=localStorage.getItem("grok-pi-demo-lang")||lang;
+let sel=0, live=false, kfCount=0, playing=false, timer=null, idx=-1;
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+
+/* clock */
+setInterval(()=>{const d=new Date();$("#clock").textContent=d.toTimeString().slice(0,8);},1000);
+
+/* ================= terminal render ================= */
+function renderFrame(){
+  const f=$("#frame"),z=$("#wzone");
+  if(!live){f.innerHTML="";$("#wzHead").style.display="none";z.classList.remove("live");return;}
+  $("#wzHead").style.display="";z.classList.add("live");
+  let h=`<div class="fl"><b style="color:#fff">${t().selectTitle}</b></div><div class="fl"> </div>`;
+  ITEMS.forEach((it,i)=>{
+    h+= i===sel
+      ? `<div class="fl cur"><span class="sel">→ ${it.l}</span>  <span class="dim">${it.d}</span></div>`
+      : `<div class="fl">  ${it.l}  <span class="dim">${it.d}</span></div>`;
+  });
+  h+=`<div class="fl"> </div><div class="fl"><span class="dim">${t().confirmHint}</span></div>`;
+  f.innerHTML=h;
+}
+
+/* ================= keyfile inspector ================= */
+function kfAppend(op,data){
+  const b=$("#kfBody");
+  const empty=b.querySelector(".kf-empty"); if(empty)empty.remove();
+  kfCount++;
+  const cls=op==="cancel"?"op-cancel":op==="meta"?"op-meta":"op-in";
+  const payload=data!==undefined?` <span class="dt">data:"${data}"</span>`:"";
+  b.insertAdjacentHTML("beforeend",
+    `<div class="kf-line"><span class="ln">${kfCount}</span><span class="${cls}">{op:"${op}"}</span>${payload}</div>`);
+  b.scrollTop=b.scrollHeight;
+}
+
+/* ================= highlight + packets ================= */
+function clearHot(){$$(".pane").forEach(p=>p.classList.remove("hot"));$$(".node").forEach(n=>n.classList.remove("active"));}
+function hot(pane,key){clearHot();if(pane)$("#pane-"+pane)?.classList.add("hot");if(key)$(`.node[data-k="${key}"]`)?.classList.add("active");}
+
+const svg=$("#svg");
+function fly(fromPane,toPane,color){
+  const box=$("#pipe").getBoundingClientRect();
+  const a=$("#pane-"+fromPane).getBoundingClientRect();
+  const b=$("#pane-"+toPane).getBoundingClientRect();
+  const goRight=b.left>a.left;
+  const x1=goRight?a.right-box.left:a.left-box.left;
+  const x2=goRight?b.left-box.left:b.right-box.left;
+  const y1=a.top+a.height*0.42-box.top, y2=b.top+b.height*0.42-box.top;
+  const mx=(x1+x2)/2;
+  const d=`M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
+  const p=document.createElementNS("http://www.w3.org/2000/svg","path");
+  p.setAttribute("d",d);p.setAttribute("fill","none");p.setAttribute("stroke",color);
+  p.setAttribute("stroke-width","2");p.setAttribute("stroke-linecap","round");p.setAttribute("opacity","0");
+  svg.appendChild(p);
+  const len=p.getTotalLength();
+  p.style.strokeDasharray=len;p.style.strokeDashoffset=len;
+  p.animate([{strokeDashoffset:len,opacity:0},{opacity:.85,offset:.2},{strokeDashoffset:0,opacity:.85},{opacity:0}],
+    {duration:800,easing:"cubic-bezier(.4,0,.2,1)"}).onfinish=()=>p.remove();
+  /* traveling dot */
+  const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
+  c.setAttribute("r","4");c.setAttribute("fill",color);svg.appendChild(c);
+  const t0=performance.now();
+  (function move(t){const k=Math.min(1,(t-t0)/800);const pt=p.getPointAtLength(len*k);
+    c.setAttribute("cx",pt.x);c.setAttribute("cy",pt.y);c.setAttribute("opacity",k<.9?1:(1-k)*10);
+    if(k<1)requestAnimationFrame(move);else c.remove();})(t0);
+}
+const GREEN=getComputedStyle(document.documentElement).getPropertyValue("--green").trim();
+const MAG=getComputedStyle(document.documentElement).getPropertyValue("--mag").trim();
+
+/* ================= step sequence ================= */
+const steps=[
+ {c:"① patch",   l:"① 扩展 monkey-patch <b>ctx.ui.custom</b>", r:()=>{hot("pi","patch");live=false;renderFrame();$("#editor").classList.remove("armed");$("#ph").textContent="输入消息…";}},
+ {c:"② 构造",    l:"② 构造组件 · 写 <b>meta</b> 文件", r:()=>{hot("pi","build");kfAppend("meta");}},
+ {c:"③ render",  l:"③ pushFrame · <b>render()</b> 得文本行", r:()=>{hot("pi","render");live=true;renderFrame();}},
+ {c:"④ 转发",    l:"④ adapter 转发 → <b>pi/ui/remote_tui</b>", r:()=>{hot("adp","fwd");fly("pi","adp",GREEN);}},
+ {c:"⑤ 投影",    l:"⑤ Pager 投影屏幕 · 键盘<b>武装</b>", r:()=>{hot("pager","draw");fly("adp","pager",GREEN);live=true;renderFrame();$("#editor").classList.add("armed");$("#ph").textContent="（键盘转发至组件）";}},
+ {c:"⑥ 捕获",    l:"⑥ 用户按 <b>↓</b> · Pager 捕获转 ANSI", r:()=>{hot("pager","key");sel=(sel+1)%ITEMS.length;}},
+ {c:"⑦ keyfile", l:"⑦ adapter 写 <b>keyfile</b>（旁路）", r:()=>{hot("adp","wkf");fly("pager","adp",MAG);kfAppend("input","\\x1b[B");}},
+ {c:"⑧ consume", l:"⑧ 扩展 drainKeys → <b>handleInput</b>", r:()=>{hot("pi","watch");fly("adp","pi",MAG);}},
+ {c:"↻ 闭环",    l:"↻ 组件重渲染 · 回到 <b>③</b> 闭环", r:()=>{hot("pi","render");live=true;renderFrame();}},
+];
+const STEP_LABELS={
+  zh:["① patch","② 构造","③ render","④ 转发","⑤ 投影","⑥ 捕获","⑦ keyfile","⑧ consume","↻ 闭环"],
+  en:["① patch","② build","③ render","④ forward","⑤ project","⑥ capture","⑦ keyfile","⑧ consume","↻ loop"]
+};
+const STEP_READOUTS={
+  zh:["① 扩展 monkey-patch <b>ctx.ui.custom</b>","② 构造组件 · 写 <b>meta</b> 文件","③ pushFrame · <b>render()</b> 得文本行","④ adapter 转发 → <b>pi/ui/remote_tui</b>","⑤ Pager 投影屏幕 · 键盘<b>武装</b>","⑥ 用户按 <b>↓</b> · Pager 捕获转 ANSI","⑦ adapter 写 <b>keyfile</b>（旁路）","⑧ 扩展 drainKeys → <b>handleInput</b>","↻ 组件重渲染 · 回到 <b>③</b> 闭环"],
+  en:["① extension monkey-patches <b>ctx.ui.custom</b>","② build component · write <b>meta</b>","③ pushFrame · <b>render()</b> produces text lines","④ adapter forwards → <b>pi/ui/remote_tui</b>","⑤ Pager projects frame · keyboard <b>armed</b>","⑥ user presses <b>↓</b> · Pager captures ANSI","⑦ adapter writes <b>keyfile</b> (side channel)","⑧ extension drains keys → <b>handleInput</b>","↻ component rerenders · back to <b>③</b>"]
+};
+function buildSequence(){
+  $("#seq").innerHTML=steps.map((s,i)=>`<span class="chip" data-i="${i}">${STEP_LABELS[lang][i]}</span>`).join("");
+  $$("#seq .chip").forEach(ch=>ch.addEventListener("click",()=>{stopPlay();applyStep(+ch.dataset.i);}));
+}
+function applyStep(i){idx=i;$("#readout").innerHTML=STEP_READOUTS[lang][i];steps[i].r();
+  $$("#seq .chip").forEach((c,j)=>c.classList.toggle("on",j===i));}
+function nextStep(){applyStep((idx+1)%steps.length);}
+function stopPlay(){playing=false;clearTimeout(timer);$("#play").innerHTML=t().play;}
+function play(){
+  if(playing){stopPlay();return;}
+  playing=true;$("#play").innerHTML=t().pause;
+  (function tick(){if(!playing)return;nextStep();
+    timer=setTimeout(tick, idx===steps.length-1?1400:1000);})();
+}
+$("#play").addEventListener("click",play);
+$("#step").addEventListener("click",()=>{stopPlay();nextStep();});
+$("#langToggle").addEventListener("click",toggleLanguage);
+$("#reset").addEventListener("click",()=>{
+  stopPlay();idx=-1;sel=0;live=false;kfCount=0;clearHot();renderFrame();
+  $("#editor").classList.remove("armed");$("#ph").textContent="输入消息…";
+  $("#readout").innerHTML=t().ready;
+  $("#kfBody").innerHTML=`<div class="kf-empty">${t().keyEmpty}</div>`;
+  $$("#seq .chip").forEach(c=>c.classList.remove("on"));
+});
+
+/* ================= key interaction ================= */
+function ensureLive(){if(!live){stopPlay();applyStep(4);}}
+function roundTrip(seq){
+  fly("pager","adp",MAG);
+  setTimeout(()=>{hot("adp","wkf");kfAppend("input",seq);},250);
+  setTimeout(()=>{hot("pi","watch");fly("adp","pi",MAG);},550);
+  setTimeout(()=>{hot("pi","render");renderFrame();},950);
+}
+function press(key){
+  ensureLive();
+  if(key==="up"||key==="down"){
+    hot("pager","key");
+    sel=key==="up"?(sel-1+ITEMS.length)%ITEMS.length:(sel+1)%ITEMS.length;
+    roundTrip(key==="up"?"\\x1b[A":"\\x1b[B");
+  }else if(key==="enter"){
+    hot("pager","key");stopPlay();
+    $("#readout").innerHTML=t().selected.replace("{item}",ITEMS[sel].l);
+    fly("pager","adp",MAG);setTimeout(()=>kfAppend("input","\\r"),250);
+    setTimeout(()=>{live=false;renderFrame();$("#editor").classList.remove("armed");
+      $("#ph").textContent="输入消息…";clearHot();
+      $("#scrollback").insertAdjacentHTML("beforeend",`<div class="sb-line"><span class="a">&nbsp;&nbsp;${t().selectedLog.replace("{item}",ITEMS[sel].l)}</span></div>`);},800);
+  }else if(key==="esc"){
+    hot("pager","key");stopPlay();
+    $("#readout").innerHTML=t().cancelled;
+    fly("pager","adp",MAG);setTimeout(()=>kfAppend("cancel"),250);
+    setTimeout(()=>{live=false;renderFrame();$("#editor").classList.remove("armed");
+      $("#ph").textContent="输入消息…";clearHot();
+      $("#scrollback").insertAdjacentHTML("beforeend",`<div class="sb-line"><span class="a">&nbsp;&nbsp;${t().cancelledLog}</span></div>`);},800);
+  }
+}
+$$(".kbd").forEach(k=>k.addEventListener("click",()=>press(k.dataset.key)));
+document.addEventListener("keydown",e=>{
+  const m={ArrowUp:"up",ArrowDown:"down",Enter:"enter",Escape:"esc"};
+  if(m[e.key]){e.preventDefault();press(m[e.key]);}
+});
+
+/* ================= scroll reveal ================= */
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add("in");io.unobserve(e.target);}}),{threshold:.12});
+$$(".reveal").forEach(el=>io.observe(el));
+
+buildSequence();setCopy();
+renderFrame();
+</script>
+</body>
+</html>
