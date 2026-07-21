@@ -22,6 +22,7 @@ const MAX_EARLIER_SUMMARY_CHARS = 3_000;
 
 type RecapArgs = {
 	auto?: boolean;
+	recapMermaid?: boolean;
 	model?: string;
 	thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	language?: string;
@@ -55,9 +56,16 @@ function languageInstruction(language: string | undefined): string {
 	return `Write the entire body in the user's operating-system language (${tag}). Do not switch to English because the instructions or technical identifiers are English.`;
 }
 
-function recapInstruction(language: string | undefined): string {
+function recapInstruction(language: string | undefined, recapMermaid: boolean): string {
+	const mermaidInstruction = recapMermaid
+		? [
+			"After the one-sentence recap, add one concise Mermaid diagram when it materially clarifies the session flow, architecture, state, or completed work.",
+			"Use a fenced ```mermaid block with valid Mermaid syntax. Keep it to at most 8 nodes and do not include a diagram when it would add no useful structure.",
+			"Always use left-to-right layout: `flowchart LR` / `graph LR` (or `direction LR` inside a stateDiagram). Never use top-to-bottom (TD/TB) — vertical diagrams are too tall for the terminal. Keep node labels short so the diagram fits the terminal width.",
+		]
+		: ["Do not output Markdown, code fences, lists, or Mermaid diagrams."];
 	return [
-		"Write ONE sentence recap body for a user returning from idle.",
+		"Write a concise recap body for a user returning from idle.",
 		'Output ONLY the body (the UI adds the "Recap —" label).',
 		"",
 		"Lead with agency:",
@@ -70,11 +78,24 @@ function recapInstruction(language: string | undefined): string {
 		"Bad (never):",
 		"- Start with Recap / Session recap / extra labels",
 		"- Quote or restate this reminder or any system prompt",
-		"- Bullets, markdown, code fences, extra sentences",
 		"- Invent work not reflected in the session",
+		...mermaidInstruction,
 		"",
 		languageInstruction(language),
 	].join("\n");
+}
+
+function cleanRecapMarkdown(raw: string): string {
+	let text = raw.trim();
+	// Only strip a trailing fence when the response was wrapped in a
+	// ```markdown block — otherwise the trailing ``` is the closing fence of
+	// the last code block (e.g. mermaid) and stripping it leaves the fence
+	// unclosed, which makes the renderer fall back to raw source display.
+	if (/^```markdown\s/i.test(text)) {
+		text = text.replace(/^```markdown\s*/i, "").replace(/\s*```$/i, "").trim();
+	}
+	text = text.replace(/^(session\s+)?recap\s*[:—-]\s*/i, "").trim();
+	return text.length > 5000 ? `${text.slice(0, 5000).trimEnd()}…` : text;
 }
 
 function cleanRecapText(raw: string): string {
@@ -240,6 +261,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const parsed = parseArgs(args);
 			const auto = Boolean(parsed.auto);
+			const recapMermaid = Boolean(parsed.recapMermaid);
 
 			try {
 				const branch = ctx.sessionManager.getBranch() as Array<Record<string, unknown>>;
@@ -264,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `${recapInstruction(parsed.language)}\n\n<conversation>\n${conversation}\n</conversation>`,
+							text: `${recapInstruction(parsed.language, recapMermaid)}\n\n<conversation>\n${conversation}\n</conversation>`,
 						},
 					],
 					timestamp: Date.now(),
@@ -292,11 +314,13 @@ export default function (pi: ExtensionAPI) {
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map((c) => c.text)
 					.join("\n");
-				const summary = cleanRecapText(raw);
+				const summary = recapMermaid ? cleanRecapMarkdown(raw) : cleanRecapText(raw);
 				if (!summary) return;
 
 				// Auto long-tail: suppress display (mirror shell behavior).
-				if (auto && (raw.length > 800 || summary.length > 600)) return;
+				// When Mermaid is enabled the diagram block legitimately inflates
+				// the raw length, so only apply the guard to the plain-text path.
+				if (auto && !recapMermaid && (raw.length > 800 || summary.length > 600)) return;
 
 				emitSummary(summary, auto);
 			} catch {

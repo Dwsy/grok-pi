@@ -61,11 +61,13 @@ type ModelRuntimeLike = {
 	refresh?: (options?: unknown) => Promise<unknown>;
 };
 
-type AuthPrompt =
-	| { type: "text"; message: string; placeholder?: string }
-	| { type: "secret"; message: string; placeholder?: string }
-	| { type: "manual_code"; message: string }
-	| { type: "select"; message: string; options: Array<{ id: string; label: string }> };
+type AuthPrompt = { signal?: AbortSignal } &
+	(
+		| { type: "text"; message: string; placeholder?: string }
+		| { type: "secret"; message: string; placeholder?: string }
+		| { type: "manual_code"; message: string; placeholder?: string }
+		| { type: "select"; message: string; options: Array<{ id: string; label: string }> }
+	);
 
 type AuthNotify =
 	| { type: "auth_url"; url: string; instructions?: string }
@@ -89,6 +91,18 @@ interface OAuthSelectorConstructor {
 	): Component;
 }
 
+type LoginDialog = Component & {
+	signal: AbortSignal;
+	showAuth(url: string, instructions?: string): void;
+	showDeviceCode(info: unknown): void;
+	showPrompt(message: string, placeholder?: string): Promise<string>;
+	showManualInput(prompt: string): Promise<string>;
+	showProgress(message: string): void;
+	showWaiting(message: string): void;
+	showInfo?(message: string, links?: unknown[], showCloseHint?: boolean): void;
+	showDetails?(lines: string[]): void;
+};
+
 interface LoginDialogConstructor {
 	new (
 		tui: TUI,
@@ -96,18 +110,19 @@ interface LoginDialogConstructor {
 		onComplete: (success: boolean, message?: string) => void,
 		providerNameOverride?: string,
 		titleOverride?: string,
-	): Component & {
-		signal: AbortSignal;
-		showAuth(url: string, instructions?: string): void;
-		showDeviceCode(info: unknown): void;
-		showPrompt(message: string, placeholder?: string): Promise<string>;
-		showManualInput(prompt: string): Promise<string>;
-		showProgress(message: string): void;
-		showWaiting(message: string): void;
-		showInfo?(message: string, links?: unknown[], showCloseHint?: boolean): void;
-		showDetails?(lines: string[]): void;
-	};
+	): LoginDialog;
 }
+
+type OverlayHandle = {
+	hide: () => void;
+	show?: () => void;
+	setVisible?: (visible: boolean) => void;
+};
+
+type AuthTui = TUI & {
+	showOverlay?: (component: Component) => OverlayHandle;
+	setFocus?: (component: Component | null) => void;
+};
 
 interface ExtensionSelectorConstructor {
 	new (
@@ -288,20 +303,73 @@ export default function piGrokAuth(pi: ExtensionAPI) {
 
 				await runtime.getAvailable?.();
 
-				const selectOption = async (prompt: {
-					message: string;
-					options: Array<{ id: string; label: string }>;
-				}): Promise<string> => {
+				const selectOption = async (
+					tui: AuthTui,
+					dialog: LoginDialog,
+					prompt: Extract<AuthPrompt, { type: "select" }>,
+				): Promise<string> => {
 					const labels = prompt.options.map((o) => o.label);
-					const { ran, value } = await openCustom<string | undefined>(
-						ctx,
-						(_tui, _theme, _kb, done) =>
-							new ExtensionSelectorComponent(prompt.message, labels, done, () => done(undefined)),
-					);
-					if (!ran) throw new Error("Remote TUI custom() unavailable");
-					const id = prompt.options.find((o) => o.label === value)?.id;
-					if (!id) throw new Error("Login cancelled");
-					return id;
+					// Nested openCustom tears down LoginDialog (and its callback listener UI).
+					// Overlay on the same remote-tui host, matching interactive-mode.
+					if (typeof tui.showOverlay !== "function") {
+						throw new Error("Remote TUI showOverlay unavailable for login select");
+					}
+					return new Promise<string>((resolve, reject) => {
+						let settled = false;
+						let overlay: OverlayHandle | undefined;
+						const finish = (fn: () => void) => {
+							if (settled) return;
+							settled = true;
+							try {
+								overlay?.hide();
+							} catch {
+								/* ignore */
+							}
+							tui.setFocus?.(dialog);
+							fn();
+						};
+						const selector = new ExtensionSelectorComponent(
+							prompt.message,
+							labels,
+							(optionLabel) => {
+								const id = prompt.options.find((o) => o.label === optionLabel)?.id;
+								if (id) finish(() => resolve(id));
+								else finish(() => reject(new Error("Login cancelled")));
+							},
+							() => finish(() => reject(new Error("Login cancelled"))),
+						);
+						overlay = tui.showOverlay!(selector);
+						tui.setFocus?.(selector);
+					});
+				};
+
+				const showAuthPrompt = async (
+					tui: AuthTui,
+					dialog: LoginDialog,
+					prompt: AuthPrompt,
+				): Promise<string> => {
+					let response: Promise<string>;
+					if (prompt.type === "select") {
+						response = selectOption(tui, dialog, prompt);
+					} else if (prompt.type === "manual_code") {
+						response = dialog.showManualInput(prompt.message);
+					} else {
+						response = dialog.showPrompt(prompt.message, prompt.placeholder);
+					}
+					// Race prompt.signal so callback-server wins can cancel manual paste.
+					if (!prompt.signal) return response;
+					if (prompt.signal.aborted) throw new Error("Login cancelled");
+					const signal = prompt.signal;
+					let onAbort: (() => void) | undefined;
+					const aborted = new Promise<string>((_resolve, reject) => {
+						onAbort = () => reject(new Error("Login cancelled"));
+						signal.addEventListener("abort", onAbort, { once: true });
+					});
+					try {
+						return await Promise.race([response, aborted]);
+					} finally {
+						if (onAbort) signal.removeEventListener("abort", onAbort);
+					}
 				};
 
 				const authenticate = async (provider: ProviderOption) => {
@@ -331,7 +399,9 @@ export default function piGrokAuth(pi: ExtensionAPI) {
 						return;
 					}
 
-					const { ran } = await openCustom<boolean>(ctx, (tui, _theme, _kb, done) => {
+					let loginError: string | undefined;
+					const { ran, value: success } = await openCustom<boolean>(ctx, (tui, _theme, _kb, done) => {
+						const authTui = tui as AuthTui;
 						const dialog = new LoginDialogComponent(
 							tui,
 							provider.id,
@@ -343,13 +413,7 @@ export default function piGrokAuth(pi: ExtensionAPI) {
 							try {
 								await runtime.login(provider.id, provider.authType, {
 									signal: dialog.signal,
-									prompt: async (prompt) => {
-										if (prompt.type === "select") return selectOption(prompt);
-										if (prompt.type === "manual_code") {
-											return dialog.showManualInput(prompt.message);
-										}
-										return dialog.showPrompt(prompt.message, prompt.placeholder);
-									},
+									prompt: (prompt) => showAuthPrompt(authTui, dialog, prompt),
 									notify: (event) => {
 										if (event.type === "auth_url") {
 											dialog.showAuth(event.url, event.instructions);
@@ -363,12 +427,12 @@ export default function piGrokAuth(pi: ExtensionAPI) {
 										}
 									},
 								});
+								await registry.refresh?.();
+								await runtime.getAvailable?.();
 								done(true);
 							} catch (error: unknown) {
 								const message = error instanceof Error ? error.message : String(error);
-								if (message !== "Login cancelled") {
-									ctx.ui.notify(`Login failed: ${message}`, "error");
-								}
+								if (message !== "Login cancelled") loginError = message;
 								done(false);
 							}
 						})();
@@ -381,13 +445,18 @@ export default function piGrokAuth(pi: ExtensionAPI) {
 						return;
 					}
 
-					await registry.refresh?.();
-					await runtime.getAvailable?.();
-					const msg =
-						provider.authType === "oauth"
-							? `Logged in to ${provider.name}`
-							: `Saved API key for ${provider.name}`;
-					ctx.ui.notify(msg, "success");
+					// Defer notify one tick so Pager finishes processing the widget
+					// teardown frame before rendering the toast (same-frame toasts get swallowed).
+					await new Promise<void>((r) => setTimeout(r, 60));
+					if (loginError) {
+						ctx.ui.notify(`Login failed: ${loginError}`, "error");
+					} else if (success) {
+						const msg =
+							provider.authType === "oauth"
+								? `Logged in to ${provider.name}`
+								: `Saved API key for ${provider.name}`;
+						ctx.ui.notify(msg, "success");
+					}
 				};
 
 				const showProviderSelector = async (

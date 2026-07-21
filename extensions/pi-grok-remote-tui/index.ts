@@ -8,6 +8,9 @@
  * 3. Keys arrive through a temp keyfile written by the adapter (not Pi RPC).
  *
  * Usage: /remote-tui
+ *
+ * Demo: multi-select list → Enter applies native surfaces
+ * (header/footer widgets, status, title, editor text).
  */
 
 import { randomUUID } from "node:crypto";
@@ -84,6 +87,12 @@ function resolveViewport(): { width: number; rows: number } {
 }
 
 type ComponentLike = Component & { dispose?(): void };
+type RemoteTuiDemoUi = {
+  setWidget: (key: string, lines: string[] | undefined, options?: { placement?: string }) => void;
+  setStatus?: (key: string, text?: string) => void;
+  setTitle?: (title: string) => void;
+  setEditorText?: (text: string) => void;
+};
 
 type ActiveHost = {
   id: string;
@@ -158,9 +167,8 @@ function drainKeys(host: ActiveHost): void {
   }
 }
 
-function installCustomPatch(ui: {
+function installCustomPatch(ui: RemoteTuiDemoUi & {
   custom: ((...args: unknown[]) => unknown) & { [HOST_MARK]?: boolean };
-  setWidget: (key: string, lines: string[] | undefined, options?: { placement?: string }) => void;
 }): void {
   // Pi may rebind uiContext after session_start (noOp → RPC). Patch every new object.
   if (patchedUIs.has(ui as object) || ui.custom?.[HOST_MARK]) {
@@ -188,6 +196,8 @@ function installCustomPatch(ui: {
       let component: ComponentLike | undefined;
       let closed = false;
       let focused: Component | null = null;
+      // Auth select overlays LoginDialog; hide must restore the previous root.
+      let previousComponent: ComponentLike | undefined;
 
       const cleanup = () => {
         try {
@@ -201,6 +211,8 @@ function installCustomPatch(ui: {
           /* ignore */
         }
         writeMeta(null);
+        // Clear only the interactive frame. Applied demo surfaces stay so
+        // header/footer/status can still be inspected after Esc.
         ui.setWidget(WIDGET_KEY, undefined);
         if (active?.id === id) active = null;
         try {
@@ -227,11 +239,7 @@ function installCustomPatch(ui: {
           const lines = component
             .render(width)
             .map((line) => String(line).replaceAll(CURSOR_MARKER, ""));
-          const frame = [
-            ...lines,
-            "\x1b[2m↑/↓ · Enter · Esc\x1b[0m",
-          ];
-          ui.setWidget(WIDGET_KEY, frame, { placement: "aboveEditor" });
+          ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
         } catch (error) {
           if (closed) return;
           closed = true;
@@ -270,16 +278,45 @@ function installCustomPatch(ui: {
           focused = next;
         },
         showOverlay: (overlay: Component) => {
+          if (component && component !== overlay) {
+            previousComponent = component;
+          }
           component = overlay as ComponentLike;
           focused = overlay;
           pushFrame();
           return {
-            hide: () => {},
+            hide: () => {
+              if (closed) return;
+              if (previousComponent) {
+                component = previousComponent;
+                focused = previousComponent;
+                previousComponent = undefined;
+                pushFrame();
+                return;
+              }
+              // No stacked root (e.g. standalone selector) — keep current frame.
+              focused = component;
+              pushFrame();
+            },
             show: () => pushFrame(),
-            setVisible: () => {},
+            setVisible: (visible: boolean) => {
+              if (!visible) {
+                tuiStub.hideOverlay();
+              } else {
+                pushFrame();
+              }
+            },
           };
         },
-        hideOverlay: () => {},
+        hideOverlay: () => {
+          if (closed) return;
+          if (previousComponent) {
+            component = previousComponent;
+            focused = previousComponent;
+            previousComponent = undefined;
+            pushFrame();
+          }
+        },
         addChild: () => {},
         removeChild: () => {},
       };
@@ -343,9 +380,10 @@ function installCustomPatch(ui: {
         }, 50);
       }
 
-      // Mirror remote-tui-host.ts: initTheme before factory — OAuthSelector/LoginDialog
-      // call theme.fg in their constructors (SessionSelector mostly defers to render).
+      // Prefer Pi theme when available (OAuthSelector/LoginDialog touch it).
+      // Fall back to themeStub for unit tests / non-Pi argv hosts.
       void ensurePiTheme()
+        .catch(() => undefined)
         .then(() =>
           (factory as (tui: unknown, theme: unknown, kb: unknown, done: (r: unknown) => void) => unknown)(
             tuiStub,
@@ -393,53 +431,118 @@ function ensureRemoteTuiHost(ui: Parameters<typeof installCustomPatch>[0]): void
   __piGrokEnsureRemoteTuiHost?: typeof ensureRemoteTuiHost;
 }).__piGrokEnsureRemoteTuiHost = ensureRemoteTuiHost;
 
-const ITEMS = [
-  { value: "alpha", label: "Alpha", description: "first choice" },
-  { value: "beta", label: "Beta", description: "second choice" },
-  { value: "gamma", label: "Gamma", description: "third choice" },
-  { value: "delta", label: "Delta", description: "fourth choice" },
+export const DEMO_ITEMS = [
+  { key: "header", label: "Header widget", description: "aboveEditor native surface" },
+  { key: "footer", label: "Footer widget", description: "belowEditor native surface" },
+  { key: "status", label: "Status bar", description: "setStatus fire-and-forget" },
+  { key: "title", label: "Window title", description: "setTitle fire-and-forget" },
+  { key: "editor", label: "Prompt editor", description: "setEditorText fire-and-forget" },
 ] as const;
 
-class RemoteTuiProbeList implements Component {
-  private selected = 0;
-  private done: (result: string | undefined) => void;
+export type DemoKey = (typeof DEMO_ITEMS)[number]["key"];
 
-  constructor(done: (result: string | undefined) => void) {
+export function applyDemoCapabilities(ui: RemoteTuiDemoUi, keys: DemoKey[]): void {
+  const selected = new Set(keys);
+  const labels = DEMO_ITEMS.filter((item) => selected.has(item.key)).map((item) => item.label);
+  const summary = labels.length > 0 ? labels.join(", ") : "none";
+
+  // Align with Pi setWidget semantics: plain multi-line frames above/below
+  // the editor. No synthetic "Esc closes" chrome — Esc is host cancellation.
+  ui.setWidget(
+    "remote_tui_demo_header",
+    selected.has("header")
+      ? [
+          "\x1b[1mRemote TUI demo header\x1b[0m",
+          `\x1b[2m${summary}\x1b[0m`,
+        ]
+      : undefined,
+    { placement: "aboveEditor" },
+  );
+  ui.setWidget(
+    "remote_tui_demo_footer",
+    selected.has("footer")
+      ? [
+          `\x1b[2mFooter · ${labels.length} selected: ${summary}\x1b[0m`,
+        ]
+      : undefined,
+    { placement: "belowEditor" },
+  );
+  if (selected.has("status")) {
+    ui.setStatus?.("remote-tui-demo", `Remote TUI demo: ${summary}`);
+  } else {
+    ui.setStatus?.("remote-tui-demo");
+  }
+  if (selected.has("title")) {
+    ui.setTitle?.("Remote TUI capability lab");
+  }
+  if (selected.has("editor")) {
+    ui.setEditorText?.("Remote TUI demo applied — type here or press Esc to close.");
+  }
+}
+
+export class RemoteTuiDemoList implements Component {
+  private cursor = 0;
+  private checked = new Set<DemoKey>();
+  private applied = false;
+  private done: (result: string | undefined) => void;
+  private onApply: (keys: DemoKey[]) => void;
+
+  constructor(
+    done: (result: string | undefined) => void,
+    onApply: (keys: DemoKey[]) => void,
+  ) {
     this.done = done;
+    this.onApply = onApply;
   }
 
   invalidate(): void {}
 
   render(_width: number): string[] {
-    const lines = ["\x1b[1mSelect an item (probe):\x1b[0m", ""];
-    for (let i = 0; i < ITEMS.length; i++) {
-      const item = ITEMS[i]!;
-      if (i === this.selected) {
-        lines.push(`\x1b[36m→ ${item.label}\x1b[0m  \x1b[2m${item.description}\x1b[0m`);
-      } else {
-        lines.push(`  ${item.label}  \x1b[2m${item.description}\x1b[0m`);
-      }
+    const lines = [
+      "\x1b[1mRemote TUI capability lab\x1b[0m",
+      "\x1b[2mSpace toggles a capability · Enter applies · Esc closes\x1b[0m",
+      "",
+    ];
+    for (let i = 0; i < DEMO_ITEMS.length; i++) {
+      const item = DEMO_ITEMS[i]!;
+      const marker = this.checked.has(item.key) ? "\x1b[32m☑\x1b[0m" : "☐";
+      const pointer = i === this.cursor ? "\x1b[36m→\x1b[0m" : " ";
+      lines.push(`${pointer} ${marker} ${item.label}  \x1b[2m${item.description}\x1b[0m`);
     }
     lines.push("");
-    lines.push("\x1b[2mEnter confirm · Esc cancel\x1b[0m");
+    lines.push(
+      this.applied
+        ? "\x1b[32mApplied. Inspect the native header/footer/status surfaces.\x1b[0m"
+        : "\x1b[2mNo capability selected yet.\x1b[0m",
+    );
     return lines;
   }
 
   handleInput(data: string): void {
     if (matchesKey(data, "up") || data === "k") {
-      this.selected = this.selected === 0 ? ITEMS.length - 1 : this.selected - 1;
+      this.cursor = this.cursor === 0 ? DEMO_ITEMS.length - 1 : this.cursor - 1;
       return;
     }
     if (matchesKey(data, "down") || data === "j") {
-      this.selected = this.selected === ITEMS.length - 1 ? 0 : this.selected + 1;
+      this.cursor = this.cursor === DEMO_ITEMS.length - 1 ? 0 : this.cursor + 1;
+      return;
+    }
+    if (matchesKey(data, "space") || data === " ") {
+      const key = DEMO_ITEMS[this.cursor]!.key;
+      if (this.checked.has(key)) this.checked.delete(key);
+      else this.checked.add(key);
       return;
     }
     if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-      this.done(ITEMS[this.selected]!.value);
+      const keys = DEMO_ITEMS.map((item) => item.key).filter((key) => this.checked.has(key));
+      this.applied = true;
+      this.onApply(keys);
+      // Keep the list open so header/footer/status can be inspected live.
       return;
     }
     if (matchesKey(data, "escape")) {
-      this.done(undefined);
+      const keys = DEMO_ITEMS.map((item) => item.key).filter((key) => this.checked.has(key));
+      this.done(keys.length > 0 ? keys.join(",") : undefined);
     }
   }
 }
@@ -457,7 +560,7 @@ export default function (pi: ExtensionAPI) {
   // session_start is the reliable hook; command handler double-checks.
 
   pi.registerCommand("remote-tui", {
-    description: "[experimental] Remote TUI probe (extension host, no Pi source patch)",
+    description: "[experimental] Remote TUI capability lab with selectable widgets",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       // Always re-check: RPC rebinds uiContext after extension load / session_start.
       ensureRemoteTuiHost(ctx.ui as Parameters<typeof installCustomPatch>[0]);
@@ -466,7 +569,9 @@ export default function (pi: ExtensionAPI) {
       let factoryRan = false;
       const result = await ctx.ui.custom<string | undefined>((_tui, _theme, _kb, done) => {
         factoryRan = true;
-        return new RemoteTuiProbeList(done);
+        return new RemoteTuiDemoList(done, (keys) => {
+          applyDemoCapabilities(ctx.ui as RemoteTuiDemoUi, keys);
+        });
       });
 
       const elapsed = Date.now() - started;
@@ -475,11 +580,13 @@ export default function (pi: ExtensionAPI) {
         installCustomPatch(ctx.ui as Parameters<typeof installCustomPatch>[0]);
         const retry = await ctx.ui.custom<string | undefined>((_tui, _theme, _kb, done) => {
           factoryRan = true;
-          return new RemoteTuiProbeList(done);
+          return new RemoteTuiDemoList(done, (keys) => {
+            applyDemoCapabilities(ctx.ui as RemoteTuiDemoUi, keys);
+          });
         });
         if (retry !== undefined || factoryRan) {
-          if (retry === undefined) ctx.ui.notify("Remote TUI cancelled", "info");
-          else ctx.ui.notify(`Remote TUI selected: ${retry}`, "info");
+          if (retry === undefined) ctx.ui.notify("Remote TUI demo closed", "info");
+          else ctx.ui.notify(`Remote TUI demo applied: ${retry}`, "info");
           return;
         }
         ctx.ui.notify(
@@ -489,9 +596,9 @@ export default function (pi: ExtensionAPI) {
       } else if (result === undefined && elapsed < 80) {
         ctx.ui.notify("Remote TUI cancelled immediately", "warning");
       } else if (result === undefined) {
-        ctx.ui.notify("Remote TUI cancelled", "info");
+        ctx.ui.notify("Remote TUI demo closed", "info");
       } else {
-        ctx.ui.notify(`Remote TUI selected: ${result}`, "info");
+        ctx.ui.notify(`Remote TUI demo applied: ${result}`, "info");
       }
     },
   });
