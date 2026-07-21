@@ -334,7 +334,9 @@ pub(crate) fn sort_session_entries(
 ) {
     match mode {
         crate::views::picker::SessionSortMode::Recent => {
-            entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_active_at.unwrap_or(entry.updated_at)));
+            entries.sort_by_key(|entry| {
+                std::cmp::Reverse(entry.last_active_at.unwrap_or(entry.updated_at))
+            });
         }
         crate::views::picker::SessionSortMode::Created => {
             entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_at));
@@ -624,7 +626,10 @@ pub(crate) fn build_session_entry_data(
             let is_selected = !state.selection_hidden && fi == state.selected;
             let is_foreign = crate::app::is_foreign_picker_source(&entry.source);
             let is_expanded = !is_foreign && state.expanded.contains(&orig_idx);
-            let is_named = entry.name.as_deref().is_some_and(|name| !name.trim().is_empty());
+            let is_named = entry
+                .name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty());
 
             let mut field_data: Vec<(String, String)> = Vec::new();
             if is_expanded {
@@ -1471,15 +1476,21 @@ mod tests {
         assert_eq!(built[0].badge, "pi");
         assert_eq!(built[0].label_color, Some(ratatui::style::Color::Yellow));
         assert_eq!(built[0].badge_color, None);
-        assert!(built[0]
-            .field_data
-            .contains(&("Path".into(), "/sessions/release.jsonl".into())));
-        assert!(built[0]
-            .field_data
-            .contains(&("Tokens".into(), "1.2k".into())));
-        assert!(built[0]
-            .field_data
-            .contains(&("Cost".into(), "$0.42".into())));
+        assert!(
+            built[0]
+                .field_data
+                .contains(&("Path".into(), "/sessions/release.jsonl".into()))
+        );
+        assert!(
+            built[0]
+                .field_data
+                .contains(&("Tokens".into(), "1.2k".into()))
+        );
+        assert!(
+            built[0]
+                .field_data
+                .contains(&("Cost".into(), "$0.42".into()))
+        );
     }
 
     #[test]

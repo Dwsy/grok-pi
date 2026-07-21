@@ -425,6 +425,7 @@ pub fn mcp_status_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
 
     #[test]
     fn ansi_status_line_removes_escape_sequences() {
@@ -458,9 +459,11 @@ mod tests {
         let theme = Theme::current();
         let line = ansi_remote_tui_line("> 2222222\x1b[7m \x1b[27m                    ", &theme);
 
-        assert!(line.spans.iter().any(|span| {
-            span.content == " " && span.style.bg == Some(theme.bg_highlight)
-        }));
+        assert!(
+            line.spans
+                .iter()
+                .any(|span| { span.content == " " && span.style.bg == Some(theme.bg_highlight) })
+        );
         assert!(line.spans.iter().any(|span| {
             span.content == "                    " && span.style.bg == Some(theme.bg_base)
         }));
@@ -471,10 +474,11 @@ mod tests {
         let theme = Theme::current();
         let line = ansi_remote_tui_line("\x1b[36m→ selected option\x1b[0m", &theme);
 
-        assert!(line
-            .spans
-            .iter()
-            .all(|span| span.style.bg == Some(theme.bg_highlight)));
+        assert!(
+            line.spans
+                .iter()
+                .all(|span| span.style.bg == Some(theme.bg_highlight))
+        );
     }
 
     #[test]

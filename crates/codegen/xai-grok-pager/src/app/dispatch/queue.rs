@@ -423,7 +423,7 @@ pub(super) fn maybe_drain_queue(agent: &mut AgentView) -> QueueDrain {
             agent.session.start_command(AgentCommand::Compact);
             agent.turn_started_at = Some(Instant::now());
 
-let custom_instructions = queued
+            let custom_instructions = queued
                 .text
                 .strip_prefix("/compact")
                 .map(str::trim)

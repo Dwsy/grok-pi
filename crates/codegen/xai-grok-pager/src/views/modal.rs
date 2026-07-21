@@ -230,13 +230,13 @@ mod notification_list_tests {
             ["rate limit", "permission denied", "cached response"]
         );
 
-        state.picker.query = "error".into();
+        state.picker.set_query("error");
         assert_eq!(
             state.filtered_notifications()[0].message,
             "permission denied"
         );
 
-        state.picker.query = "limit".into();
+        state.picker.set_query("limit");
         assert_eq!(state.filtered_notifications()[0].message, "rate limit");
     }
 }

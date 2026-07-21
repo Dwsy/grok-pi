@@ -151,33 +151,17 @@ fn append_external_widgets(
     widgets: &std::collections::BTreeMap<String, ExternalWidget>,
     placement: ExternalWidgetPlacement,
 ) {
-    for (key, widget) in widgets {
+    for (_key, widget) in widgets {
         if widget.placement != placement {
             continue;
         }
-        // Experimental Remote TUI: keep multi-line frames intact (do not join).
-        if key == "remote_tui" {
-            for line in &widget.lines {
+        // Align with Pi interactive setWidget: each widget keeps its own
+        // multi-line frame. Do not join lines or prefix keys.
+        for line in &widget.lines {
+            if !line.trim().is_empty() {
                 output.push(line.clone());
             }
-            continue;
         }
-        let text = widget
-            .lines
-            .iter()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join(" / ");
-        if text.is_empty() {
-            continue;
-        }
-        let rendered = if widgets.len() == 1 {
-            text
-        } else {
-            format!("{key}: {text}")
-        };
-        output.push(rendered);
     }
 }
 
@@ -2312,11 +2296,8 @@ impl AppView {
             ExternalWidgetPlacement::BelowEditor,
         );
         self.agents.values_mut().fold(false, |changed, agent| {
-            agent.set_external_ui_surface(
-                &widgets_above_editor,
-                &widgets_below_editor,
-                &statuses,
-            ) || changed
+            agent.set_external_ui_surface(&widgets_above_editor, &widgets_below_editor, &statuses)
+                || changed
         })
     }
     /// Insert or replace a leader roster entry, keyed by `session_id`.
@@ -3643,7 +3624,10 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 && let Some(entries) = ctx.sp_entries.as_mut()
             {
                 ctx.sp_state.session_sort = ctx.sp_state.session_sort.next();
-                crate::views::session_picker::sort_session_entries(entries, ctx.sp_state.session_sort);
+                crate::views::session_picker::sort_session_entries(
+                    entries,
+                    ctx.sp_state.session_sort,
+                );
                 ctx.sp_state.selected = 0;
                 ctx.sp_state.scroll_offset = None;
                 return InputOutcome::Changed;
@@ -6280,12 +6264,31 @@ pub(crate) mod tests {
 
         let agent = &app.agents[&id];
         assert_eq!(agent.external_statuses, ["Synchronizing"]);
-        assert_eq!(agent.external_widgets_above_editor, ["top: Top widget"]);
+        // Pi setWidget projects raw lines; no key prefix / join.
+        assert_eq!(agent.external_widgets_above_editor, ["Top widget"]);
+        assert_eq!(agent.external_widgets_below_editor, ["Bottom widget"]);
+        assert!(agent.sticky_toast.is_none());
+    }
+
+    #[test]
+    fn external_widgets_preserve_multiline_and_ansi() {
+        let mut app = test_app_with_agent();
+        let id = super::super::agent::AgentId(0);
+        app.external_agent = true;
+        app.set_external_widget(
+            "remote_tui_demo_footer".to_string(),
+            Some(vec![
+                "\x1b[2m────\x1b[0m".to_string(),
+                "Footer widget · 2 capability(s)".to_string(),
+            ]),
+            ExternalWidgetPlacement::BelowEditor,
+        );
+
+        let agent = &app.agents[&id];
         assert_eq!(
             agent.external_widgets_below_editor,
-            ["bottom: Bottom widget"]
+            ["\x1b[2m────\x1b[0m", "Footer widget · 2 capability(s)"]
         );
-        assert!(agent.sticky_toast.is_none());
     }
 
     #[test]

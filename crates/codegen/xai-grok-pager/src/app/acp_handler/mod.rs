@@ -800,7 +800,9 @@ fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView)
                     .get("sessionPath")
                     .and_then(serde_json::Value::as_str)
                     .map(ToOwned::to_owned),
-                total_tokens: session.get("totalTokens").and_then(serde_json::Value::as_u64),
+                total_tokens: session
+                    .get("totalTokens")
+                    .and_then(serde_json::Value::as_u64),
                 total_cost: session.get("totalCost").and_then(serde_json::Value::as_f64),
                 updated_at: timestamp(session.get("updatedAt")),
                 created_at: timestamp(session.get("createdAt")),

@@ -2031,14 +2031,18 @@ impl AgentView {
                 layout.external_widgets_below_editor.width,
                 1,
             );
-            crate::tips::render::render_ephemeral_tip(
-                row,
-                buf,
-                &Line::from(Span::styled(
-                    format!("  {line}"),
+            buf.set_style(row, Style::default().bg(theme.bg_base));
+            // Match aboveEditor: preserve ANSI from Pi/RPC widgets instead of
+            // dumping escape sequences as plain text.
+            let styled = if line.contains('\u{1b}') {
+                crate::views::agent_status::ansi_remote_tui_line(line, &theme)
+            } else {
+                Line::from(Span::styled(
+                    line.clone(),
                     Style::default().fg(theme.text_secondary).bg(theme.bg_base),
-                )),
-            );
+                ))
+            };
+            crate::tips::render::render_ephemeral_tip(row, buf, &styled);
         }
         if voice_listening && layout.voice_recording.height > 0 && layout.voice_recording.width > 0
         {

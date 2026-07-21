@@ -2080,10 +2080,15 @@ fn is_bg_tool(tc: &acp::ToolCall) -> bool {
 /// Detection: a Write-family `rawInput.variant` tag.
 fn is_list_dir_tool_call(tc: &acp::ToolCall) -> bool {
     let name = tc.title.trim().to_ascii_lowercase();
-    matches!(name.as_str(), "ls" | "list_dir" | "listdir" | "list_directory")
-        || extract_raw_field(tc, "target_directory").is_some()
+    matches!(
+        name.as_str(),
+        "ls" | "list_dir" | "listdir" | "list_directory"
+    ) || extract_raw_field(tc, "target_directory").is_some()
         || matches!(
-            tc.raw_output.as_ref().and_then(|raw| raw.get("type")).and_then(|value| value.as_str()),
+            tc.raw_output
+                .as_ref()
+                .and_then(|raw| raw.get("type"))
+                .and_then(|value| value.as_str()),
             Some("ListDir")
         )
 }
@@ -3829,9 +3834,9 @@ mod tests {
             .kind(acp::ToolKind::Other)
             .status(acp::ToolCallStatus::Completed)
             .raw_input(Some(serde_json::json!({ "path": "src" })))
-            .content(vec![acp::ToolCallContent::from(
-                acp::ContentBlock::Text(acp::TextContent::new("main.rs")),
-            )]);
+            .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+                acp::TextContent::new("main.rs"),
+            ))]);
         let ls_block = tool_call_to_block(&ls, None);
         let RenderBlock::ToolCall(ToolCallBlock::ListDir(list_dir)) = ls_block else {
             panic!("Pi ls must use the native ListDir block");

@@ -1030,11 +1030,13 @@ pub fn render_picker_row(
     // contrast in light themes.
     let label_style = row
         .label_color
-        .map(|color| label_style.fg(if color == ratatui::style::Color::Yellow {
-            theme.warning
-        } else {
-            color
-        }))
+        .map(|color| {
+            label_style.fg(if color == ratatui::style::Color::Yellow {
+                theme.warning
+            } else {
+                color
+            })
+        })
         .unwrap_or(label_style);
 
     let prefix_width = indent_str.width() as u16 + fold_width;
@@ -3534,6 +3536,7 @@ mod tests {
                 indent: 0,
                 badge: "",
                 badge_color: None,
+                label_color: None,
                 collapsible: true,
                 underline_last_desc,
             };

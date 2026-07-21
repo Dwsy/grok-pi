@@ -264,11 +264,8 @@ impl AgentView {
         self.subagent_views
             .values_mut()
             .fold(changed, |changed, child| {
-                child.set_external_ui_surface(
-                    widgets_above_editor,
-                    widgets_below_editor,
-                    statuses,
-                ) || changed
+                child.set_external_ui_surface(widgets_above_editor, widgets_below_editor, statuses)
+                    || changed
             })
     }
 

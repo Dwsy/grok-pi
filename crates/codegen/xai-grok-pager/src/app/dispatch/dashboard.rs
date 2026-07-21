@@ -205,7 +205,7 @@ pub(super) fn dispatch_open_dashboard(app: &mut AppView) -> Vec<Effect> {
     configure_dashboard_state(app);
     app.active_view = ActiveView::AgentDashboard;
     log_dashboard_opened(app);
-app.dashboard_sessions_loading = true;
+    app.dashboard_sessions_loading = true;
     if app.leader_mode {
         return vec![Effect::FetchRoster];
     }
