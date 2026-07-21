@@ -262,6 +262,7 @@ impl AgentView {
             rewind_state: None,
             rewind_points: None,
             jump_state: None,
+            fork_state: None,
             inline_edit: None,
             pending_inline_resubmit: None,
             timeline_rail: None,
@@ -348,6 +349,7 @@ impl AgentView {
     /// decides the outcome.
     pub(crate) fn begin_session_reload(&mut self, generation: u64) {
         self.dismiss_jump_picker();
+        self.dismiss_fork_picker();
         if let Some(prev) = self.session_reload.take() {
             tracing::warn!(
                 generation,

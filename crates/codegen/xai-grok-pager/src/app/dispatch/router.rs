@@ -99,6 +99,7 @@ use super::settings::setters::{
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
+    dispatch_open_shortcuts_help,
     dispatch_open_model_picker, dispatch_open_pi_config, dispatch_open_recap_model_picker,
     dispatch_open_reset_confirm, dispatch_open_settings, dispatch_toggle_compact_mode,
     dispatch_toggle_mouse_capture, dispatch_toggle_multiline, dispatch_toggle_timestamps,
@@ -1084,6 +1085,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::OpenSettings => dispatch_open_settings(app),
         Action::OpenPiConfig => dispatch_open_pi_config(app),
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
+        Action::OpenShortcutsHelp => dispatch_open_shortcuts_help(app),
         Action::OpenHowtoGuides => dispatch_open_howto_guides(app),
         Action::OpenResetConfirm { key } => dispatch_open_reset_confirm(app, key),
         Action::ConfirmResetSetting { choice } => dispatch_confirm_reset_setting(app, choice),
@@ -1194,6 +1196,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }]
         }
         Action::Fork(args) => dispatch_fork(app, args),
+        Action::PiForkDismiss => super::session::pi_fork::dispatch_pi_fork_dismiss(app),
+        Action::PiClone => super::session::pi_fork::dispatch_pi_clone(app),
+        Action::PiReload => super::session::pi_fork::dispatch_pi_reload(app),
         Action::ForkAnswered {
             worktree,
             directive,

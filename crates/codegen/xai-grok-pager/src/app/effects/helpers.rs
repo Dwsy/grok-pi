@@ -1602,3 +1602,51 @@ pub(super) fn parse_session_tree_nodes(payload: &serde_json::Value) -> Vec<crate
         })
         .collect()
 }
+
+pub(super) fn parse_pi_fork_messages(
+    payload: &serde_json::Value,
+) -> Vec<crate::app::actions::PiForkMessage> {
+    payload
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|message| {
+            let entry_id = message
+                .get("entryId")
+                .or_else(|| message.get("id"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())?
+                .to_owned();
+            let text = message
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            Some(crate::app::actions::PiForkMessage { entry_id, text })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod pi_fork_parse_tests {
+    use super::parse_pi_fork_messages;
+    use serde_json::json;
+
+    #[test]
+    fn parse_pi_fork_messages_reads_entry_id_and_text() {
+        let messages = parse_pi_fork_messages(&json!({
+            "messages": [
+                { "entryId": "e1", "text": "hello" },
+                { "id": "e2", "text": "world" },
+                { "entryId": "  ", "text": "skip" },
+            ]
+        }));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].entry_id, "e1");
+        assert_eq!(messages[0].text, "hello");
+        assert_eq!(messages[1].entry_id, "e2");
+        assert_eq!(messages[1].text, "world");
+    }
+}

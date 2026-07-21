@@ -1916,6 +1916,7 @@ fn make_session_info(
     xai_grok_shell::session::SessionInfoResponse {
         session_id: "test-session-id".into(),
         cwd: "/tmp/test".into(),
+        session_file: None,
         data: SessionInfoData {
             agent_name: None,
             model: Some(model.into()),
@@ -1943,6 +1944,19 @@ fn format_session_info_shows_conversation_id_when_present() {
     let text = format_session_info(&info, None, false);
     assert!(text.contains("Conversation ID: conv_abc123"));
     assert!(text.contains("Session ID: test-session-id"));
+}
+#[test]
+fn format_session_info_shows_pi_style_file_and_message_counts() {
+    let mut info = make_session_info("pi-model", None, 1200, 128000);
+    info.session_file = Some("/tmp/project/session.jsonl".into());
+    info.data.context.message_count = 12;
+    info.data.context.turn_count = 5;
+    info.data.context.tool_call_count = 3;
+    let text = format_session_info(&info, Some("demo"), false);
+    assert!(text.contains("File: /tmp/project/session.jsonl"));
+    assert!(text.contains("Messages: 12 (turns 5)"));
+    assert!(text.contains("Tools: 3 calls"));
+    assert!(text.contains("Context: 1200 / 128000 tokens"));
 }
 #[test]
 fn format_session_info_shows_resolved_when_enabled_and_different() {

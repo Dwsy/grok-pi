@@ -291,6 +291,7 @@ pub(crate) fn build_session_info_response(
     model: Option<&PiModel>,
     cached_tokens: Option<u64>,
     breakdown: Option<&ContextBreakdownRaw>,
+    session_file: Option<&str>,
 ) -> Value {
     let used = context_tokens_from_stats(stats)
         .or(cached_tokens)
@@ -424,6 +425,23 @@ pub(crate) fn build_session_info_response(
         if let Some(label) = model_label {
             obj.insert("modelDisplayName".into(), Value::String(label));
         }
+        // Prefer the live bootstrap path; fall back to stats.sessionFile.
+        let file = session_file
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                stats
+                    .get("sessionFile")
+                    .or_else(|| stats.get("session_file"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+            });
+        if let Some(path) = file {
+            obj.insert("sessionFile".into(), Value::String(path));
+        }
     }
     response
 }
@@ -549,9 +567,11 @@ mod tests {
             Some(&model),
             None,
             None,
+            Some("/repo/.pi/session.jsonl"),
         );
         assert_eq!(response["sessionId"], json!("sess-1"));
         assert_eq!(response["cwd"], json!("/repo"));
+        assert_eq!(response["sessionFile"], json!("/repo/.pi/session.jsonl"));
         assert_eq!(response["model"], json!("gpt-test"));
         assert_eq!(response["modelDisplayName"], json!("GPT Test"));
         assert_eq!(response["agentName"], json!("pi"));
@@ -606,6 +626,7 @@ mod tests {
             None,
             None,
             Some(&breakdown),
+            None,
         );
         let system = response["context"]["systemPromptTokens"].as_u64().unwrap();
         let tools = response["context"]["toolDefinitionsTokens"]
@@ -638,8 +659,16 @@ mod tests {
             "totalMessages": 1,
             "contextUsage": { "tokens": null, "contextWindow": 100_000, "percent": null }
         });
-        let response =
-            build_session_info_response(&stats, None, "sess-2", "/tmp", None, Some(42_000), None);
+        let response = build_session_info_response(
+            &stats,
+            None,
+            "sess-2",
+            "/tmp",
+            None,
+            Some(42_000),
+            None,
+            None,
+        );
         assert_eq!(response["context"]["used"], json!(42_000));
         assert_eq!(response["context"]["total"], json!(100_000));
         assert_eq!(response["context"]["freeTokens"], json!(58_000));

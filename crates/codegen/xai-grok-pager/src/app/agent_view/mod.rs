@@ -151,6 +151,7 @@ use std::time::Instant;
 mod cta;
 mod input;
 mod interactions;
+mod fork_picker;
 mod jump;
 mod links;
 mod media;
@@ -1301,6 +1302,8 @@ pub struct AgentView {
     pub(crate) rewind_state: Option<crate::views::rewind::RewindState>,
     pub(crate) rewind_points: Option<Vec<crate::views::rewind::RewindPointInfo>>,
     pub(crate) jump_state: Option<crate::views::jump::JumpState>,
+    /// Pi message-level `/fork` picker (prompt-area list overlay, like `/jump`).
+    pub(crate) fork_state: Option<crate::views::fork_picker::ForkPickerState>,
     /// In-place edit of a previous user prompt. See `inline_edit.rs`.
     pub(crate) inline_edit: Option<crate::app::inline_edit::InlineEditState>,
     /// Edited text awaiting its rewind; `dispatch_rewind_success` resubmits it.

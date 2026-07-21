@@ -30,6 +30,7 @@ impl AgentView {
         self.rewind_state.is_some()
             || self.inline_edit.is_some()
             || self.btw_state.is_some()
+            || self.fork_state.is_some()
             || !self.no_input_overlay_pending()
     }
 

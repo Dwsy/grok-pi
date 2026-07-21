@@ -34,6 +34,13 @@ pub struct SessionTreeNode {
     pub has_text: bool,
 }
 
+/// One user message available for Pi message-level `/fork`.
+#[derive(Debug, Clone)]
+pub struct PiForkMessage {
+    pub entry_id: String,
+    pub text: String,
+}
+
 /// Filter modes aligned with Pi `TreeSelector` / settings `treeFilterMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionTreeFilter {
@@ -720,6 +727,10 @@ pub enum Action {
     /// directly in `handle_agent_action`; this lets a slash command reach the
     /// same modal through dispatch.
     OpenCommandPalette,
+    /// Open the keyboard shortcuts cheatsheet (`/hotkeys`, Pi name). Same modal
+    /// as Ctrl+. / Ctrl+X (`ActionId::ShortcutsHelp`); slash path goes through
+    /// dispatch so external profiles can expose it without keybinding knowledge.
+    OpenShortcutsHelp,
     /// Open the in-TUI How-to Guides doc picker (`/docs`, palette "How-to Guides").
     OpenHowtoGuides,
     /// Open the reset-settings confirmation dialog for a specific key.
@@ -1100,6 +1111,12 @@ pub enum Action {
     JumpPickerSelect(EntryId),
     /// Close the picker and restore the stashed viewport.
     JumpDismiss,
+    /// Close the Pi `/fork` prompt-area message list overlay.
+    PiForkDismiss,
+    /// Pi `/clone`: duplicate current session at the current leaf.
+    PiClone,
+    /// Pi `/reload`: reload settings/extensions/skills/prompts/themes/context.
+    PiReload,
 }
 /// Persist-and-notify semantics for [`Effect::PersistPermissionMode`].
 ///
@@ -1579,6 +1596,27 @@ pub enum Effect {
         agent_id: crate::app::agent::AgentId,
         session_id: String,
         entry_id: String,
+    },
+    /// Fetch Pi `get_fork_messages` for the external `/fork` ArgPicker.
+    FetchPiForkMessages {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
+    },
+    /// Execute Pi RPC `fork` from a user-message entry id.
+    ForkPiSession {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
+        entry_id: String,
+    },
+    /// Execute Pi RPC `clone` (duplicate current leaf into a new session file).
+    ClonePiSession {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
+    },
+    /// Execute Pi resource reload via injected `ctx.reload()` bridge.
+    ReloadPiSession {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
     },
     /// Fetch session list for the welcome screen session picker.
     FetchSessionList {
@@ -2375,6 +2413,47 @@ pub enum TaskResult {
         nodes: Vec<SessionTreeNode>,
     },
     SessionTreeLabelFailed {
+        agent_id: crate::app::agent::AgentId,
+        error: String,
+    },
+    /// Pi `/fork` message catalog loaded for ArgPicker.
+    PiForkMessagesLoaded {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
+        messages: Vec<PiForkMessage>,
+    },
+    PiForkMessagesFailed {
+        agent_id: crate::app::agent::AgentId,
+        error: String,
+    },
+    /// Pi message-level fork completed; reload with the new session id.
+    PiSessionForked {
+        agent_id: crate::app::agent::AgentId,
+        /// Session id before fork (for diagnostics only).
+        previous_session_id: String,
+        session_id: String,
+        editor_text: Option<String>,
+    },
+    PiSessionForkFailed {
+        agent_id: crate::app::agent::AgentId,
+        error: String,
+    },
+    /// Pi `/clone` completed; reload with the new session id (empty prompt).
+    PiSessionCloned {
+        agent_id: crate::app::agent::AgentId,
+        previous_session_id: String,
+        session_id: String,
+    },
+    PiSessionCloneFailed {
+        agent_id: crate::app::agent::AgentId,
+        error: String,
+    },
+    /// Pi `/reload` completed (resources refreshed; session file unchanged).
+    PiSessionReloaded {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
+    },
+    PiSessionReloadFailed {
         agent_id: crate::app::agent::AgentId,
         error: String,
     },

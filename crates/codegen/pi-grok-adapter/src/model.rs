@@ -734,6 +734,8 @@ pub struct PiState {
     pub model: Option<PiModel>,
     pub thinking_level: String,
     pub is_streaming: bool,
+    /// Pi RPC `get_state.isCompacting` — true while compaction is in flight.
+    pub is_compacting: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -855,6 +857,12 @@ pub fn parse_state(value: &Value) -> PiState {
             .to_string(),
         is_streaming: value
             .get("isStreaming")
+            .or_else(|| value.get("is_streaming"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        is_compacting: value
+            .get("isCompacting")
+            .or_else(|| value.get("is_compacting"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }
@@ -1679,5 +1687,23 @@ mod tests {
         assert_eq!(model.cost_output, Some(5.0));
         assert_eq!(model.cost_cache_read, Some(0.1));
         assert_eq!(model.cost_cache_write, Some(1.25));
+    }
+
+    #[test]
+    fn parse_state_reads_streaming_and_compacting_flags() {
+        let state = parse_state(&json!({
+            "sessionId": "s1",
+            "isStreaming": true,
+            "isCompacting": true,
+            "thinkingLevel": "high",
+        }));
+        assert_eq!(state.session_id, "s1");
+        assert!(state.is_streaming);
+        assert!(state.is_compacting);
+        assert_eq!(state.thinking_level, "high");
+
+        let idle = parse_state(&json!({ "sessionId": "s2" }));
+        assert!(!idle.is_streaming);
+        assert!(!idle.is_compacting);
     }
 }

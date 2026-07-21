@@ -374,6 +374,51 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::SessionTreeLabelFailed { agent_id, error } => {
             super::session::tree::handle_session_tree_label_failed(app, agent_id, error)
         }
+        TaskResult::PiForkMessagesLoaded {
+            agent_id,
+            session_id,
+            messages,
+        } => super::session::pi_fork::handle_pi_fork_messages_loaded(
+            app, agent_id, session_id, messages,
+        ),
+        TaskResult::PiForkMessagesFailed { agent_id, error } => {
+            super::session::pi_fork::handle_pi_fork_messages_failed(app, agent_id, error)
+        }
+        TaskResult::PiSessionForked {
+            agent_id,
+            previous_session_id,
+            session_id,
+            editor_text,
+        } => super::session::pi_fork::handle_pi_session_forked(
+            app,
+            agent_id,
+            previous_session_id,
+            session_id,
+            editor_text,
+        ),
+        TaskResult::PiSessionForkFailed { agent_id, error } => {
+            super::session::pi_fork::handle_pi_session_fork_failed(app, agent_id, error)
+        }
+        TaskResult::PiSessionCloned {
+            agent_id,
+            previous_session_id,
+            session_id,
+        } => super::session::pi_fork::handle_pi_session_cloned(
+            app,
+            agent_id,
+            previous_session_id,
+            session_id,
+        ),
+        TaskResult::PiSessionCloneFailed { agent_id, error } => {
+            super::session::pi_fork::handle_pi_session_clone_failed(app, agent_id, error)
+        }
+        TaskResult::PiSessionReloaded {
+            agent_id,
+            session_id,
+        } => super::session::pi_fork::handle_pi_session_reloaded(app, agent_id, session_id),
+        TaskResult::PiSessionReloadFailed { agent_id, error } => {
+            super::session::pi_fork::handle_pi_session_reload_failed(app, agent_id, error)
+        }
         TaskResult::RollbackFilesCompleted { agent_id: _, message } => {
             app.show_toast(&message);
             vec![]

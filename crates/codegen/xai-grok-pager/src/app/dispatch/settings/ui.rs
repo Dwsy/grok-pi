@@ -176,6 +176,54 @@ pub(in crate::app::dispatch) fn dispatch_open_command_palette(app: &mut AppView)
     vec![]
 }
 
+/// Open the keyboard shortcuts cheatsheet (`/hotkeys`). Toggles closed if open.
+///
+/// Mirrors `ActionId::ShortcutsHelp` in the agent-view keybinding path so the
+/// slash command and Ctrl+. share one modal surface.
+pub(in crate::app::dispatch) fn dispatch_open_shortcuts_help(app: &mut AppView) -> Vec<Effect> {
+    use crate::actions::When;
+    use crate::app::agent_view::ActivePane;
+    use crate::views::modal::ActiveModal;
+    use crate::views::shortcuts_help;
+
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    if matches!(&agent.active_modal, Some(ActiveModal::ShortcutsHelp { .. })) {
+        agent.active_modal = None;
+        return vec![];
+    }
+
+    let reg = crate::actions::ActionRegistry::defaults();
+    // Slash is typed from the prompt; still respect current pane so the
+    // listed bindings match what Ctrl+. would show right now.
+    let mut contexts = match agent.active_pane {
+        ActivePane::Prompt => vec![When::PromptFocused, When::AgentScreen, When::Always],
+        ActivePane::Scrollback => {
+            vec![When::ScrollbackFocused, When::AgentScreen, When::Always]
+        }
+        _ => vec![When::AgentScreen, When::Always],
+    };
+    if agent.in_dashboard_overlay {
+        contexts.push(When::DashboardOverlay);
+    }
+    let entries = shortcuts_help::build_entries(&contexts, &reg, agent.vim_mode);
+    let state = shortcuts_help::build_initial_picker_state(&entries);
+    agent.active_modal = Some(ActiveModal::ShortcutsHelp {
+        entries,
+        state,
+        window: Default::default(),
+        filter_active: false,
+        collapsed_sections: shortcuts_help::default_collapsed(),
+        expanded_ids: std::collections::HashSet::new(),
+        mode: shortcuts_help::ShortcutsHelpMode::Browse,
+    });
+    vec![]
+}
+
 /// Open the How-to Guides doc picker (`/docs`). Toggles closed if already open.
 pub(in crate::app::dispatch) fn dispatch_open_howto_guides(app: &mut AppView) -> Vec<Effect> {
     use crate::views::modal::ActiveModal;

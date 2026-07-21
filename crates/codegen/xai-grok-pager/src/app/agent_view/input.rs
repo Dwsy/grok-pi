@@ -88,6 +88,7 @@ impl AgentView {
             && self.no_input_overlay_pending()
             && !self.modal_owns_input()
             && self.jump_state.is_none()
+            && self.fork_state.is_none()
     }
     /// Prompt pane focused with an empty draft and no overlay or prompt-local
     /// sub-state owning keys — the state where a bare Left backs out of the
@@ -108,6 +109,7 @@ impl AgentView {
             && self.no_input_overlay_pending()
             && !self.modal_owns_input()
             && self.jump_state.is_none()
+            && self.fork_state.is_none()
     }
     /// No per-pane `Esc` consumer is pending (text selection, link highlight,
     /// goal detail, rewind overlay, or open `/btw` panel), so `Esc` is free to
@@ -121,6 +123,7 @@ impl AgentView {
             && self.rewind_state.is_none()
             && self.btw_state.is_none()
             && self.jump_state.is_none()
+            && self.fork_state.is_none()
     }
     /// Esc on the prompt pane in a dashboard overlay backs out to the dashboard
     /// list (the prompt-focus mirror of the Left-arrow back-out), but only for an
@@ -777,6 +780,27 @@ impl AgentView {
                     self.handle_jump_key(key)
                 }
                 Event::Mouse(mouse) => self.handle_jump_mouse(mouse),
+                _ => InputOutcome::Unchanged,
+            };
+        }
+        if self.dismiss_fork_picker_if_suppressed() {
+            return InputOutcome::Changed;
+        }
+        if self.fork_state.is_some() {
+            return match ev {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if key!('q', CONTROL).matches(key) {
+                        return InputOutcome::Unchanged;
+                    }
+                    if registry.matches_id(ActionId::CancelTurn, key)
+                        && (self.session.state.is_turn_running() || self.session.state.is_cancelling())
+                    {
+                        self.dismiss_fork_picker();
+                        return self.handle_agent_action(ActionId::CancelTurn);
+                    }
+                    self.handle_fork_picker_key(key)
+                }
+                Event::Mouse(mouse) => self.handle_fork_picker_mouse(mouse),
                 _ => InputOutcome::Unchanged,
             };
         }

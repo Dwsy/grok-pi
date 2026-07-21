@@ -76,6 +76,8 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     // Process and command discovery.
     "exit",
     "help",
+    // Pi `/hotkeys` → native ShortcutsHelp modal (Ctrl+. surface).
+    "hotkeys",
     // ACP operations with an explicit Pi implementation.
     "new",
     "compact",
@@ -83,8 +85,16 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "effort",
     "rename",
     "resume",
+    // Pi `/session` stats via native Grok `/session-info` (+ alias `session`).
+    "session-info",
     // Pi session entry tree via native ArgPicker + adapter navigate.
     "tree",
+    // Pi message-level session fork (RPC get_fork_messages + fork).
+    "fork",
+    // Pi session clone at current leaf (RPC clone).
+    "clone",
+    // Pi resource reload (settings/extensions/skills/prompts/themes/context).
+    "reload",
     // Process-local Pi extension notifications in a searchable native modal.
     "notify",
     // Native multi-session overview; idle rows come from pi/session/list.
@@ -669,6 +679,12 @@ mod env_flag_tests {
     fn grok_pi_command_profile_includes_native_navigation() {
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"jump"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"voice"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"hotkeys"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"session-info"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"tree"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"fork"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"clone"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"reload"));
     }
 
     #[test]

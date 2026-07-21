@@ -580,6 +580,72 @@ impl PiAgent {
                 "entryId": entry_id,
             }));
         }
+        let bootstrap = self.rebind_after_session_branch().await?;
+        Ok(json!({
+            "cancelled": false,
+            "entryId": entry_id,
+            "sessionId": bootstrap.state.session_id,
+            "sessionFile": bootstrap.state.session_file,
+            "text": text,
+        }))
+    }
+
+    /// Reload Pi settings, extensions, skills, prompts, themes, and context files.
+    ///
+    /// Uses injected `__pi_reload` → official `ctx.reload()` (RPC has no bare
+    /// `reload` command). Refreshes adapter bootstrap so command/model catalogs
+    /// match the reloaded runtime.
+    async fn reload_session_resources(&self) -> Result<Value, acp::Error> {
+        let state = parse_state(
+            &self
+                .rpc
+                .request(json!({ "type": "get_state" }))
+                .await
+                .map_err(acp_internal)?,
+        );
+        if state.is_streaming {
+            return Err(acp::Error::internal_error().data(
+                "Wait for the current response to finish before reloading.",
+            ));
+        }
+        if state.is_compacting {
+            return Err(acp::Error::internal_error().data(
+                "Wait for compaction to finish before reloading.",
+            ));
+        }
+        self.run_bridge_command(RELOAD_COMMAND, "").await?;
+        let bootstrap = self.refresh().await.map_err(acp_internal)?;
+        self.publish_bootstrap(&bootstrap).await;
+        Ok(json!({
+            "ok": true,
+            "sessionId": bootstrap.state.session_id,
+        }))
+    }
+
+    /// Duplicate the current Pi leaf into a new session file (`position: "at"`).
+    async fn clone_current_session(&self) -> Result<Value, acp::Error> {
+        let response = self
+            .rpc
+            .request(json!({ "type": "clone" }))
+            .await
+            .map_err(acp_internal)?;
+        let cancelled = response
+            .get("cancelled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if cancelled {
+            return Ok(json!({ "cancelled": true }));
+        }
+        let bootstrap = self.rebind_after_session_branch().await?;
+        Ok(json!({
+            "cancelled": false,
+            "sessionId": bootstrap.state.session_id,
+            "sessionFile": bootstrap.state.session_file,
+        }))
+    }
+
+    /// After Pi fork/clone replaces the runtime session file, rebind adapter state.
+    async fn rebind_after_session_branch(&self) -> Result<PiBootstrap, acp::Error> {
         let bootstrap = self.refresh().await.map_err(acp_internal)?;
         if let Some(path) = bootstrap
             .state
@@ -598,13 +664,7 @@ impl PiAgent {
             state.plan_mode = load_plan_tracker(&plan_path).map_err(acp_internal)?;
         }
         self.publish_bootstrap(&bootstrap).await;
-        Ok(json!({
-            "cancelled": false,
-            "entryId": entry_id,
-            "sessionId": bootstrap.state.session_id,
-            "sessionFile": bootstrap.state.session_file,
-            "text": text,
-        }))
+        Ok(bootstrap)
     }
 
     fn replace_bootstrap(&self, bootstrap: PiBootstrap) {
@@ -965,12 +1025,13 @@ impl PiAgent {
                 .map(entries_to_messages_value),
         };
         let breakdown = self.fetch_context_breakdown().await;
-        let (session_id, model, cached_tokens) = {
+        let (session_id, model, cached_tokens, session_file) = {
             let state = self.state.borrow();
             (
                 state.acp_session_id.clone(),
                 state.bootstrap.state.model.clone(),
                 state.last_context_tokens,
+                state.bootstrap.state.session_file.clone(),
             )
         };
         let cwd = std::env::current_dir()
@@ -984,6 +1045,7 @@ impl PiAgent {
             model.as_ref(),
             cached_tokens,
             breakdown.as_ref(),
+            session_file.as_deref(),
         );
         if let Some(used) = response
             .get("context")
@@ -2546,6 +2608,16 @@ impl acp::Agent for PiAgent {
                 let data = self.fork_from_entry(entry_id).await?;
                 ext_response(data).map_err(acp_internal)
             }
+            // Pi /clone: duplicate current leaf into a new session file.
+            "pi/session/clone" => {
+                let data = self.clone_current_session().await?;
+                ext_response(data).map_err(acp_internal)
+            }
+            // Pi /reload: settings + resources via injected ctx.reload().
+            "pi/session/reload" => {
+                let data = self.reload_session_resources().await?;
+                ext_response(data).map_err(acp_internal)
+            }
             // Tree file rollback: preview via injected extension command.
             "pi/session/rollback_preview" => {
                 let params: Value =
@@ -3018,6 +3090,7 @@ fn format_cost_num(value: f64) -> String {
 /// Internal bridge commands injected by grok-pi; never advertised to slash UI.
 const NAVIGATE_TREE_COMMAND: &str = "__pi_navigate_tree";
 const LABEL_TREE_COMMAND: &str = "__pi_tree_label";
+const RELOAD_COMMAND: &str = "__pi_reload";
 const SUBAGENT_CANCEL_COMMAND: &str = "__pi_grok_subagent_cancel";
 const RECAP_COMMAND: &str = "__pi_grok_recap";
 const CONTEXT_BREAKDOWN_COMMAND: &str = "__pi_context_breakdown";
@@ -3025,6 +3098,7 @@ const CONTEXT_BREAKDOWN_COMMAND: &str = "__pi_context_breakdown";
 fn is_bridge_command(name: &str) -> bool {
     name.eq_ignore_ascii_case(NAVIGATE_TREE_COMMAND)
         || name.eq_ignore_ascii_case(LABEL_TREE_COMMAND)
+        || name.eq_ignore_ascii_case(RELOAD_COMMAND)
         || name.eq_ignore_ascii_case(SUBAGENT_CANCEL_COMMAND)
         || name.eq_ignore_ascii_case(RECAP_COMMAND)
         || name.eq_ignore_ascii_case(CONTEXT_BREAKDOWN_COMMAND)
@@ -3725,6 +3799,11 @@ mod tests {
                 description: "internal".into(),
                 source: "extension".into(),
             },
+            PiCommand {
+                name: RELOAD_COMMAND.into(),
+                description: "internal".into(),
+                source: "extension".into(),
+            },
         ];
         let serialized = serde_json::to_value(command_catalog(&commands)).unwrap();
         let text = serialized.to_string();
@@ -3736,6 +3815,7 @@ mod tests {
         assert!(text.contains("extension"));
         assert!(!text.contains(NAVIGATE_TREE_COMMAND));
         assert!(!text.contains(LABEL_TREE_COMMAND));
+        assert!(!text.contains(RELOAD_COMMAND));
     }
 
     #[test]

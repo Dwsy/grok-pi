@@ -5,4 +5,5 @@ pub(in crate::app::dispatch) mod fork;
 pub(in crate::app::dispatch) mod lifecycle;
 pub(in crate::app::dispatch) mod load;
 pub(in crate::app::dispatch) mod modal;
+pub(in crate::app::dispatch) mod pi_fork;
 pub(in crate::app::dispatch) mod tree;

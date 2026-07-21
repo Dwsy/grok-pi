@@ -8,6 +8,7 @@ pub mod announcements;
 pub mod auto;
 pub mod btw;
 pub mod cd;
+pub mod clone_cmd;
 pub mod compact;
 pub mod compact_mode;
 pub mod config_agents;
@@ -28,6 +29,7 @@ pub mod gboom;
 pub mod help;
 pub mod history;
 pub mod home;
+pub mod hotkeys;
 pub mod imagine;
 pub mod imagine_video;
 pub mod import_claude;
@@ -47,6 +49,7 @@ pub mod plugin;
 pub mod privacy;
 pub mod queue;
 pub mod recap;
+pub mod reload;
 pub mod release_notes;
 pub mod remember;
 pub mod rename;
@@ -80,10 +83,13 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
     vec![
         Arc::new(exit::ExitCommand),
         Arc::new(help::HelpCommand),
+        Arc::new(hotkeys::HotkeysCommand),
         Arc::new(docs::DocsCommand),
         Arc::new(home::HomeCommand),
         Arc::new(new::NewCommand),
         Arc::new(fork::ForkCommand),
+        Arc::new(clone_cmd::CloneCommand),
+        Arc::new(reload::ReloadCommand),
         Arc::new(compact::CompactCommand),
         Arc::new(copy::CopyCommand),
         Arc::new(find::FindCommand),

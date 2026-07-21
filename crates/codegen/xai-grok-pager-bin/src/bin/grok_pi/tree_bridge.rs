@@ -52,6 +52,14 @@ pub(super) fn write_navigate_tree_extension() -> Result<NamedTempFile> {
       ctx.setLabel(entryId, label || undefined);
     },
   });
+
+  // Official ExtensionAPI: ctx.reload() reloads settings/resources/extensions.
+  pi.registerCommand("__pi_reload", {
+    description: "Internal Pi-Grok bridge: reload settings, extensions, skills, prompts, themes, context",
+    handler: async (_args, ctx) => {
+      await ctx.reload();
+    },
+  });
 }
 "#;
     file.write_all(SOURCE.as_bytes())
@@ -72,8 +80,10 @@ mod tests {
         let source = std::fs::read_to_string(file.path()).expect("read extension");
         assert!(source.contains("registerCommand(\"__pi_navigate_tree\""));
         assert!(source.contains("registerCommand(\"__pi_tree_label\""));
+        assert!(source.contains("registerCommand(\"__pi_reload\""));
         assert!(source.contains("ctx.navigateTree"));
         assert!(source.contains("ctx.setLabel"));
+        assert!(source.contains("ctx.reload"));
         assert!(file.path().extension().and_then(|e| e.to_str()) == Some("ts"));
     }
 }

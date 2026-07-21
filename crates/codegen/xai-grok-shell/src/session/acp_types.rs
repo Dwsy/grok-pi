@@ -562,6 +562,10 @@ pub fn model_display_name(
 pub struct SessionInfoResponse {
     pub session_id: String,
     pub cwd: String,
+    /// On-disk session path when the agent persists JSONL (Pi `sessionFile`).
+    /// Absent for in-memory / Grok cloud-only sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_file: Option<String>,
     #[serde(flatten)]
     pub data: SessionInfoData,
 }

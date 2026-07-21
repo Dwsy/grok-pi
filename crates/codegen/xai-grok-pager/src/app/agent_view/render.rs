@@ -873,16 +873,32 @@ impl AgentView {
         } else {
             0
         };
-        let cancel_turn_view_h =
+        let fork_view_h =
             if permission_view_h == 0 && question_view_h == 0 && rewind_view_h == 0 && jump_view_h == 0 {
-                if self.cancel_turn_view.is_some() {
-                    modal::cancel_turn_panel_height(area.height)
+                if !self.fork_slot_taken() {
+                    self.fork_state.as_ref().map_or(0, |state| {
+                        crate::views::fork_picker::fork_picker_overlay_height(state, area.height)
+                    })
                 } else {
                     0
                 }
             } else {
                 0
             };
+        let cancel_turn_view_h = if permission_view_h == 0
+            && question_view_h == 0
+            && rewind_view_h == 0
+            && jump_view_h == 0
+            && fork_view_h == 0
+        {
+            if self.cancel_turn_view.is_some() {
+                modal::cancel_turn_panel_height(area.height)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
         let is_question_input_mode = self
             .question_view
             .as_ref()
@@ -964,6 +980,8 @@ impl AgentView {
             rewind_view_h
         } else if jump_view_h > 0 {
             jump_view_h
+        } else if fork_view_h > 0 {
+            fork_view_h
         } else if cancel_turn_view_h > 0 {
             cancel_turn_view_h
         } else {
@@ -1145,7 +1163,7 @@ impl AgentView {
             self.timeline_hover = None;
             self.timeline_hover_preview = None;
         }
-        if self.jump_state.is_some() {
+        if self.jump_state.is_some() || self.fork_state.is_some() {
             self.timeline_hover = None;
             self.timeline_hover_preview = None;
         }
@@ -2646,6 +2664,15 @@ impl AgentView {
         } else if jump_view_h > 0 {
             if let Some(state) = self.jump_state.as_ref() {
                 crate::views::jump::render_jump_overlay(buf, layout.prompt, state, prompt_focused);
+            }
+        } else if fork_view_h > 0 {
+            if let Some(state) = self.fork_state.as_ref() {
+                crate::views::fork_picker::render_fork_picker_overlay(
+                    buf,
+                    layout.prompt,
+                    state,
+                    prompt_focused,
+                );
             }
         } else if cancel_turn_view_h > 0 {
             let buttons = &mut self.cancel_turn_buttons;

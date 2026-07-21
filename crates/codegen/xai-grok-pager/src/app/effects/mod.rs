@@ -1005,6 +1005,204 @@ pub(crate) fn execute(
                 }
             });
         }
+        Effect::FetchPiForkMessages {
+            agent_id,
+            session_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    "pi/session/fork_messages",
+                    serde_json::value::to_raw_value(&serde_json::json!({}))
+                        .expect("serialize Pi fork_messages request")
+                        .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(resp) => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(resp.0.get()).unwrap_or_default();
+                        let payload = value.get("result").cloned().unwrap_or(value);
+                        let messages = parse_pi_fork_messages(&payload);
+                        TaskResult::PiForkMessagesLoaded {
+                            agent_id,
+                            session_id,
+                            messages,
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to fetch Pi fork messages");
+                        TaskResult::PiForkMessagesFailed {
+                            agent_id,
+                            error: sanitize_user_error(&error.to_string()),
+                        }
+                    }
+                }
+            });
+        }
+        Effect::ForkPiSession {
+            agent_id,
+            session_id,
+            entry_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    "pi/session/fork",
+                    serde_json::value::to_raw_value(&serde_json::json!({
+                        "entryId": entry_id,
+                    }))
+                    .expect("serialize Pi fork request")
+                    .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(resp) => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(resp.0.get()).unwrap_or_default();
+                        let payload = value.get("result").cloned().unwrap_or(value);
+                        if payload
+                            .get("cancelled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            return TaskResult::PiSessionForkFailed {
+                                agent_id,
+                                error: "Fork cancelled".to_string(),
+                            };
+                        }
+                        let new_session_id = payload
+                            .get("sessionId")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned)
+                            .filter(|s| !s.is_empty());
+                        let Some(new_session_id) = new_session_id else {
+                            return TaskResult::PiSessionForkFailed {
+                                agent_id,
+                                error: "Fork response missing sessionId".to_string(),
+                            };
+                        };
+                        let editor_text = payload
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned);
+                        TaskResult::PiSessionForked {
+                            agent_id,
+                            previous_session_id: session_id,
+                            session_id: new_session_id,
+                            editor_text,
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to fork Pi session");
+                        TaskResult::PiSessionForkFailed {
+                            agent_id,
+                            error: sanitize_user_error(&error.to_string()),
+                        }
+                    }
+                }
+            });
+        }
+        Effect::ClonePiSession {
+            agent_id,
+            session_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    "pi/session/clone",
+                    serde_json::value::to_raw_value(&serde_json::json!({}))
+                        .expect("serialize Pi clone request")
+                        .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(resp) => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(resp.0.get()).unwrap_or_default();
+                        let payload = value.get("result").cloned().unwrap_or(value);
+                        if payload
+                            .get("cancelled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            return TaskResult::PiSessionCloneFailed {
+                                agent_id,
+                                error: "Clone cancelled".to_string(),
+                            };
+                        }
+                        let new_session_id = payload
+                            .get("sessionId")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned)
+                            .filter(|s| !s.is_empty());
+                        let Some(new_session_id) = new_session_id else {
+                            return TaskResult::PiSessionCloneFailed {
+                                agent_id,
+                                error: "Clone response missing sessionId".to_string(),
+                            };
+                        };
+                        TaskResult::PiSessionCloned {
+                            agent_id,
+                            previous_session_id: session_id,
+                            session_id: new_session_id,
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to clone Pi session");
+                        TaskResult::PiSessionCloneFailed {
+                            agent_id,
+                            error: sanitize_user_error(&error.to_string()),
+                        }
+                    }
+                }
+            });
+        }
+        Effect::ReloadPiSession {
+            agent_id,
+            session_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    "pi/session/reload",
+                    serde_json::value::to_raw_value(&serde_json::json!({}))
+                        .expect("serialize Pi reload request")
+                        .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(resp) => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(resp.0.get()).unwrap_or_default();
+                        let payload = value.get("result").cloned().unwrap_or(value);
+                        let ok = payload
+                            .get("ok")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+                        if !ok {
+                            return TaskResult::PiSessionReloadFailed {
+                                agent_id,
+                                error: "Reload failed".to_string(),
+                            };
+                        }
+                        let reloaded_session_id = payload
+                            .get("sessionId")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(session_id);
+                        TaskResult::PiSessionReloaded {
+                            agent_id,
+                            session_id: reloaded_session_id,
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to reload Pi session resources");
+                        TaskResult::PiSessionReloadFailed {
+                            agent_id,
+                            error: sanitize_user_error(&error.to_string()),
+                        }
+                    }
+                }
+            });
+        }
         Effect::FetchSessionList { query, seq } => {
             let tx = acp_tx.clone();
             let cwd = cwd.to_path_buf();
@@ -4590,6 +4788,13 @@ fn format_session_info(
         Some(t) => format!("  Title: {t}\n"),
         None => String::new(),
     };
+    // Pi `/session` leads with the on-disk JSONL path when present.
+    let file_line = info
+        .session_file
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .map(|path| format!("  File: {path}\n"))
+        .unwrap_or_default();
     let model_hash_line = if xai_grok_shell::session::should_show_model_fingerprint(
         info.data.show_model_fingerprint,
         model,
@@ -4612,6 +4817,16 @@ fn format_session_info(
         .map(|profile| format!("\n  Sandbox: {profile}"))
         .unwrap_or_default();
     let turn_line = format!("\n  Turn: {}", info.data.turn_index);
+    // Pi `/session` reports message / tool counts; surface them when the
+    // agent filled ContextInfo (Pi adapter always does).
+    let messages_line = if ctx.message_count > 0 || ctx.tool_call_count > 0 || ctx.turn_count > 0 {
+        format!(
+            "\n  Messages: {} (turns {})\n  Tools: {} calls",
+            ctx.message_count, ctx.turn_count, ctx.tool_call_count
+        )
+    } else {
+        String::new()
+    };
     let conversation_line = info
         .data
         .conversation_id
@@ -4623,7 +4838,7 @@ fn format_session_info(
         xai_grok_update::channel_label(),
     );
     format!(
-        "{title_line}  Shell version: {version_display}\n  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}\n  Context: {used} / {total} tokens ({pct}%)"
+        "{title_line}{file_line}  Shell version: {version_display}\n  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}{messages_line}\n  Context: {used} / {total} tokens ({pct}%)"
     )
 }
 /// Build the single text content block for a plain `Effect::SendPrompt`.

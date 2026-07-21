@@ -69,6 +69,11 @@ pub(in crate::app::dispatch) fn dispatch_fork(
     app: &mut AppView,
     args: crate::slash::commands::fork::ForkArgs,
 ) -> Vec<Effect> {
+    // Pi message-level fork (new session file + prefilled prompt), not Grok
+    // peer-agent / worktree fork.
+    if app.external_agent {
+        return super::pi_fork::dispatch_pi_message_fork(app, args);
+    }
     let ActiveView::Agent(parent_id) = app.active_view else {
         app.show_toast("/fork only works inside a session");
         return vec![];
