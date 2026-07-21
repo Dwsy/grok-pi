@@ -785,7 +785,7 @@ impl PiModel {
                 } else {
                     "low"
                 }
-            },
+            }
             "low" => "low",
             "medium" => "medium",
             "high" => "high",
@@ -1436,8 +1436,14 @@ mod tests {
             }]
         });
 
-        assert_eq!(tree_entry_editor_text(&tree, "u1").as_deref(), Some("first line\nsecond line"));
-        assert_eq!(tree_entry_editor_text(&tree, "c1").as_deref(), Some("custom text"));
+        assert_eq!(
+            tree_entry_editor_text(&tree, "u1").as_deref(),
+            Some("first line\nsecond line")
+        );
+        assert_eq!(
+            tree_entry_editor_text(&tree, "c1").as_deref(),
+            Some("custom text")
+        );
         assert_eq!(tree_entry_editor_text(&tree, "missing"), None);
     }
 

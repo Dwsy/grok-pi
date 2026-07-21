@@ -76,6 +76,8 @@ impl PiRpc {
         let (event_tx, event_rx) = mpsc::unbounded_channel::<Value>();
         let pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let stderr_ring: Arc<Mutex<StderrRingBuffer>> =
+            Arc::new(Mutex::new(StderrRingBuffer::new(32)));
 
         tokio::spawn(async move {
             while let Some(value) = writer_rx.recv().await {
@@ -95,6 +97,9 @@ impl PiRpc {
             }
         });
 
+        // Stdout reader: dispatches responses and events. On EOF it does NOT
+        // fail pending requests — that is the exit task's job, so the error
+        // message always includes the exit code and fully-drained stderr.
         let pending_stdout = pending.clone();
         let event_stdout = event_tx.clone();
         tokio::spawn(async move {
@@ -123,8 +128,6 @@ impl PiRpc {
                         }
                         Err(error) => {
                             tracing::warn!(%error, bytes = line.len(), "invalid JSON on Pi RPC stdout");
-                            // Fail the matching pending request if we can see its id
-                            // in a partial parse; otherwise surface a diagnostic event.
                             let _ = event_stdout.send(serde_json::json!({
                                 "type": "adapter_diagnostic",
                                 "message": format!(
@@ -141,21 +144,38 @@ impl PiRpc {
                     }
                 }
             }
-            fail_pending(&pending_stdout, "Pi RPC stdout closed");
+            // stdout closed — do NOT fail_pending here. The exit task owns
+            // that so the error includes exit code + drained stderr.
         });
 
+        // Stderr reader: buffers lines and signals completion.
+        let stderr_ring_for_reader = stderr_ring.clone();
+        let (stderr_done_tx, stderr_done_rx) = oneshot::channel::<()>();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                stderr_ring_for_reader.lock().expect("stderr ring poisoned").push(line.clone());
                 tracing::warn!(target: "pi_rpc", "{line}");
             }
+            let _ = stderr_done_tx.send(());
         });
 
+        // Exit coordinator: the single owner of fail_pending. Waits for the
+        // child to exit and stderr to drain, then assembles the diagnostic.
         let pending_exit = pending.clone();
+        let stderr_ring_for_exit = stderr_ring.clone();
         tokio::spawn(async move {
-            let message = match child.wait().await {
+            let base = match child.wait().await {
                 Ok(status) => format!("Pi RPC process exited with {status}"),
                 Err(error) => format!("failed waiting for Pi RPC process: {error}"),
+            };
+            // Wait for the stderr reader to finish (bounded so we never hang).
+            let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done_rx).await;
+            let stderr_context = stderr_ring_for_exit.lock().expect("stderr ring poisoned").snapshot();
+            let message = if stderr_context.is_empty() {
+                base
+            } else {
+                format!("{base}\n\nPi stderr (last {} lines):\n{stderr_context}", stderr_context.lines().count())
             };
             fail_pending(&pending_exit, &message);
             let _ = event_tx.send(serde_json::json!({
@@ -293,6 +313,33 @@ where
         .expect("spawn pi-json-deep thread")
         .join()
         .expect("pi-json-deep thread panicked")
+}
+
+/// Ring buffer that keeps the last N stderr lines from the Pi child process.
+/// Used to surface meaningful diagnostics when the RPC connection drops.
+struct StderrRingBuffer {
+    lines: Vec<String>,
+    capacity: usize,
+}
+
+impl StderrRingBuffer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            lines: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn push(&mut self, line: String) {
+        if self.lines.len() >= self.capacity {
+            self.lines.remove(0);
+        }
+        self.lines.push(line);
+    }
+
+    fn snapshot(&self) -> String {
+        self.lines.join("\n")
+    }
 }
 
 fn fail_pending(

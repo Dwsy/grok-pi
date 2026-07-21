@@ -661,9 +661,8 @@ fn parse_pi_grep_matches(text: &str) -> (Vec<Value>, usize) {
         }
         let parsed = split_pi_grep_match_line(line).or_else(|| {
             current_path.as_deref().and_then(|path| {
-                split_rtk_grep_match_line(line).map(|(line_number, content)| {
-                    (path, line_number, content)
-                })
+                split_rtk_grep_match_line(line)
+                    .map(|(line_number, content)| (path, line_number, content))
             })
         });
         if let Some((path, line_number, content)) = parsed {
@@ -691,7 +690,8 @@ fn parse_pi_grep_matches(text: &str) -> (Vec<Value>, usize) {
 fn parse_rtk_grep_header(line: &str) -> Option<&str> {
     let header = line.strip_prefix("> ")?.strip_suffix(':')?;
     let (path, count) = header.rsplit_once(" (")?;
-    count.strip_suffix(" matches)")
+    count
+        .strip_suffix(" matches)")
         .or_else(|| count.strip_suffix(" match)"))
         .and_then(|value| value.parse::<usize>().ok())
         .map(|_| path)

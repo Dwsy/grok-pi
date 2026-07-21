@@ -1,7 +1,11 @@
 use crate::model::PiSessionInfo;
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::Value;
-use std::{net::{SocketAddr, TcpStream}, path::{Path, PathBuf}, time::Duration};
+use std::{
+    net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 const DEFAULT_PSM_WS_PORT: u16 = 52_131;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(150);
@@ -18,7 +22,10 @@ pub fn load_catalog(cwd: &Path, all: bool) -> Option<Vec<PiSessionInfo>> {
 
 fn default_database_path() -> Option<PathBuf> {
     Some(std::env::var_os("HOME")?.into()).map(|home: PathBuf| {
-        home.join(".pi").join("agent").join("sessions").join("sessions.db")
+        home.join(".pi")
+            .join("agent")
+            .join("sessions")
+            .join("sessions.db")
     })
 }
 
@@ -27,7 +34,11 @@ fn psm_server_is_listening(port: u16) -> bool {
     TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).is_ok()
 }
 
-fn load_catalog_from_db(db_path: &Path, cwd: &Path, all: bool) -> rusqlite::Result<Vec<PiSessionInfo>> {
+fn load_catalog_from_db(
+    db_path: &Path,
+    cwd: &Path,
+    all: bool,
+) -> rusqlite::Result<Vec<PiSessionInfo>> {
     let connection = Connection::open_with_flags(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -62,11 +73,17 @@ fn load_catalog_from_db(db_path: &Path, cwd: &Path, all: bool) -> rusqlite::Resu
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PiSessionInfo> {
     let models: String = row.get(8)?;
-    let model_id = serde_json::from_str::<Value>(&models).ok().and_then(|value| {
-        value.as_array()?.last()?.as_str().map(str::to_owned)
-    });
-    let token_total = [row.get::<_, u64>(9)?, row.get(10)?, row.get(11)?, row.get(12)?]
-        .into_iter().sum();
+    let model_id = serde_json::from_str::<Value>(&models)
+        .ok()
+        .and_then(|value| value.as_array()?.last()?.as_str().map(str::to_owned));
+    let token_total = [
+        row.get::<_, u64>(9)?,
+        row.get(10)?,
+        row.get(11)?,
+        row.get(12)?,
+    ]
+    .into_iter()
+    .sum();
     Ok(PiSessionInfo {
         id: row.get(0)?,
         path: PathBuf::from(row.get::<_, String>(1)?),

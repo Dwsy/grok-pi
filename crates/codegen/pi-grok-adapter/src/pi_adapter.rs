@@ -1257,6 +1257,50 @@ impl PiAgent {
         id
     }
 
+    /// Backstop for `cancel()`: poll Pi until the agent is idle, then finish
+    /// the still-active prompts (all marked `cancelled` by the cancel).
+    ///
+    /// Covers the race where Pi's turn ends before the abort lands: the
+    /// `agent_settled` event was already consumed and nothing else completes
+    /// the prompt, stranding the pager on "Cancelling…". `finish_prompts` is
+    /// idempotent — a genuine `agent_settled` arriving during the poll
+    /// finishes the prompts first and this becomes a no-op.
+    async fn settle_cancelled_prompts(&self) {
+        const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+        const SETTLE_POLL_DEADLINE: Duration = Duration::from_secs(30);
+        let deadline = Instant::now() + SETTLE_POLL_DEADLINE;
+        loop {
+            if !self
+                .state
+                .borrow()
+                .active_prompts
+                .iter()
+                .any(|active| active.cancelled)
+            {
+                return;
+            }
+            let Ok(value) = self.rpc.request(json!({ "type": "get_state" })).await else {
+                // Pi RPC is gone (process exited); the exit coordinator
+                // finishes the prompts via finish_prompts.
+                return;
+            };
+            if !parse_state(&value).is_streaming {
+                self.finish_prompts(acp::StopReason::Cancelled);
+                return;
+            }
+            if Instant::now() >= deadline {
+                // Pi is stuck streaming past the deadline; force-finish so
+                // the pager cannot strand on "Cancelling…" forever.
+                tracing::warn!(
+                    "Pi still streaming after cancel settle deadline; forcing prompt completion"
+                );
+                self.finish_prompts(acp::StopReason::Cancelled);
+                return;
+            }
+            tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
+        }
+    }
+
     async fn probe_prompt_without_agent(&self) {
         // Pi acknowledges prompt preflight before its asynchronous event stream.
         // A short grace period lets a normal agent_start arrive. Extension
@@ -1951,9 +1995,17 @@ impl acp::Agent for PiAgent {
             self.finish_prompts(acp::StopReason::Cancelled);
             return Err(acp_internal(error));
         }
+        // A successful abort RPC means Pi accepted the abort request, but the
+        // `agent_settled` event that completes prompts may already have been
+        // consumed (Pi finished before the abort landed) or never comes (the
+        // agent was already idle). The PromptResponse RPC is the pager's only
+        // exit from TurnCancelling, so without a backstop the UI strands on
+        // "Cancelling…" until restart. Poll get_state until Pi is idle, then
+        // finish the prompts. A genuine agent_settled arriving in between
+        // finishes first (finish_prompts is idempotent — it drains the list).
         let probe = self.clone();
         tokio::task::spawn_local(async move {
-            probe.probe_prompt_without_agent().await;
+            probe.settle_cancelled_prompts().await;
         });
         Ok(())
     }
@@ -2117,6 +2169,31 @@ impl acp::Agent for PiAgent {
                 };
                 let data = self.set_session_tree_label(entry_id, label).await?;
                 ext_response(data).map_err(acp_internal)
+            }
+            // Tree file rollback: preview via injected extension command.
+            "pi/session/rollback_preview" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let entry_id = string(&params, &["entryId", "id", "targetId"])
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| acp::Error::invalid_params().data("entryId is required"))?;
+                self.run_bridge_command("__pi_rollback_preview", entry_id)
+                    .await?;
+                ext_response(json!({ "entryId": entry_id })).map_err(acp_internal)
+            }
+            // Tree file rollback: execute via injected extension command.
+            "pi/session/rollback_execute" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let entry_id = string(&params, &["entryId", "id", "targetId"])
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| acp::Error::invalid_params().data("entryId is required"))?;
+                self.run_bridge_command("__pi_rollback_execute", entry_id)
+                    .await?;
+                ext_response(json!({ "entryId": entry_id, "executed": true }))
+                    .map_err(acp_internal)
             }
             "x.ai/session/rename" => {
                 let params: Value =
@@ -2283,11 +2360,16 @@ impl PiAgent {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned);
+        let recap_mermaid = params
+            .get("recapMermaid")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let language = system_language_tag();
         let payload = json!({
             "auto": auto,
             "model": model,
             "thinkingLevel": thinking_level,
+            "recapMermaid": recap_mermaid,
             "language": language,
         });
         let args = payload.to_string();
