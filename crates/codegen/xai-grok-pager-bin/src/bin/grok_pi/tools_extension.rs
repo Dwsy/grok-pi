@@ -44,8 +44,49 @@ pub(super) fn configured_builtin_tools() -> String {
         .join(",")
 }
 
+/// Whether the user passed an explicit `--tools` / `-t` allowlist.
+/// When present, F2 preferences are skipped entirely — the allowlist is
+/// authoritative and already excludes unlisted tools.
 pub(super) fn has_explicit_tools_arg(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--tools" || arg == "-t")
+}
+
+/// Whether the user passed `--no-tools` / `-nt` or `--no-builtin-tools` /
+/// `-nbt`. Either flag disables all (or all builtin) tools; the F2
+/// extension must NOT be injected because `setActiveTools()` would
+/// re-enable tools the CLI explicitly disabled.
+pub(super) fn has_no_tools_arg(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--no-tools" | "-nt" | "--no-builtin-tools" | "-nbt"
+        )
+    })
+}
+
+/// Extract the comma-separated tool names from `--exclude-tools` / `-xt`.
+/// Returns `None` when the flag is absent.
+pub(super) fn excluded_tools(args: &[String]) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == "--exclude-tools" || arg == "-xt")
+        .and_then(|idx| args.get(idx + 1))
+        .filter(|v| !v.is_empty())
+        .cloned()
+}
+
+/// Whether the F2 tools extension should be injected at all.
+/// Returns `false` when CLI arguments make F2 preferences irrelevant:
+/// - `--tools`/`-t`: explicit allowlist is authoritative
+/// - `--no-tools`/`-nt`: all tools disabled
+/// - `--no-builtin-tools`/`-nbt`: all builtins disabled
+pub(super) fn should_inject_tools_extension(args: &[String]) -> bool {
+    !has_explicit_tools_arg(args) && !has_no_tools_arg(args)
+}
+
+/// Comma-separated exclusion list to pass as `PI_GROK_EXCLUDE_TOOLS`.
+/// Empty string when no `--exclude-tools` flag is present.
+pub(super) fn cli_tool_exclusions(args: &[String]) -> String {
+    excluded_tools(args).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -75,5 +116,28 @@ mod tests {
             "--exclude-tools".into(),
             "bash".into()
         ]));
+    }
+
+    #[test]
+    fn detects_no_tools_flags() {
+        assert!(has_no_tools_arg(&["--no-tools".into()]));
+        assert!(has_no_tools_arg(&["-nt".into()]));
+        assert!(has_no_tools_arg(&["--no-builtin-tools".into()]));
+        assert!(has_no_tools_arg(&["-nbt".into()]));
+        assert!(!has_no_tools_arg(&["--tools".into(), "read".into()]));
+        assert!(!has_no_tools_arg(&["--exclude-tools".into(), "bash".into()]));
+    }
+
+    #[test]
+    fn extracts_excluded_tools() {
+        assert_eq!(
+            excluded_tools(&["--exclude-tools".into(), "bash,write".into()]),
+            Some("bash,write".into())
+        );
+        assert_eq!(
+            excluded_tools(&["-xt".into(), "grep".into()]),
+            Some("grep".into())
+        );
+        assert_eq!(excluded_tools(&["--tools".into(), "read".into()]), None);
     }
 }

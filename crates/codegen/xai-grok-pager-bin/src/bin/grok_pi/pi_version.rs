@@ -5,7 +5,7 @@
 //! - fail closed only when missing / unreadable / below min
 //! - OS-aware install hints (curl | sh vs PowerShell)
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use semver::Version;
 use std::path::Path;
 use std::process::Command;
@@ -74,9 +74,7 @@ pub(super) fn ensure_compatible_pi_host(program: &str) -> Result<Version> {
         }
         PiHostCheck::Unparseable { program, raw } => {
             print_upgrade_help(
-                &format!(
-                    "Could not parse Pi version from `{program} --version` output: {raw:?}"
-                ),
+                &format!("Could not parse Pi version from `{program} --version` output: {raw:?}"),
                 &program,
             );
             bail!("unreadable Pi version from {program}");
@@ -102,9 +100,7 @@ fn run_pi_version(program: &str) -> Result<String, String> {
 
     // Keep this off the async runtime: one-shot, short, fail-fast.
     // No shell, no network.
-    let output = cmd
-        .output()
-        .map_err(|e| format!("spawn failed: {e}"))?;
+    let output = cmd.output().map_err(|e| format!("spawn failed: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -216,17 +212,19 @@ mod tests {
 
     #[test]
     fn parses_plain_semver() {
-        assert_eq!(
-            parse_pi_version("0.80.10").unwrap().to_string(),
-            "0.80.10"
-        );
+        assert_eq!(parse_pi_version("0.80.10").unwrap().to_string(), "0.80.10");
     }
 
     #[test]
     fn parses_prefixed_output() {
-        assert_eq!(parse_pi_version("pi 0.80.10\n").unwrap().to_string(), "0.80.10");
         assert_eq!(
-            parse_pi_version("@earendil-works/pi-coding-agent/0.80.10").unwrap().to_string(),
+            parse_pi_version("pi 0.80.10\n").unwrap().to_string(),
+            "0.80.10"
+        );
+        assert_eq!(
+            parse_pi_version("@earendil-works/pi-coding-agent/0.80.10")
+                .unwrap()
+                .to_string(),
             "0.80.10"
         );
     }

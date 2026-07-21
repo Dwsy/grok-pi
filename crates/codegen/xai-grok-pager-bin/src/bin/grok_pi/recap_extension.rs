@@ -41,8 +41,11 @@ mod tests {
         assert!(source.contains("{ messages: [userMessage] }"));
         assert!(source.contains("parsed.thinkingLevel"));
         assert!(source.contains("reasoning:"));
-        assert!(source
-            .contains("response.stopReason === \"aborted\" || response.stopReason === \"error\""));
+        assert!(
+            source.contains(
+                "response.stopReason === \"aborted\" || response.stopReason === \"error\""
+            )
+        );
         assert!(source.contains("operating-system language"));
         assert!(source.contains("Do not switch to English"));
         assert!(!source.contains("serializeConversation"));
@@ -57,5 +60,19 @@ mod tests {
         assert!(source.contains("ok: true,"));
         assert!(!source.contains("ok: false"));
         assert!(!source.contains("reason: payload.reason"));
+    }
+
+    #[test]
+    fn recap_extension_keeps_mermaid_closing_fence() {
+        // Regression: cleanRecapMarkdown must strip ONLY the outer
+        // ```markdown wrapper, never the closing ``` of a mermaid block —
+        // an unclosed fence falls back to a raw code block instead of the
+        // native diagram art.
+        let file = write_recap_extension().expect("temp extension");
+        let source = std::fs::read_to_string(file.path()).expect("read extension");
+        // The trailing-fence strip is guarded by a ```markdown wrapper check,
+        // so a bare trailing ``` (a mermaid closing fence) is never removed.
+        assert!(source.contains("/^```markdown\\s/i.test(text)"));
+        assert!(source.contains("Only strip a trailing fence when the response was wrapped"));
     }
 }

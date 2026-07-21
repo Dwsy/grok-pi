@@ -36,6 +36,11 @@ mod tests {
         assert!(source.contains("OAuthSelectorComponent"));
         assert!(source.contains("LoginDialogComponent"));
         assert!(source.contains("PI_GROK_REMOTE_TUI"));
+        // Nested openCustom would tear down LoginDialog during Grok CLI method select.
+        assert!(source.contains("showOverlay"));
+        assert!(source.contains("showAuthPrompt"));
+        assert!(source.contains("prompt.signal"));
+        assert!(source.contains("value: success"));
         assert_eq!(
             file.path().extension().and_then(|value| value.to_str()),
             Some("ts")

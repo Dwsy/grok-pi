@@ -24,6 +24,8 @@ mod remote_tui_extension;
 mod session_paths;
 #[path = "grok_pi/subagent_extension.rs"]
 mod subagent_extension;
+#[path = "grok_pi/rollback_extension.rs"]
+mod rollback_extension;
 #[path = "grok_pi/tools_extension.rs"]
 mod tools_extension;
 #[path = "grok_pi/tree_bridge.rs"]
@@ -39,6 +41,8 @@ use xai_acp_lib::acp_channels;
 use xai_grok_pager::{
     acp::{AcpConnection, ExternalLogoArt, ExternalUiProfile, ExternalWelcomeBrand},
     app::{ExternalRunConfig, PagerArgs, run_external},
+    pi_resource_config::PiResourceCatalog,
+    pi_resource_policy::ResourcePolicy,
 };
 
 use auth_extension::write_auth_extension;
@@ -51,7 +55,10 @@ use recap_extension::write_recap_extension;
 use remote_tui_extension::write_remote_tui_extension;
 use session_paths::pi_session_dir;
 use subagent_extension::write_subagent_extension;
-use tools_extension::{configured_builtin_tools, has_explicit_tools_arg, write_tools_extension};
+use tools_extension::{
+    configured_builtin_tools, excluded_tools, has_explicit_tools_arg, has_no_tools_arg,
+    write_tools_extension,
+};
 use tree_bridge::write_navigate_tree_extension;
 
 /// Grok pager commands that are meaningful when Pi is the ACP backend.
@@ -233,13 +240,125 @@ async fn run(mut args: Args) -> Result<()> {
             .map(|extension| extension.path()),
     );
     let pi_session_dir = pi_session_dir(&pi_args, &cwd);
-    // Pi's explicit --tools is an authoritative allowlist. Only apply the F2
-    // preference when the user did not provide one.
-    let tools_extension = (bridge_extensions_enabled && !has_explicit_tools_arg(&pi_args))
+
+    // ── Resource admission policy ────────────────────────────────────────────
+    // Disable Pi's auto-discovery and load only policy-approved resources.
+    // Bridge extensions (subagent, bash, recap, etc.) are appended separately
+    // below and always load regardless of policy.
+    let resource_policy = ResourcePolicy::load_from_config();
+    // Mirror Pi's --approve / --no-approve so the catalog's project-resource
+    // discovery matches what Pi itself will trust for this run.
+    let trust_override = if args.approve {
+        Some(true)
+    } else if args.no_approve {
+        Some(false)
+    } else {
+        None
+    };
+    let resource_catalog =
+        PiResourceCatalog::load_with_trust(cwd.clone(), trust_override)
+            .context("failed to load Pi resource catalog for admission policy")?;
+    let launch_plan = resource_policy.evaluate(&resource_catalog);
+    if let Some(summary) = launch_plan.blocked_summary() {
+        tracing::warn!("{summary}");
+    }
+
+    // Filter explicit --extension paths (from -e / --extension / passthrough)
+    // that the policy would block.  These were written into pi_args by
+    // pi_args_with_startup_flags() before the catalog evaluation ran.
+    {
+        let mut filtered_args: Vec<String> = Vec::with_capacity(pi_args.len());
+        let mut i = 0;
+        while i < pi_args.len() {
+            if pi_args[i] == "--extension" && i + 1 < pi_args.len() {
+                let ext_path = &pi_args[i + 1];
+                if let Some(reason) = resource_policy.check_explicit_path(ext_path) {
+                    tracing::warn!(
+                        "grok-pi resource policy blocked explicit extension {ext_path}: {reason}"
+                    );
+                    i += 2; // skip both --extension and its value
+                    continue;
+                }
+            }
+            filtered_args.push(pi_args[i].clone());
+            i += 1;
+        }
+        pi_args = filtered_args;
+    }
+
+    // Disable Pi auto-discovery; we supply approved resources explicitly.
+    // Respect the user's own --no-* CLI flags (both Clap and passthrough):
+    // if they already disabled a category, don't re-add approved resources.
+    let has_no_extensions =
+        args.no_extensions || pi_args.iter().any(|a| a == "--no-extensions");
+    let has_no_skills = args.no_skills || pi_args.iter().any(|a| a == "--no-skills");
+    let has_no_prompts = pi_args.iter().any(|a| a == "--no-prompt-templates");
+    let has_no_themes = pi_args.iter().any(|a| a == "--no-themes");
+
+    if !has_no_extensions {
+        pi_args.push("--no-extensions".to_string());
+        for path in &launch_plan.extensions {
+            pi_args.extend([
+                "--extension".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+    }
+    if !has_no_skills {
+        pi_args.push("--no-skills".to_string());
+        for path in &launch_plan.skills {
+            pi_args.extend([
+                "--skill".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+    }
+    if !has_no_prompts {
+        pi_args.push("--no-prompt-templates".to_string());
+        for path in &launch_plan.prompts {
+            pi_args.extend([
+                "--prompt-template".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+    }
+    if !has_no_themes {
+        pi_args.push("--no-themes".to_string());
+        for path in &launch_plan.themes {
+            pi_args.extend([
+                "--theme".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+    }
+
+    // CLI tool restrictions (--tools, --no-tools, --no-builtin-tools,
+    // --exclude-tools) are authoritative and always override F2 preferences.
+    // Skip the tools extension entirely when CLI disables all tools or all
+    // builtins; for --exclude-tools, inject but pass the exclusion list so the
+    // extension filters them out.
+    let cli_exclusions = excluded_tools(&pi_args).unwrap_or_default();
+    let skip_tools_ext = has_explicit_tools_arg(&pi_args) || has_no_tools_arg(&pi_args);
+    let tools_extension = (bridge_extensions_enabled && !skip_tools_ext)
         .then(|| write_tools_extension())
         .transpose()
         .context("failed to create Pi tools extension")?;
     let selected_builtin_tools = tools_extension.as_ref().map(|_| configured_builtin_tools());
+    // Tree file rollback checkpoint extension: injected last so it can verify
+    // that write/edit are still Pi builtin (not overridden by user extensions).
+    // Only when F2 enabled and CLI hasn't disabled write/edit tools.
+    let rollback_on = bridge_extensions_enabled
+        && rollback_extension::rollback_enabled()
+        && !has_no_tools_arg(&pi_args);
+    let rollback_control_dir = if rollback_on {
+        Some(rollback_extension::create_control_dir()?)
+    } else {
+        None
+    };
+    let rollback_ext = rollback_on
+        .then(|| rollback_extension::write_rollback_extension())
+        .transpose()
+        .context("failed to create Pi rollback extension")?;
     // remote_tui before auth/native-commands so custom() host exists first.
     for path in [
         subagent_extension
@@ -260,6 +379,8 @@ async fn run(mut args: Args) -> Result<()> {
             .as_ref()
             .map(|extension| extension.source_path()),
         tools_extension.as_ref().map(|extension| extension.path()),
+        // Rollback extension MUST be last so it sees final tool registrations.
+        rollback_ext.as_ref().map(|extension| extension.path()),
     ]
     .into_iter()
     .flatten()
@@ -273,6 +394,9 @@ async fn run(mut args: Args) -> Result<()> {
     let mut env = vec![("PI_GROK".to_string(), "1".to_string())];
     if let Some(selected) = selected_builtin_tools {
         env.push(("PI_GROK_BUILTIN_TOOLS".to_string(), selected));
+    }
+    if !cli_exclusions.is_empty() && tools_extension.is_some() {
+        env.push(("PI_GROK_EXCLUDE_TOOLS".to_string(), cli_exclusions));
     }
     if subagent_extension.is_some() {
         env.push(("PI_GROK_SUBAGENTS".to_string(), "1".to_string()));
@@ -305,9 +429,20 @@ async fn run(mut args: Args) -> Result<()> {
             env.push(("PI_GROK_REMOTE_TUI_ROWS".to_string(), rows.to_string()));
         }
     }
+    // Tree file rollback checkpoint extension env.
+    if rollback_ext.is_some() {
+        env.push(("PI_GROK_ROLLBACK".to_string(), "1".to_string()));
+        env.push((
+            "GROK_PI_ROLLBACK_STATE".to_string(),
+            rollback_extension::rollback_state_root(),
+        ));
+        if let Some(ref control) = rollback_control_dir {
+            env.push(("GROK_PI_ROLLBACK_CONTROL".to_string(), control.clone()));
+        }
+    }
     // Fail fast with OS-aware install hints before spawning the RPC host.
-    let _pi_version = ensure_compatible_pi_host(&args.pi_bin)
-        .context("Pi host version check failed")?;
+    let _pi_version =
+        ensure_compatible_pi_host(&args.pi_bin).context("Pi host version check failed")?;
     let process = PiRpc::spawn(SpawnConfig {
         program: args.pi_bin,
         prefix_args: args.pi_prefix_args,
@@ -332,6 +467,7 @@ async fn run(mut args: Args) -> Result<()> {
     let _native_commands_extension = native_commands_extension;
     let _remote_tui_extension = remote_tui_extension;
     let _tools_extension = tools_extension;
+    let _rollback_extension = rollback_ext;
     let bootstrap = PiBootstrap::load(&process.rpc)
         .await
         .context("failed to bootstrap Pi RPC state")?;
