@@ -59,7 +59,7 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 | New session | Adapted | Grok `/new` → Pi `new_session` |
 | Rename | Adapted | Grok `/rename` → Pi `set_session_name` |
 | Resume session catalog | Adapted | `/resume` reads Pi JSONL metadata through the headless adapter. Named sessions receive a native `named` badge; expanded Pi rows show CWD/session path, start/update time, model, message count, persisted token total and cost when recorded. Catalog remains ordered by latest activity. |
-| Session info / context snapshot | Adapted | Grok `x.ai/session/info` ← Pi stats (used/window/counts) + message estimate + injected extension reading system/tool-defs/AGENTS; on bridge failure system/tools fall back to 0 |
+| Session info / context snapshot | Adapted | Native `/session-info` (alias `/session`, Pi name) → Grok `x.ai/session/info` ← Pi stats (file/used/window/counts) + message estimate + injected extension reading system/tool-defs/AGENTS; on bridge failure system/tools fall back to 0. Display is a system scrollback block (Pi interactive prints into chat); `/context` remains the chart modal. |
 | Session history replay | Adapted | `get_messages` → ACP replay, using Grok scrollback |
 | Continue previous session at startup | Adapted | `grok-pi --continue` / `-c` → Pi `--continue` |
 | Startup resources, prompts, and session options | Adapted | First-class Pi flags forwarded by `grok-pi`: model (`--provider`/`--model`/`--models`/`--thinking`), session (`--session`/`--session-id`/`--session-dir`/`--fork`/`--no-session`/`--name`), prompts (`--system-prompt`/`--append-system-prompt`), resources (`--extension`/`--no-extensions`/`--no-skills`/`--no-context-files`), tools (`--tools`/`--exclude-tools`/`--no-tools`/`--no-builtin-tools`), trust/network (`--approve`/`--no-approve`/`--offline`); remaining args after `--` still passthrough. `--resume` not exposed (Welcome/`/resume`) |
@@ -67,6 +67,9 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 | Pi Config resource management | Native+Rust compatible | F2 or `/pi-config` (alias `/pi-resources`) → Pi resources; Rust reads Pi `settings.json`/`trust.json`, managing extensions/skills/prompts/themes across global and trusted-project overrides. Discovers resources by Pi's auto-expansion entry rules; source tree collapsed by default, GitHub/npm/local identities clearly visible, search expands only matching sources. Native two-pane supports tree expand/collapse, search, keyboard paging/scroll, click and wheel; right pane previews package.json key fields and README; after switching prompts restart or Pi `/reload`; does not include `install/remove/update` |
 | Grok cloud/session history picker | Boundary | depends on Grok session store; Pi profile does not expose `/history` |
 | Pi session tree (`/tree`) | Adapted | Native `SessionTree` modal: filter/search/collapse/detail/copy/tags; Enter/`Shift+Enter` calls `ctx.navigateTree` (can summarize) via injected extension; `session/load` replays; TreeX-style detail panel; does not modify Pi source |
+| Pi session fork (`/fork`) | Adapted | External profile: jump-style prompt `ListOverlay` from RPC `get_fork_messages`; select → RPC `fork` creates branched session file, same agent rebinds to new `sessionId`, `session/load` replays, selected text prefills prompt; Grok peer-agent `/fork` unchanged for non-external |
+| Pi session clone (`/clone`) | Adapted | External profile: RPC `clone` duplicates current leaf into a new session file; same agent rebinds to new `sessionId`, `session/load` replays, prompt cleared (Pi parity) |
+| Pi resource reload (`/reload`) | Adapted | External: `__pi_reload` → `ctx.reload()`; blocks on streaming **and** compacting (Pi parity); adapter refreshes command/model catalogs; Pager rescan Pi themes (`rediscover`) and re-applies active `pi:*` theme; loading/success toast copy aligns with Pi interactive; no session-file branch |
 | Pi HTML export / share | Adapted | Grok `/export` stays Markdown transcript; experimental `/pi-export` (HTML or `.jsonl`) and `/pi-share` (private gh gist + pi.dev viewer) hand off to Pi host export-html / share paths via injected extension, no second TUI |
 
 ## Extension UI
@@ -93,7 +96,7 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 
 ### Retained Grok Native Commands
 
-`exit`, `help`, `new`, `compact`, `model`, `effort`, `rename`, `resume`, `dashboard`, `copy`, `find`, `transcript`, `export`, `expand`, `queue`, `notify`, `multiline`, `compact-mode`, `vim-mode`, `theme`, `timestamps`, `toggle-mouse-reporting`.
+`exit`, `help`, `hotkeys` (aliases `shortcuts`/`keys`), `new`, `compact`, `model`, `effort`, `rename`, `resume`, `session-info` (alias `session`), `dashboard`, `copy`, `find`, `transcript`, `export`, `expand`, `queue`, `notify`, `multiline`, `compact-mode`, `vim-mode`, `theme`, `timestamps`, `toggle-mouse-reporting`.
 
 ### Dynamic Pi Commands
 

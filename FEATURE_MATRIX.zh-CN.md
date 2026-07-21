@@ -58,7 +58,7 @@
 | New session | 适配 | Grok `/new` → Pi `new_session` |
 | Rename | 适配 | Grok `/rename` → Pi `set_session_name` |
 | Resume session catalog | 适配 | `/resume` 经无界面 adapter 读取 Pi JSONL 元数据。已命名会话显示原生 `named` 标记；展开 Pi 行可显示 CWD/会话路径、开始/更新时间、模型、消息数、已持久化的 token 总数与成本（仅在记录存在时）。目录继续按最近活动时间排序。 |
-| Session info / context snapshot | 适配 | Grok `x.ai/session/info` ← Pi stats（used/window/counts）+ message 估算 + 注入 extension 读 system/tool-defs/AGENTS；bridge 失败时 system/tools 回退 0 |
+| Session info / context snapshot | 适配 | 原生 `/session-info`（别名 `/session`，对齐 Pi 命名）→ Grok `x.ai/session/info` ← Pi stats（file/used/window/counts）+ message 估算 + 注入 extension 读 system/tool-defs/AGENTS；bridge 失败时 system/tools 回退 0。展示为 system scrollback（Pi interactive 写 chat）；图表仍用 `/context` modal。 |
 | Session history replay | 适配 | `get_messages` → ACP replay，使用 Grok scrollback |
 | 启动时继续上一会话 | 适配 | `grok-pi --continue` / `-c` → Pi `--continue` |
 | 启动资源、提示词与会话选项 | 适配 | `grok-pi` 一等转发：模型（`--provider`/`--model`/`--models`/`--thinking`）、会话（`--session`/`--session-id`/`--session-dir`/`--fork`/`--no-session`/`--name`）、提示词（`--system-prompt`/`--append-system-prompt`）、资源（`--extension`/`--no-extensions`/`--no-skills`/`--no-context-files`）、工具（`--tools`/`--exclude-tools`/`--no-tools`/`--no-builtin-tools`）、trust/网络（`--approve`/`--no-approve`/`--offline`）；`--` 后参数仍透传。不暴露 `--resume`（Welcome/`/resume`） |
@@ -66,6 +66,9 @@
 | Pi Config 资源管理 | 原生+Rust 兼容 | F2 或 `/pi-config`（别名 `/pi-resources`）→ Pi resources；Rust 读取 Pi `settings.json`/`trust.json`，管理 extensions/skills/prompts/themes 的 global 与 trusted-project 覆盖。按 Pi 自动扩展入口规则发现资源；来源树默认折叠，GitHub/npm/local 身份清晰可见，搜索仅展开命中来源。原生双栏支持树展开/折叠、搜索、键盘分页/滚动、点击与滚轮；右栏预览 package.json 关键字段与 README；切换后提示重启或 Pi `/reload`；不含 `install/remove/update`。 |
 | Grok cloud/session history picker | 边界 | 依赖 Grok session store，Pi profile 不暴露 `/history` |
 | Pi session tree (`/tree`) | 适配 | 原生 `SessionTree` modal：筛选/搜索/折叠/详情/复制/标签；Enter/`Shift+Enter` 经注入 extension 调 `ctx.navigateTree`（可 summarize）；`session/load` 回放；TreeX 风格详情面板；不改 Pi 源码 |
+| Pi session fork (`/fork`) | 适配 | External：与 `/jump` 同款 prompt 区 `ListOverlay`（RPC `get_fork_messages`）；选择后 RPC `fork` 生成分支 session 文件，同 agent 换绑新 `sessionId`，`session/load` 回放并把选中文案预填 prompt；非 external 仍走 Grok peer-agent `/fork` |
+| Pi session clone (`/clone`) | 适配 | External：RPC `clone` 在当前 leaf 复制新 session 文件；同 agent 换绑新 `sessionId`，`session/load` 回放并清空 prompt（对齐 Pi） |
+| Pi 资源重载 (`/reload`) | 适配 | External：`__pi_reload` → `ctx.reload()`；流式 **与** compaction 中禁止（对齐 Pi）；adapter 刷新命令/模型目录；Pager 重扫 Pi theme（`rediscover`）并重应用当前 `pi:*` 主题；loading/成功 toast 文案对齐 Pi；不分支 session 文件 |
 | Pi HTML export / share | 适配 | Grok `/export` 仍为 Markdown transcript；实验性 `/pi-export`（HTML 或 `.jsonl`）与 `/pi-share`（私有 gh gist + pi.dev 预览）经注入 extension 交给 Pi host export-html / share 路径，不另造 TUI |
 
 ## Extension UI
@@ -92,7 +95,7 @@
 
 ### 保留的 Grok 原生命令
 
-`exit`、`help`、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`dashboard`、`copy`、`find`、`transcript`、`export`、`expand`、`queue`、`notify`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`toggle-mouse-reporting`。
+`exit`、`help`、`hotkeys`（别名 `shortcuts`/`keys`）、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`session-info`（别名 `session`）、`dashboard`、`copy`、`find`、`transcript`、`export`、`expand`、`queue`、`notify`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`toggle-mouse-reporting`。
 
 ### 动态 Pi 命令
 
