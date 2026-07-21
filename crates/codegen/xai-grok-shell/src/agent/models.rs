@@ -1388,6 +1388,7 @@ fn build_prefetched_map(
             info,
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
         };
         map.insert(key, entry);
@@ -2015,6 +2016,7 @@ mod tests {
             info: config::ModelInfo::fallback("fp-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         flagged.info.show_model_fingerprint = true;
@@ -2027,6 +2029,7 @@ mod tests {
                 info: config::ModelInfo::fallback("plain-model"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
             },
         );
@@ -2037,6 +2040,7 @@ mod tests {
             info: config::ModelInfo::fallback("enterprise-slug"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         custom.info.show_model_fingerprint = true;
@@ -2207,6 +2211,7 @@ mod tests {
                 info: config::ModelInfo::fallback("test-model"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
             },
         );
@@ -2261,6 +2266,7 @@ mod tests {
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -2283,6 +2289,7 @@ mod tests {
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -2310,6 +2317,7 @@ mod tests {
             info: config::ModelInfo::fallback("grok-4.5"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         no_none.info.supports_reasoning_effort = true;
@@ -2328,6 +2336,7 @@ mod tests {
             info: config::ModelInfo::fallback("legacy-none"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         with_none.info.supports_reasoning_effort = true;
@@ -2434,6 +2443,7 @@ mod tests {
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -2443,6 +2453,7 @@ mod tests {
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -2485,6 +2496,7 @@ mod tests {
             info: config::ModelInfo::fallback(model_id),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         }
     }
@@ -3268,6 +3280,7 @@ mod tests {
                 info: config::ModelInfo::fallback("static-one"),
                 api_key: None,
                 env_key: None,
+                auth_provider: None,
                 api_base_url: None,
             },
         );
@@ -3295,6 +3308,7 @@ mod tests {
             info: config::ModelInfo::fallback("oauth-only"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         oauth_only.info.supported_in_api = false;
@@ -3304,6 +3318,7 @@ mod tests {
             info: config::ModelInfo::fallback("public-model"),
             api_key: None,
             env_key: None,
+            auth_provider: None,
             api_base_url: None,
         };
         catalog.insert("public-model".to_string(), public);

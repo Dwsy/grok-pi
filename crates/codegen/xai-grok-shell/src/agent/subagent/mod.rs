@@ -84,6 +84,7 @@ pub(crate) struct SubagentTracker {
     pub run_in_background: bool,
     /// Mirrors `SubagentRequest::surface_completion`.
     pub surface_completion: bool,
+    pub completion_output_cap: Option<usize>,
     /// Set when a `block=true` waiter consumed this subagent's result.
     pub block_waited: bool,
     /// Set when the model explicitly killed this subagent via the kill tool.
@@ -133,7 +134,6 @@ impl AutoCompactThresholdTiers {
     }
 }
 /// Everything the coordinator needs from MvpAgent to spawn a child session.
-///
 /// Avoids passing `&MvpAgent` (which would require the coordinator to know
 /// about the full agent struct). Built by `MvpAgent::build_subagent_spawn_context()`.
 pub(crate) struct SubagentSpawnContext {
@@ -501,12 +501,33 @@ pub(crate) struct CompletedSubagent {
     pub block_waited: bool,
     /// Set when the model explicitly killed this subagent via the kill tool.
     pub explicitly_killed: bool,
+    pub completion_output_cap: Option<usize>,
     /// Directory whose `output.json` holds the output text; when set, the
     /// stored `result.output` is cleared and `lookup` reads from disk.
     /// `None` (failures, empty outputs, failed writes) serves from memory.
     /// Process-scoped and local-only: resume survives a restart via
     /// `meta.json`, and trace upload carries the text to GCS.
     pub persisted_output_dir: Option<PathBuf>,
+}
+pub(crate) fn cap_completion_output(
+    output: &std::sync::Arc<str>,
+    cap: Option<usize>,
+) -> std::sync::Arc<str> {
+    match cap {
+        Some(cap) if output.len() > cap => {
+            let mut end = cap;
+            while end > 0 && !output.is_char_boundary(end) {
+                end -= 1;
+            }
+            std::sync::Arc::from(format!(
+                "{}\n[output truncated: {} of {} bytes shown]",
+                &output[..end],
+                end,
+                output.len()
+            ))
+        }
+        _ => output.clone(),
+    }
 }
 /// Lightweight entry for subagents that have been requested but are still
 /// initializing (creating worktree, resolving config, spawning session).
@@ -2024,7 +2045,10 @@ fn inject_subagent_completed_prompt(
         duration_ms: result.duration_ms,
         tool_calls: result.tool_calls,
         turns: result.turns,
-        output: result.output.clone(),
+        output: cap_completion_output(
+            &result.output,
+            request.runtime_overrides.completion_output_cap,
+        ),
     };
     let message = xai_grok_tools::reminders::task_completion::format_subagent_completion(
         &summary,
@@ -2079,7 +2103,7 @@ fn inject_subagent_completed_prompt(
 }
 /// Post-`insert_pending`, pre-`SubagentSpawned` failure: just send via oneshot;
 /// `PendingGuard::drop` handles the queue side effects.
-fn send_failure(request: SubagentRequest, error: &str) {
+pub(crate) fn send_failure(request: SubagentRequest, error: &str) {
     let _ = request.result_tx.send(SubagentResult {
         success: false,
         error: Some(error.to_string()),

@@ -114,6 +114,9 @@ pub enum SyntheticReason {
     /// Scheduled task (`/loop`) prompt fired by the scheduler.  Wakes the
     /// agent.
     SchedulerFired,
+    /// Feedback from a `Stop`/`SubagentStop` hook that blocked the agent from
+    /// stopping. Injected in-turn so the model keeps working within the same turn.
+    StopHookFeedback,
     /// Catch-all for unknown/future variants.  Preserves forward compatibility
     /// so older clients can deserialize sessions written by newer versions.
     #[serde(other)]
@@ -148,6 +151,7 @@ impl SyntheticReason {
             | Self::AutoRecovery
             | Self::Interjection
             | Self::GoalSummary
+            | Self::StopHookFeedback
             | Self::Unknown => false,
         }
     }
@@ -1046,6 +1050,18 @@ impl ConversationItem {
                 text: Arc::<str>::from(content.into()),
             }],
             synthetic_reason: Some(SyntheticReason::SchedulerFired),
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
+    }
+
+    /// See [`SyntheticReason::StopHookFeedback`].
+    pub fn stop_hook_feedback(content: impl Into<String>) -> Self {
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::StopHookFeedback),
             prior_turn_interrupt: None,
             prompt_index: None,
         })
@@ -3726,18 +3742,20 @@ mod tests {
         };
         assert_eq!(u.content.len(), 2);
         assert_matches!(
-            &u.content[1],
-            ContentPart::Image { url } if url.as_ref() == "https://example.com/image.png"
-        );
+                    &u.content[1],
+                    ContentPart::Image { url }
+        if url.as_ref() == "https://example.com/image.png"
+                );
 
         // Convert to chat request and verify
         let chat_msg = conversation_item_to_chat_message(user);
         let blocks = chat_msg.content.blocks();
         assert_eq!(blocks.len(), 2);
         assert_matches!(
-            &blocks[1],
-            ChatContentBlock::ImageUrl { image_url } if image_url.url == "https://example.com/image.png"
-        );
+                    &blocks[1],
+                    ChatContentBlock::ImageUrl { image_url }
+        if image_url.url == "https://example.com/image.png"
+                );
     }
 
     #[test]
@@ -4920,7 +4938,8 @@ mod tests {
         let chat_msg = conversation_item_to_chat_message(user);
         let blocks = chat_msg.content.blocks();
         assert_eq!(blocks.len(), 4);
-        assert_matches!(&blocks[0], ChatContentBlock::Text { text } if text == "Compare these images:");
+        assert_matches!(&blocks[0], ChatContentBlock::Text { text }
+if text == "Compare these images:");
         assert_matches!(&blocks[1], ChatContentBlock::ImageUrl { .. });
         assert_matches!(&blocks[2], ChatContentBlock::ImageUrl { .. });
         assert_matches!(&blocks[3], ChatContentBlock::ImageUrl { .. });
@@ -7631,11 +7650,11 @@ mod tests {
             );
         };
         assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], ChatContentBlock::Text { text }
+if text == "Read image file: photo.png"));
         assert!(
-            matches!(&blocks[0], ChatContentBlock::Text { text } if text == "Read image file: photo.png")
-        );
-        assert!(
-            matches!(&blocks[1], ChatContentBlock::ImageUrl { image_url } if image_url.url == "data:image/png;base64,iVBOR")
+            matches!(&blocks[1], ChatContentBlock::ImageUrl { image_url }
+if image_url.url == "data:image/png;base64,iVBOR")
         );
     }
 
@@ -7701,10 +7720,12 @@ mod tests {
         };
         assert_eq!(inner.len(), 2);
         assert!(
-            matches!(&inner[0], crate::messages::ContentBlock::Text { text, .. } if text == "Read image file: photo.png")
+            matches!(&inner[0], crate::messages::ContentBlock::Text { text, .. }
+if text == "Read image file: photo.png")
         );
         assert!(
-            matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data } } if media_type == "image/png" && data == "iVBOR")
+            matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data } }
+if media_type == "image/png" && data == "iVBOR")
         );
     }
 
@@ -7754,7 +7775,8 @@ mod tests {
 
         if let ConversationItem::ToolResult(t) = &back {
             assert_eq!(t.images.len(), 1);
-            assert!(matches!(&t.images[0], ContentPart::Image { url } if url.contains("iVBOR")));
+            assert!(matches!(&t.images[0], ContentPart::Image { url }
+if url.contains("iVBOR")));
         } else {
             panic!("Expected ToolResult");
         }

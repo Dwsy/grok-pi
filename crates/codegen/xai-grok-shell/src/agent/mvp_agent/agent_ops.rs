@@ -58,10 +58,12 @@ impl MvpAgent {
             client_version,
         ) {
             Some(mut cfg) => {
-                cfg.client_identifier = primary.client_identifier.clone();
-                cfg.attribution_callback = primary.attribution_callback.clone();
-                cfg.bearer_resolver = primary.bearer_resolver.clone();
-                cfg.max_retries = primary.max_retries;
+                crate::agent::config::stamp_session_local_sampler_fields(
+                    &mut cfg,
+                    primary,
+                    primary.client_identifier.clone(),
+                    primary.max_retries,
+                );
                 cfg
             }
             None => {
@@ -2165,8 +2167,7 @@ impl MvpAgent {
         )
     }
     /// Like `trace_upload_config`, but also returns the reason why uploads
-    /// are enabled/disabled. Used by `get_trace_context` to record
-    /// `upload_reason` on the `agent.prompt` span.
+    /// are enabled or disabled for structured session events.
     async fn trace_upload_config_with_reason(
         &self,
     ) -> (
@@ -2597,7 +2598,6 @@ impl MvpAgent {
         let (upload_method, upload_reason) = self
             .trace_upload_config_with_reason()
             .await;
-        tracing::Span::current().record("upload_reason", upload_reason.as_str());
         {
             let mut decision = self.cfg.borrow().trace_upload_decision_debug();
             if let Some(obj) = decision.as_object_mut() {
@@ -2622,12 +2622,8 @@ impl MvpAgent {
             );
         }
         let upload_method = match upload_method {
-            Some(method) => {
-                tracing::Span::current().record("uploads_enabled", true);
-                method
-            }
+            Some(method) => method,
             None => {
-                tracing::Span::current().record("uploads_enabled", false);
                 xai_grok_telemetry::session_ctx::log_session_event(crate::agent::session_metrics::TraceUploadSkipped {
                     session_id: session_info.id.0.to_string(),
                     turn_number,
@@ -2643,7 +2639,6 @@ impl MvpAgent {
                     match cfg.endpoints.resolve_trace_bucket_url() {
                         Some(resolved) => Some(resolved.value),
                         None => {
-                            tracing::Span::current().record("uploads_enabled", false);
                             xai_grok_telemetry::session_ctx::log_session_event(crate::agent::session_metrics::TraceUploadSkipped {
                                 session_id: session_info.id.0.to_string(),
                                 turn_number,
@@ -2671,12 +2666,6 @@ impl MvpAgent {
         let session_handle = match self.sessions.borrow().get(&session_info.id) {
             Some(h) => h.clone(),
             None => {
-                tracing::Span::current().record("uploads_enabled", false);
-                tracing::Span::current()
-                    .record(
-                        "upload_reason",
-                        crate::upload::turn::TraceUploadReason::SessionNotFound.as_str(),
-                    );
                 return None;
             }
         };

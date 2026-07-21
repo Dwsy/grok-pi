@@ -68,13 +68,17 @@ fn contextual_hints_group_sub_sheet_flow() {
     let group_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "contextual_hints"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "contextual_hints")
+        })
         .expect("group row present");
     assert!(
         !s.rows.iter().any(|r| matches!(
-            r,
-            RowEntry::Setting { key, .. } if key.starts_with("contextual_hints.")
-        )),
+                    r,
+                    RowEntry::Setting { key, .. }
+        if key.starts_with("contextual_hints.")
+                )),
         "child rows must be hidden from the top-level list",
     );
 
@@ -4214,7 +4218,10 @@ fn advance_next_recovers_when_selection_is_hidden() {
     let compact_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "compact_mode"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "compact_mode")
+        })
         .unwrap();
     s.selected = compact_idx;
     // Advance: lands on the first visible setting (show_timestamps).
@@ -4223,7 +4230,10 @@ fn advance_next_recovers_when_selection_is_hidden() {
     let show_ts_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "show_timestamps"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "show_timestamps")
+        })
         .unwrap();
     assert_eq!(s.selected, show_ts_idx);
 }
@@ -4246,7 +4256,10 @@ fn advance_prev_recovers_when_selection_is_hidden() {
     let compact_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "compact_mode"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "compact_mode")
+        })
         .unwrap();
     s.selected = compact_idx;
     let moved = s.advance_prev();
@@ -4254,7 +4267,10 @@ fn advance_prev_recovers_when_selection_is_hidden() {
     let simple_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "simple_mode"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "simple_mode")
+        })
         .unwrap();
     assert_eq!(s.selected, simple_idx);
 }
@@ -4354,10 +4370,10 @@ fn section_headers_have_blank_line_above_except_first() {
     for cat in SettingCategory::ALL {
         // Skip categories the default registry doesn't populate
         // (e.g. Session — no settings registered).
-        let has_setting = s
-            .rows
-            .iter()
-            .any(|r| matches!(r, RowEntry::Header { category } if category == cat));
+        let has_setting = s.rows.iter().any(|r| {
+            matches!(r, RowEntry::Header { category }
+if category == cat)
+        });
         if !has_setting {
             continue;
         }
@@ -4705,7 +4721,10 @@ fn two_line_row_hit_rect_spans_both_lines() {
     let row_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "coding_data_sharing"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "coding_data_sharing")
+        })
         .expect("coding_data_sharing must be registered");
     // Render at a narrow width so coding_data_sharing forces a
     // two-line layout.
@@ -4770,7 +4789,10 @@ fn two_line_row_with_expansion_renders_three_segments() {
     let row_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "coding_data_sharing"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "coding_data_sharing")
+        })
         .expect("coding_data_sharing must be registered");
     s.selected = row_idx;
     s.expanded_keys.insert("coding_data_sharing");
@@ -4828,7 +4850,10 @@ fn group_row_renders_expanded_description() {
     let row_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key, .. } if *key == "contextual_hints"))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key, .. }
+if *key == "contextual_hints")
+        })
         .expect("contextual_hints group must be registered");
     s.selected = row_idx;
     s.expanded_keys.insert("contextual_hints");
@@ -5869,7 +5894,10 @@ fn enter_picker_for(key: &'static str) -> SettingsModalState {
     let row_idx = s
         .rows
         .iter()
-        .position(|r| matches!(r, RowEntry::Setting { key: k, .. } if *k == key))
+        .position(|r| {
+            matches!(r, RowEntry::Setting { key: k, .. }
+if *k == key)
+        })
         .unwrap_or_else(|| panic!("no row for key `{key}` in default registry"));
     assert!(s.select_at(row_idx), "select_at({row_idx})");
     assert!(

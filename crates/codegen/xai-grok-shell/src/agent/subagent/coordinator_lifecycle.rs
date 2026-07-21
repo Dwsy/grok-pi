@@ -323,6 +323,7 @@ impl SubagentCoordinator {
                     effective_model_id: String::new(),
                     block_waited: false,
                     explicitly_killed: false,
+                    completion_output_cap: None,
                     persisted_output_dir: None,
                 },
             );
@@ -386,6 +387,9 @@ impl SubagentCoordinator {
         let block_waited = tracker.as_ref().is_some_and(|t| t.block_waited);
         let explicitly_killed = tracker.as_ref().is_some_and(|t| t.explicitly_killed);
         let surface_completion = tracker.as_ref().is_none_or(|t| t.surface_completion);
+        let completion_output_cap = tracker
+            .as_ref()
+            .and_then(|t| t.completion_output_cap);
         let mut completed = CompletedSubagent {
             subagent_id: id.to_string(),
             parent_session_id,
@@ -404,6 +408,7 @@ impl SubagentCoordinator {
             effective_model_id,
             block_waited,
             explicitly_killed,
+            completion_output_cap,
             persisted_output_dir,
         };
         let success = completed.result.success && !completed.result.cancelled;
@@ -440,7 +445,10 @@ impl SubagentCoordinator {
                     duration_ms: completed.result.duration_ms,
                     tool_calls: completed.result.tool_calls,
                     turns: completed.result.turns,
-                    output: completed.result.output.clone(),
+                    output: super::cap_completion_output(
+                        &completed.result.output,
+                        completed.completion_output_cap,
+                    ),
                 });
         }
         if completed.persisted_output_dir.is_some() {
