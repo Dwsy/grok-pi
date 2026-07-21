@@ -1369,6 +1369,26 @@ impl BlockContent for EditToolCallBlock {
         }
     }
 
+    fn estimate_reserved_cols(&self) -> u16 {
+        // Mirror `gutter_layout` under the default render config (single
+        // line-number column): indent + max line-number digits + content gap.
+        // The source-text estimate wraps diff text at the full content width,
+        // but the renderer wraps at `width - gutter`; without this reserve an
+        // expanded Edit's estimate systematically under-counts wrapped lines,
+        // feeding the estimate→exact re-measurement cascade.
+        if self.hunks.is_empty() {
+            return 0;
+        }
+        let mut max_num = 1usize;
+        for hunk in &self.hunks {
+            for line in hunk {
+                max_num = max_num.max(line.lo.max(1)).max(line.ln.max(1));
+            }
+        }
+        let digits = max_num.ilog10() as usize + 1;
+        (INDENT.len() + digits + CONTENT_GAP.len()) as u16
+    }
+
     fn preamble(&self, ctx: &BlockContext) -> Option<Text<'static>> {
         let theme = Theme::current();
         let dim_details = ctx.appearance.scrollback.blocks.tool.dim_details;

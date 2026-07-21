@@ -290,6 +290,10 @@ impl BlockContent for ToolCallBlock {
         delegate_tool!(self, inline_open_button())
     }
 
+    fn estimate_reserved_cols(&self) -> u16 {
+        delegate_tool!(self, estimate_reserved_cols())
+    }
+
     fn preamble(&self, ctx: &BlockContext) -> Option<ratatui::text::Text<'static>> {
         delegate_tool!(self, preamble(ctx))
     }

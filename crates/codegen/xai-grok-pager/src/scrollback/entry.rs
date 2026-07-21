@@ -20,6 +20,27 @@ struct CachedOutput {
     rendered: RenderedBlockOutput,
 }
 
+/// Cached sticky-header render output.
+///
+/// Sticky headers render through `context_with_mode_and_budget` — a display
+/// mode override plus a `max_lines` budget — so they can't reuse
+/// `cached_output` (keyed on the entry's own display mode, no budget).
+/// Without this cache the pinned/pushed header re-runs `block.output()`
+/// (markdown parse + word-wrap) on EVERY frame, which is the non-compact
+/// per-frame lag path. Keyed on everything the header ctx varies by;
+/// running entries bypass the hit so spinner animation still ticks.
+#[derive(Debug, Clone)]
+struct CachedHeaderOutput {
+    width: u16,
+    mode: DisplayMode,
+    max_lines: Option<u16>,
+    raw: bool,
+    theme: ThemeKind,
+    is_selected: bool,
+    cwd: Option<PathBuf>,
+    output: BlockOutput,
+}
+
 /// Cached truncated-mode height: `(width, raw, theme, cwd, height)`.
 ///
 /// Computing the truncated-mode height requires calling `block.output()` with
@@ -112,6 +133,11 @@ pub struct ScrollbackEntry {
     /// `invalidate_cache` together with `cached_output`.
     cached_truncated_height: RefCell<Option<CachedTruncatedHeight>>,
 
+    /// Cached sticky-header output. See [`CachedHeaderOutput`] for why this
+    /// needs its own cache separate from `cached_output`. Cleared by
+    /// `invalidate_cache` and `evict_render_cache`.
+    cached_header_output: RefCell<Option<CachedHeaderOutput>>,
+
     /// Cached cheap height-estimate line count: `(content_width, lines)`. Lets a
     /// same-width rebuild reuse the estimate instead of re-cloning the block's
     /// source text. Cleared by `invalidate_cache`.
@@ -180,6 +206,7 @@ impl ScrollbackEntry {
             finished_at: None,
             cached_output: RefCell::new(None),
             cached_truncated_height: RefCell::new(None),
+            cached_header_output: RefCell::new(None),
             cached_estimate_lines: RefCell::new(None),
         }
     }
@@ -211,6 +238,7 @@ impl ScrollbackEntry {
             finished_at: None,
             cached_output: RefCell::new(None),
             cached_truncated_height: RefCell::new(None),
+            cached_header_output: RefCell::new(None),
             cached_estimate_lines: RefCell::new(None),
         }
     }
@@ -279,6 +307,7 @@ impl ScrollbackEntry {
     pub fn invalidate_cache(&mut self) {
         *self.cached_output.borrow_mut() = None;
         *self.cached_truncated_height.borrow_mut() = None;
+        *self.cached_header_output.borrow_mut() = None;
         *self.cached_estimate_lines.borrow_mut() = None;
     }
 
@@ -293,6 +322,7 @@ impl ScrollbackEntry {
         if had_output {
             *self.cached_output.borrow_mut() = None;
         }
+        *self.cached_header_output.borrow_mut() = None;
         self.block.evict_render_caches();
         had_output
     }
@@ -395,6 +425,53 @@ impl ScrollbackEntry {
             &opt.as_ref()
                 .expect("ensure_cached must be called first")
                 .rendered
+        })
+    }
+
+    /// Ensure the sticky-header output cache is populated for `ctx`.
+    ///
+    /// `ctx` is the header context built by `context_with_mode_and_budget`
+    /// (mode override + `max_lines` budget), which is why this cache is
+    /// separate from `cached_output`. Running entries always regenerate so
+    /// spinner/elapsed animation isn't frozen by the cache.
+    pub(crate) fn ensure_header_cached(&self, ctx: &BlockContext) {
+        let current_theme = theme_cache::current_kind();
+        if !self.is_running {
+            let cache = self.cached_header_output.borrow();
+            if let Some(cached) = cache.as_ref()
+                && cached.width == ctx.width
+                && cached.mode == ctx.mode
+                && cached.max_lines == ctx.max_lines
+                && cached.raw == ctx.raw
+                && cached.theme == current_theme
+                && cached.is_selected == ctx.is_selected
+                && cached.cwd == ctx.cwd
+            {
+                return; // cache hit
+            }
+        }
+
+        let output = self.block.output(ctx);
+        *self.cached_header_output.borrow_mut() = Some(CachedHeaderOutput {
+            width: ctx.width,
+            mode: ctx.mode,
+            max_lines: ctx.max_lines,
+            raw: ctx.raw,
+            theme: current_theme,
+            is_selected: ctx.is_selected,
+            cwd: ctx.cwd.clone(),
+            output,
+        });
+    }
+
+    /// Borrow the cached sticky-header output.
+    ///
+    /// Panics if `ensure_header_cached` was not called first.
+    pub(crate) fn cached_header_output_ref(&self) -> Ref<'_, BlockOutput> {
+        Ref::map(self.cached_header_output.borrow(), |opt| {
+            &opt.as_ref()
+                .expect("ensure_header_cached must be called first")
+                .output
         })
     }
 

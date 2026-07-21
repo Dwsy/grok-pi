@@ -444,7 +444,15 @@ impl<'a> EntryRenderer<'a> {
             1
         } else {
             match self.entry.block.searchable_text() {
-                Some(text) => estimate_wrapped_line_count(&text, content_width),
+                Some(text) => {
+                    // Gutter-bearing blocks (Edit diffs) wrap their source at
+                    // `content_width - gutter`, not the full content width —
+                    // reserve those columns so the estimate doesn't
+                    // systematically under-count wrapped lines (H3: the
+                    // estimate→exact measurement cascade).
+                    let reserved = self.entry.block.estimate_reserved_cols();
+                    estimate_wrapped_line_count(&text, content_width.saturating_sub(reserved))
+                }
                 None => 1,
             }
         };

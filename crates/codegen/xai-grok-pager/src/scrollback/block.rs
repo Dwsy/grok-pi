@@ -242,6 +242,17 @@ pub trait BlockContent {
         0
     }
 
+    /// Columns the block's renderer reserves to the LEFT of wrapped source
+    /// text — the diff gutter (indent + line numbers + content gap) — that the
+    /// source-text height *estimate* cannot see. The estimate wraps at
+    /// `content_width - estimate_reserved_cols()` so gutter-bearing blocks
+    /// (expanded Edit diffs) don't systematically under-estimate their wrapped
+    /// height, which triggers repeated estimate→exact re-measurement cascades
+    /// in `settle_visible_measurements`. Default: `0`.
+    fn estimate_reserved_cols(&self) -> u16 {
+        0
+    }
+
     /// For media blocks on terminals without inline-graphics support, returns
     /// `(path, is_video)` so the block can render a clickable text `[Open]`
     /// line. `None` on graphics terminals (the overlay hosts its own buttons).
@@ -554,6 +565,10 @@ impl BlockContent for RenderBlock {
 
     fn estimate_extra_rows(&self) -> u16 {
         delegate_block!(self, estimate_extra_rows())
+    }
+
+    fn estimate_reserved_cols(&self) -> u16 {
+        delegate_block!(self, estimate_reserved_cols())
     }
 
     fn inline_open_button(&self) -> Option<(std::path::PathBuf, bool)> {

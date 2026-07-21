@@ -101,6 +101,14 @@ pub(super) const EVICT_KEEP_MARGIN_ENTRIES: usize = 128;
 /// is accurate right away. Bounded — keeps resume at O(viewport), not O(history).
 pub(super) const RESUME_WARM_PAGES: u16 = 3;
 
+/// Per-frame cap on `settle_visible_measurements` iterations. Each iteration
+/// exact-measures the entries an earlier estimate→exact shift revealed at the
+/// viewport edge (markdown wrap / syntect highlight — expensive). Large
+/// estimate errors (e.g. a huge expanded Edit diff) can cascade for many
+/// iterations; capping bounds a single frame's cost. `measured` persists, so
+/// an unconverged layout simply finishes settling over the next frame(s).
+pub(super) const MAX_SETTLE_ITERS_PER_FRAME: usize = 4;
+
 /// Per-entry layout info, cached for rendering and navigation.
 ///
 /// Combines height and gap data in a single struct for cache-friendliness

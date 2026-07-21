@@ -8,6 +8,8 @@ const PREVIEW_MAX_CHARS: usize = 120;
 pub struct TimelineEntry {
     pub turn_idx: usize,
     pub prompt_entry_id: EntryId,
+    /// Prompt creation time for Jump/timeline pickers.
+    pub created_at: Option<chrono::DateTime<chrono::Local>>,
     pub preview: String,
 }
 
@@ -39,6 +41,7 @@ impl ScrollbackState {
                 Some(TimelineEntry {
                     turn_idx,
                     prompt_entry_id: *prompt_entry_id,
+                    created_at: entry.created_at,
                     preview: prompt_preview(&prompt.text),
                 })
             })

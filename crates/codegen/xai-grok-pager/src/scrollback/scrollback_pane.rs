@@ -744,8 +744,13 @@ impl ScrollbackPane {
         let left_pad = layout.left_padding;
         let right_pad = layout.right_padding;
 
-        // Get block output with max_lines budget
-        let output = entry.block.output(ctx);
+        // Get block output with max_lines budget via the entry's header cache.
+        // A raw `entry.block.output(ctx)` here re-ran markdown parse + wrap on
+        // EVERY frame for the pinned/pushed header — the non-compact steady-
+        // state lag path. The cache is keyed on the header ctx (mode +
+        // max_lines + width + …); running entries still regenerate per frame.
+        entry.ensure_header_cached(ctx);
+        let output = entry.cached_header_output_ref();
         let block_has_vpad = entry.block.has_vpad(ctx);
 
         // Get accent background preference and block background

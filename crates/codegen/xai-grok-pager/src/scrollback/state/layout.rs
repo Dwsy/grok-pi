@@ -695,12 +695,19 @@ impl ScrollbackState {
     ///
     /// Iterates because an exact height shifts later entries, which can reveal a
     /// new entry at the bottom edge. `measured` grows monotonically so it
-    /// terminates; the loop bound is a defensive cap.
+    /// terminates; iterations are capped per frame
+    /// ([`MAX_SETTLE_ITERS_PER_FRAME`]) so a pathological estimate→exact cascade
+    /// (e.g. a huge expanded Edit diff) can't stall a single frame — the
+    /// remaining entries settle on the following frame(s).
     pub(super) fn settle_visible_measurements(&mut self, width: u16) {
         if self.viewport_height == 0 || self.last_width == 0 {
             return;
         }
-        let max_iters = self.entries.len().saturating_add(2);
+        let max_iters = self
+            .entries
+            .len()
+            .saturating_add(2)
+            .min(MAX_SETTLE_ITERS_PER_FRAME);
         for _ in 0..max_iters {
             let Some((start, end)) = self.measurement_window() else {
                 return;
