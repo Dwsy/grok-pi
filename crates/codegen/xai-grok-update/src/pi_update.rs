@@ -1,13 +1,15 @@
 //! `grok-pi` update discovery and install.
 //!
-//! **GitHub only** for now: read `Dwsy/grok-pi` Releases JSON and install via
-//! the published `install.sh` / `install.ps1`. npm is intentionally not used
-//! (unscoped `grok-pi` is a foreign package; scoped `@dwsy/grok-pi` is not
-//! published yet).
+//! Read `Dwsy/grok-pi` Releases JSON and install via the published
+//! `install.sh` / `install.ps1`. Release discovery prefers the configured JSP
+//! proxy to avoid unauthenticated GitHub API rate limits, then falls back to
+//! GitHub directly. npm is intentionally not used (unscoped `grok-pi` is a
+//! foreign package; scoped `@dwsy/grok-pi` is not published yet).
 
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::Value;
 
 use crate::auto_update::UpdateAvailable;
@@ -15,6 +17,12 @@ use crate::auto_update::UpdateAvailable;
 /// GitHub Releases "latest" API for this project's published binaries.
 pub const PI_GH_RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/Dwsy/grok-pi/releases/latest";
+/// JSP proxy route for the GitHub API. Only the proxy prefix is encoded so
+/// the upstream host and repository remain visible in the source.
+const JSP_PROXY_PREFIX_B64: &str =
+    "aHR0cHM6Ly9qc3AuZHdzeS5saW5rL2h0dHAvaHR0cHM6Ly9hcGkuZ2l0aHViLmNvbS9yZXBvcy8=";
+const JSP_PROXY_REFERER_PREFIX_B64: &str = "aHR0cHM6Ly9qc3AuZHdzeS5saW5rLz8=";
+const JSP_PROXY_REFERER_SUFFIX: &str = "--ver=110&--mode=cors&--type=&--aceh=1&--level=1";
 
 /// Fetch the latest `grok-pi` version string (no leading `v`) from GitHub.
 pub async fn fetch_pi_latest_version() -> Result<String> {
@@ -25,27 +33,77 @@ pub async fn fetch_pi_latest_version() -> Result<String> {
 
 async fn fetch_github_release_latest() -> Result<String> {
     let client = http_client()?;
-    let resp = client
-        .get(PI_GH_RELEASES_LATEST_URL)
+    let mut errors = Vec::new();
+    let proxy_url = format!(
+        "{}Dwsy/grok-pi/releases/latest",
+        decode_proxy_part(JSP_PROXY_PREFIX_B64)
+    );
+
+    for (url, source) in [
+        (proxy_url.as_str(), "jsp-proxy"),
+        (PI_GH_RELEASES_LATEST_URL, "github-api"),
+    ] {
+        match fetch_release_from_url(&client, url, source).await {
+            Ok(version) => return Ok(version),
+            Err(error) => errors.push(format!("{source}: {error}")),
+        }
+    }
+
+    anyhow::bail!(
+        "failed to fetch latest grok-pi release ({})",
+        errors.join("; ")
+    )
+}
+
+async fn fetch_release_from_url(
+    client: &reqwest::Client,
+    url: &str,
+    source: &str,
+) -> Result<String> {
+    let mut request = client
+        .get(url)
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "grok-pi-update-check")
+        .header("User-Agent", "grok-pi-update-check");
+    if source == "jsp-proxy" {
+        request = request.header(
+            reqwest::header::REFERER,
+            format!(
+                "{}{}",
+                decode_proxy_part(JSP_PROXY_REFERER_PREFIX_B64),
+                JSP_PROXY_REFERER_SUFFIX
+            ),
+        );
+    }
+    let resp = request
         .send()
         .await
-        .context("GET GitHub releases/latest")?;
+        .with_context(|| format!("GET {source} releases/latest"))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!(
-            "GitHub releases/latest HTTP {status}: {}",
+            "{source} releases/latest HTTP {status}: {}",
             body.chars().take(200).collect::<String>().trim()
         );
     }
-    let value: Value = resp.json().await.context("decode GitHub release JSON")?;
+    let value: Value = resp
+        .json()
+        .await
+        .with_context(|| format!("decode {source} release JSON"))?;
     let tag = value
         .get("tag_name")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("GitHub release JSON missing tag_name"))?;
+        .ok_or_else(|| anyhow!("{source} release JSON missing tag_name"))?;
     normalize_version(tag)
+}
+
+fn decode_proxy_part(encoded: &str) -> String {
+    String::from_utf8(
+        BASE64
+            .decode(encoded)
+            .expect("static proxy URL fragment must decode"),
+    )
+    .expect("static proxy URL fragment must be UTF-8")
 }
 
 fn normalize_version(raw: &str) -> Result<String> {
