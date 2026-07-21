@@ -55,6 +55,7 @@ Pi 内置 Bash 没有 Grok `run_terminal_command` 的后台任务协议。Pager 
 ## Notes
 
 - 2026-07-20：后台任务完成消息此前固定 `triggerTurn:false` 且正文为空。Pager 可收到 task completion，但 Pi agent 不会被唤起或获得失败上下文。失败（非显式 kill）现在会把命令、输出、exit code/signal 作为 custom message 注入 Pi；idle 时立即触发下一轮，streaming 时按 follow-up 队列投递。成功仍静默，只投影 Pager。
+- 2026-07-21：Pager 任务卡 kill 点击此前无效。根因是 adapter `ext_method` 对 `x.ai/task/kill` 走默认空成功分支，未触达 Pi Bash 子进程。现经同一 control 通道追加 `op:"kill"` + `taskId`，extension 发布 `runningTaskIds` 供校验，并返回 `ExtMethodResult<KillTaskResponse>`（`killed` / `not_found`）；进程结束后仍投影 `x.ai/task_completed`。
 - `pi-grok-cli` 的 `Shell` shim 仅展示 `createBashToolDefinition` 委托方式，不含后台任务实现，且不会被复制。
 - `pi-interactive-shell` 依赖 PTY 与 `ctx.ui.custom()`，不适用于 Pi RPC，明确排除。
 - 后台启动生命周期从同步 tool result details 投影，以避免在 Pi streaming 时 custom message 排队导致任务卡延迟；完成 custom message 会先补入累计 stdout，再发送完成通知。

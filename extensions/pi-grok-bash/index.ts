@@ -309,10 +309,17 @@ function createBashControl(tasks: Map<string, BackgroundTask>): BashControl {
 		const activeToolCallIds = [...tasks.values()]
 			.filter((task) => !task.completed && !task.backgrounded && task.promote)
 			.map((task) => task.toolCallId);
+		const runningTaskIds = [...tasks.values()]
+			.filter((task) => !task.completed)
+			.map((task) => task.taskId);
 		try {
-			writeFileSync(metaPath, JSON.stringify({ controlPath, activeToolCallIds }), "utf8");
+			writeFileSync(
+				metaPath,
+				JSON.stringify({ controlPath, activeToolCallIds, runningTaskIds }),
+				"utf8",
+			);
 		} catch {
-			// A failed control publication only disables Pager promotion; Bash itself remains valid.
+			// A failed control publication only disables Pager promotion/kill; Bash itself remains valid.
 		}
 	};
 	const drain = () => {
@@ -325,9 +332,22 @@ function createBashControl(tasks: Map<string, BackgroundTask>): BashControl {
 			for (const line of chunk.split("\n")) {
 				if (!line.trim()) continue;
 				try {
-					const event = JSON.parse(line) as { op?: string; toolCallId?: string };
-					if (event.op !== "background" || typeof event.toolCallId !== "string") continue;
-					tasks.get(event.toolCallId)?.promote?.();
+					const event = JSON.parse(line) as {
+						op?: string;
+						toolCallId?: string;
+						taskId?: string;
+					};
+					if (event.op === "background" && typeof event.toolCallId === "string") {
+						tasks.get(event.toolCallId)?.promote?.();
+						continue;
+					}
+					if (event.op === "kill" && typeof event.taskId === "string") {
+						const task = [...tasks.values()].find((candidate) => candidate.taskId === event.taskId);
+						if (!task || task.completed) continue;
+						task.explicitlyKilled = true;
+						task.signal = "killed";
+						killProcessTree(task);
+					}
 				} catch {
 					// Ignore malformed events rather than affecting an active Bash process.
 				}

@@ -2352,6 +2352,7 @@ impl acp::Agent for PiAgent {
                 self.handle_bash_background_request(arguments.params.get())
                     .await
             }
+            "x.ai/task/kill" => self.handle_bash_kill_request(arguments.params.get()).await,
             "x.ai/recap" => self.handle_recap_request(arguments.params.get()).await,
             "x.ai/compact_conversation" => {
                 let params: Value =
@@ -2618,6 +2619,34 @@ impl PiAgent {
         })?;
         append_bash_background_control(control_meta, tool_call_id).map_err(acp_internal)?;
         ext_response(json!({ "accepted": true, "terminalId": tool_call_id })).map_err(acp_internal)
+    }
+
+    /// Kill a Pi-owned background Bash task via the private control channel.
+    ///
+    /// Pager clicks the native task-card kill control and sends `x.ai/task/kill`.
+    /// The adapter only validates the task id against the extension-published
+    /// `runningTaskIds` set and appends a control event; the extension owns the
+    /// child process and emits `task_completed` after the kill settles.
+    async fn handle_bash_kill_request(
+        &self,
+        params_raw: &str,
+    ) -> Result<acp::ExtResponse, acp::Error> {
+        let params: Value = serde_json::from_str(params_raw).map_err(acp_internal)?;
+        let task_id = string(&params, &["taskId", "task_id"])
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| acp::Error::invalid_params().data("taskId is required"))?;
+        let control_meta = self.bash_control_meta.as_deref().ok_or_else(|| {
+            acp::Error::invalid_params().data("Pi Bash background control is disabled")
+        })?;
+        let outcome = append_bash_kill_control(control_meta, task_id).map_err(acp_internal)?;
+        // `ext_response` wraps the payload under `result`, matching
+        // `ExtMethodResult<KillTaskResponse>` expected by Pager.
+        ext_response(json!({
+            "taskId": task_id,
+            "outcome": outcome,
+        }))
+        .map_err(acp_internal)
     }
 
     /// Fire-and-forget session recap via injected `__pi_grok_recap` extension.
@@ -3237,6 +3266,37 @@ fn append_bash_background_control(meta_path: &Path, tool_call_id: &str) -> Resul
     Ok(())
 }
 
+/// Ask the injected Bash extension to kill a running background task.
+///
+/// Returns the wire outcome string consumed by Pager (`killed` / `not_found`).
+/// The extension is the process owner; this only validates against the published
+/// `runningTaskIds` set and appends a one-way control event.
+fn append_bash_kill_control(meta_path: &Path, task_id: &str) -> Result<&'static str> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let meta: Value = serde_json::from_str(&std::fs::read_to_string(meta_path)?)?;
+    let running = meta
+        .get("runningTaskIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(task_id)));
+    if !running {
+        return Ok("not_found");
+    }
+    let control_path = meta
+        .get("controlPath")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| anyhow!("Pi Bash control metadata missing controlPath"))?;
+    let mut file = OpenOptions::new().append(true).open(control_path)?;
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&json!({ "op": "kill", "taskId": task_id }))?
+    )?;
+    Ok("killed")
+}
+
 /// Experimental Remote TUI: extension host watches a keyfile under tmp.
 /// Meta written by the injected extension: `{id, keysPath}`.
 fn append_remote_tui_key_event(event: Value) -> Result<()> {
@@ -3425,6 +3485,41 @@ mod tests {
             "{\"op\":\"background\",\"toolCallId\":\"tool-1\"}\n"
         );
         assert!(append_bash_background_control(&meta_path, "tool-2").is_err());
+    }
+
+    #[test]
+    fn appends_kill_control_only_for_a_running_task() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let control_path = directory.path().join("control.jsonl");
+        let meta_path = directory.path().join("control.json");
+        std::fs::write(&control_path, "").expect("control file");
+        std::fs::write(
+            &meta_path,
+            json!({
+                "controlPath": control_path,
+                "activeToolCallIds": [],
+                "runningTaskIds": ["bash-1"],
+            })
+            .to_string(),
+        )
+        .expect("metadata file");
+
+        assert_eq!(
+            append_bash_kill_control(&meta_path, "bash-1").expect("kill running task"),
+            "killed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&control_path).expect("read control file"),
+            "{\"op\":\"kill\",\"taskId\":\"bash-1\"}\n"
+        );
+        assert_eq!(
+            append_bash_kill_control(&meta_path, "bash-missing").expect("unknown task"),
+            "not_found"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&control_path).expect("read control file after not_found"),
+            "{\"op\":\"kill\",\"taskId\":\"bash-1\"}\n"
+        );
     }
 
     #[test]

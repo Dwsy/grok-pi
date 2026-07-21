@@ -62,6 +62,8 @@ mod tests {
         assert!(source.contains("name: \"get_task_output\""));
         assert!(source.contains("name: \"wait_tasks\""));
         assert!(source.contains("name: \"kill_task\""));
+        assert!(source.contains("runningTaskIds"));
+        assert!(source.contains("op === \"kill\""));
         assert!(source.contains("PI_GROK_BASH_CONTROL_META"));
         assert!(source.contains("pi-grok-background-bash/v1"));
         assert!(source.contains("Background Bash task failed:"));
