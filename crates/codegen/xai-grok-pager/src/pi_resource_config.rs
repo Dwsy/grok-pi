@@ -576,7 +576,9 @@ fn package_resource_paths(
             .iter()
             .filter_map(Value::as_str)
             .filter(|entry| !starts_with_any(entry, &['!', '+', '-']))
-            .flat_map(|entry| discover_resource_path(&resolve_path(package_dir, entry), kind))
+            .flat_map(|entry| {
+                manifest_entry_resource_paths(&resolve_path(package_dir, entry), kind)
+            })
             .collect::<Vec<_>>();
         let manifest_overrides = entries
             .iter()
@@ -591,6 +593,16 @@ fn package_resource_paths(
     }
 
     package_convention_resource_paths(package_dir, kind)
+}
+
+fn manifest_entry_resource_paths(path: &Path, kind: PiResourceType) -> Vec<PathBuf> {
+    match kind {
+        // Pi's collectFilesFromPaths() treats an extension directory as an
+        // extension package: it contributes package.json pi.entries or its
+        // index.ts/index.js, never every implementation file below it.
+        PiResourceType::Extensions if path.is_dir() => auto_extension_paths(path),
+        _ => discover_resource_path(path, kind),
+    }
 }
 
 fn package_convention_resource_paths(package_dir: &Path, kind: PiResourceType) -> Vec<PathBuf> {
@@ -1294,6 +1306,52 @@ mod tests {
             .find(|resource| resource.path == canonical_or_clean(&extensions.join("auto.ts")))
             .expect("auto-discovered extension");
         assert!(auto.enabled);
+    }
+
+    #[test]
+    fn package_extension_directory_manifest_uses_only_declared_entry() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let package = temp.path().join("package");
+        let extension = package.join("extensions/example");
+        fs::create_dir_all(&extension).expect("extension directory");
+        fs::write(
+            package.join("package.json"),
+            r#"{"pi":{"extensions":["extensions"]}}"#,
+        )
+        .expect("manifest");
+        fs::write(extension.join("index.ts"), "export default () => {}; ")
+            .expect("extension entry");
+        fs::write(extension.join("internal.ts"), "export const helper = true; ")
+            .expect("internal module");
+
+        assert_eq!(
+            package_resource_paths(&package, PiResourceType::Extensions, false),
+            vec![canonical_or_clean(&extension.join("index.ts"))]
+        );
+    }
+
+    #[test]
+    fn package_extension_directory_prefers_root_index_over_test_files() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let package = temp.path().join("package");
+        let extensions = package.join("extensions");
+        fs::create_dir_all(&extensions).expect("extensions directory");
+        fs::write(
+            package.join("package.json"),
+            r#"{"pi":{"extensions":["extensions"]}}"#,
+        )
+        .expect("manifest");
+        fs::write(extensions.join("index.ts"), "export default () => {}; ")
+            .expect("extension entry");
+        fs::write(extensions.join("overlay.compat.test.ts"), "import 'bun:test'; ")
+            .expect("test module");
+        fs::write(extensions.join("overlay.ts"), "export const overlay = true; ")
+            .expect("internal module");
+
+        assert_eq!(
+            package_resource_paths(&package, PiResourceType::Extensions, false),
+            vec![canonical_or_clean(&extensions.join("index.ts"))]
+        );
     }
 
     #[test]
