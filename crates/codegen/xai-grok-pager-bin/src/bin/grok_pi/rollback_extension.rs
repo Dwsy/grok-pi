@@ -10,8 +10,7 @@ pub(super) fn write_rollback_extension() -> Result<NamedTempFile> {
         .suffix(".ts")
         .tempfile()
         .context("create Pi rollback extension tempfile")?;
-    const SOURCE: &str =
-        include_str!("../../../../../../extensions/pi-grok-rollback/index.ts");
+    const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-rollback/index.ts");
     file.write_all(SOURCE.as_bytes())
         .context("write Pi rollback extension source")?;
     file.flush().context("flush Pi rollback extension source")?;
@@ -37,11 +36,7 @@ pub(super) fn rollback_enabled() -> bool {
 /// Returns the path string.
 pub(super) fn create_control_dir() -> Result<String> {
     let state_root = state_root_path();
-    let control = format!(
-        "control-{}-{}",
-        std::process::id(),
-        &uuid_v4_short()
-    );
+    let control = format!("control-{}-{}", std::process::id(), &uuid_v4_short());
     let dir = std::path::Path::new(&state_root).join(&control);
     std::fs::create_dir_all(&dir).context("create rollback control dir")?;
     #[cfg(unix)]
@@ -98,10 +93,7 @@ mod tests {
         assert!(source.contains("createEditToolDefinition"));
         assert!(source.contains("__pi_rollback_preview"));
         assert!(source.contains("__pi_rollback_execute"));
-        assert_eq!(
-            file.path().extension().and_then(|e| e.to_str()),
-            Some("ts")
-        );
+        assert_eq!(file.path().extension().and_then(|e| e.to_str()), Some("ts"));
     }
 
     #[test]

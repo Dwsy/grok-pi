@@ -125,7 +125,10 @@ mod tests {
         assert!(has_no_tools_arg(&["--no-builtin-tools".into()]));
         assert!(has_no_tools_arg(&["-nbt".into()]));
         assert!(!has_no_tools_arg(&["--tools".into(), "read".into()]));
-        assert!(!has_no_tools_arg(&["--exclude-tools".into(), "bash".into()]));
+        assert!(!has_no_tools_arg(&[
+            "--exclude-tools".into(),
+            "bash".into()
+        ]));
     }
 
     #[test]
