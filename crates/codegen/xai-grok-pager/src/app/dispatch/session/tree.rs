@@ -113,6 +113,68 @@ pub(in crate::app::dispatch) fn dispatch_session_tree_closed(app: &mut AppView) 
     vec![]
 }
 
+/// Preview a file-only rollback to an ancestor entry. The extension computes
+/// the plan and reports via toast; the modal stays open.
+pub(in crate::app::dispatch) fn dispatch_rollback_files_preview(
+    app: &mut AppView,
+    entry_id: String,
+) -> Vec<Effect> {
+    if !app.external_agent {
+        app.show_toast("File rollback is only available for Pi sessions");
+        return vec![];
+    }
+    let Some(agent) = get_active_agent(app) else {
+        app.show_toast("No active session");
+        return vec![];
+    };
+    let Some(session_id) = agent.session.session_id.as_ref().map(|s| s.0.to_string()) else {
+        app.show_toast("No active session");
+        return vec![];
+    };
+    let agent_id = agent.session.id;
+    if entry_id.trim().is_empty() {
+        app.show_toast("Tree entry id is empty");
+        return vec![];
+    }
+    app.show_toast("Previewing file rollback…");
+    vec![Effect::RollbackFilesPreview {
+        agent_id,
+        session_id,
+        entry_id,
+    }]
+}
+
+/// Execute a file-only rollback to an ancestor entry. Active leaf and
+/// conversation are NOT changed — only tracked files are restored.
+pub(in crate::app::dispatch) fn dispatch_rollback_files_execute(
+    app: &mut AppView,
+    entry_id: String,
+) -> Vec<Effect> {
+    if !app.external_agent {
+        app.show_toast("File rollback is only available for Pi sessions");
+        return vec![];
+    }
+    let Some(agent) = get_active_agent(app) else {
+        app.show_toast("No active session");
+        return vec![];
+    };
+    let Some(session_id) = agent.session.session_id.as_ref().map(|s| s.0.to_string()) else {
+        app.show_toast("No active session");
+        return vec![];
+    };
+    let agent_id = agent.session.id;
+    if entry_id.trim().is_empty() {
+        app.show_toast("Tree entry id is empty");
+        return vec![];
+    }
+    app.show_toast("Rolling back files…");
+    vec![Effect::RollbackFilesExecute {
+        agent_id,
+        session_id,
+        entry_id,
+    }]
+}
+
 pub(in crate::app::dispatch) fn handle_session_tree_loaded(
     app: &mut AppView,
     agent_id: AgentId,

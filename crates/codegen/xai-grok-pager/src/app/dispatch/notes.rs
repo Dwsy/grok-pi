@@ -459,6 +459,7 @@ pub(super) fn dispatch_send_recap(app: &mut AppView, auto: bool) -> Vec<Effect> 
         auto,
         model: Some(model.to_string()),
         thinking_level,
+        recap_mermaid: app.current_ui.recap_mermaid.unwrap_or(false),
     }]
 }
 

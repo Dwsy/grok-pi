@@ -1937,8 +1937,8 @@ impl AgentView {
                                 summary_lines: &[],
                                 dimmed: false,
                                 indent: 0,
-                                                                label_color: None,
-badge: "",
+                                label_color: None,
+                                badge: "",
                                 badge_color: None,
                                 collapsible: false,
                                 underline_last_desc: false,
@@ -2020,8 +2020,8 @@ badge: "",
                             summary_lines: &[],
                             dimmed: false,
                             indent: 0,
-                                                        label_color: None,
-badge: "",
+                            label_color: None,
+                            badge: "",
                             badge_color: None,
                             collapsible: false,
                             underline_last_desc: false,
@@ -2112,8 +2112,8 @@ badge: "",
                             summary_lines: &[],
                             dimmed: false,
                             indent: 0,
-                                                        label_color: None,
-badge: "",
+                            label_color: None,
+                            badge: "",
                             badge_color: None,
                             collapsible: false,
                             underline_last_desc: false,
@@ -2462,8 +2462,8 @@ badge: "",
                             summary_lines: &[],
                             dimmed: false,
                             indent: 1,
-                                                        label_color: None,
-badge: if has_snippet { "match" } else { "" },
+                            label_color: None,
+                            badge: if has_snippet { "match" } else { "" },
                             badge_color: Some(theme.accent_user),
                             collapsible: true,
                             underline_last_desc: false,
@@ -2927,6 +2927,20 @@ badge: if has_snippet { "match" } else { "" },
                     self.show_toast("Copied tree entry");
                 }
                 InputOutcome::Changed
+            }
+            KeyCode::Char('r') if !ctrl && !shift => {
+                if let Some(entry_id) = state.selected_id() {
+                    InputOutcome::Action(Action::RollbackFilesPreview { entry_id })
+                } else {
+                    InputOutcome::Changed
+                }
+            }
+            KeyCode::Char('r') if shift && !ctrl => {
+                if let Some(entry_id) = state.selected_id() {
+                    InputOutcome::Action(Action::RollbackFilesExecute { entry_id })
+                } else {
+                    InputOutcome::Changed
+                }
             }
             KeyCode::Char('l') if !ctrl => {
                 state.begin_label_edit();

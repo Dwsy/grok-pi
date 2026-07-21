@@ -953,6 +953,58 @@ pub(crate) fn execute(
                 }
             });
         }
+        Effect::RollbackFilesPreview {
+            agent_id,
+            session_id: _,
+            entry_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({ "entryId": entry_id });
+                let request = acp::ExtRequest::new(
+                    "pi/session/rollback_preview",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize rollback preview")
+                        .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(_) => TaskResult::RollbackFilesCompleted {
+                        agent_id,
+                        message: "Rollback preview sent".to_string(),
+                    },
+                    Err(error) => TaskResult::RollbackFilesFailed {
+                        agent_id,
+                        error: sanitize_user_error(&error.to_string()),
+                    },
+                }
+            });
+        }
+        Effect::RollbackFilesExecute {
+            agent_id,
+            session_id: _,
+            entry_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({ "entryId": entry_id });
+                let request = acp::ExtRequest::new(
+                    "pi/session/rollback_execute",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize rollback execute")
+                        .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(_) => TaskResult::RollbackFilesCompleted {
+                        agent_id,
+                        message: "Files rolled back".to_string(),
+                    },
+                    Err(error) => TaskResult::RollbackFilesFailed {
+                        agent_id,
+                        error: sanitize_user_error(&error.to_string()),
+                    },
+                }
+            });
+        }
         Effect::FetchSessionList { query, seq } => {
             let tx = acp_tx.clone();
             let cwd = cwd.to_path_buf();
@@ -3644,6 +3696,7 @@ pub(crate) fn execute(
             auto,
             model,
             thinking_level,
+            recap_mermaid,
         } => {
             let tx = acp_tx.clone();
             tasks
@@ -3660,6 +3713,7 @@ pub(crate) fn execute(
                     {
                         params["thinkingLevel"] = serde_json::Value::String(thinking_level);
                     }
+                    params["recapMermaid"] = serde_json::Value::Bool(recap_mermaid);
                     let request = acp::ExtRequest::new(
                         "x.ai/recap",
                         serde_json::value::to_raw_value(&params)

@@ -74,6 +74,7 @@ use super::session::load::{
 use super::session::modal::dispatch_rename_session;
 use super::session::tree::{
     dispatch_label_session_tree_entry, dispatch_navigate_session_tree,
+    dispatch_rollback_files_execute, dispatch_rollback_files_preview,
     dispatch_session_tree_closed, dispatch_show_session_tree,
 };
 use super::settings::setters::{
@@ -86,11 +87,12 @@ use super::settings::setters::{
     set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
     set_fork_secondary_model, set_group_tool_verbs, set_hunk_tracker_mode, set_invert_scroll,
     set_keep_text_selection, set_max_thoughts_width, set_multiline_mode, set_page_flip_on_send,
-    set_pi_builtin_tool, set_progress_bar, set_prompt_suggestions, set_psm_resume_index,
-    set_recap_model, set_remember_tool_approvals, set_render_mermaid, set_respect_manual_folds, set_screen_mode,
-    set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
-    set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_timeline,
-    set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_stt_language,
+    set_pi_builtin_tool, set_pi_tree_file_rollback, set_progress_bar, set_prompt_suggestions, set_psm_resume_index,
+    set_recap_mermaid, set_recap_model, set_remember_tool_approvals, set_remote_tui_footer,
+    set_render_mermaid, set_respect_manual_folds, set_screen_mode, set_scroll_lines,
+    set_scroll_mode, set_scroll_speed, set_session_recap, set_show_thinking_blocks, set_show_tips,
+    set_simple_mode, set_theme, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
+    set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -234,6 +236,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         } => dispatch_navigate_session_tree(app, entry_id, summarize, custom_instructions),
         Action::LabelSessionTreeEntry { entry_id, label } => {
             dispatch_label_session_tree_entry(app, entry_id, label)
+        }
+        Action::RollbackFilesPreview { entry_id } => {
+            dispatch_rollback_files_preview(app, entry_id)
+        }
+        Action::RollbackFilesExecute { entry_id } => {
+            dispatch_rollback_files_execute(app, entry_id)
         }
         Action::SessionTreeClosed => dispatch_session_tree_closed(app),
         Action::SessionPickerClosed => dispatch_session_picker_closed(app),
@@ -1057,9 +1065,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::OpenModelPicker => dispatch_open_model_picker(app),
         Action::OpenRecapModelPicker => dispatch_open_recap_model_picker(app),
         Action::SetSessionRecap(v) => set_session_recap(app, v),
+        Action::SetRecapMermaid(v) => set_recap_mermaid(app, v),
         Action::SetProgressBar(v) => set_progress_bar(app, v),
+        Action::SetRemoteTuiFooter(v) => set_remote_tui_footer(app, v),
         Action::SetPiBuiltinTool { tool, enabled } => set_pi_builtin_tool(app, tool, enabled),
         Action::SetPsmResumeIndex(enabled) => set_psm_resume_index(app, enabled),
+        Action::SetPiTreeFileRollback(enabled) => set_pi_tree_file_rollback(app, enabled),
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
         Action::SetShowTips(v) => set_show_tips(app, v),
         Action::SetAutoUpdate(v) => set_auto_update(app, v),

@@ -374,6 +374,14 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::SessionTreeLabelFailed { agent_id, error } => {
             super::session::tree::handle_session_tree_label_failed(app, agent_id, error)
         }
+        TaskResult::RollbackFilesCompleted { agent_id: _, message } => {
+            app.show_toast(&message);
+            vec![]
+        }
+        TaskResult::RollbackFilesFailed { agent_id: _, error } => {
+            app.show_toast(&format!("File rollback failed: {error}"));
+            vec![]
+        }
         TaskResult::SessionListFailed { error, seq, query } => {
             handle_session_list_failed(app, error, seq, query)
         }

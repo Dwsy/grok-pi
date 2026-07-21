@@ -10,6 +10,7 @@ use std::time::Duration;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
+use super::markdown_content::MarkdownContent;
 use super::tool::HookRunEntry;
 use crate::render::wrapping::word_wrap_lines;
 use crate::scrollback::block::BlockContent;
@@ -507,17 +508,12 @@ impl SessionEventBlock {
                 // Blank gap under the header is decoration, not copyable text.
                 lines.push(BlockLine::separator(Line::from("")));
 
-                let styled_lines = summary
-                    .split('\n')
-                    .map(|line| Line::from(Span::styled(line.to_string(), theme.muted())));
-                let wrapped =
-                    word_wrap_lines(styled_lines, (ctx.width as usize).saturating_sub(2).max(20));
-                for wrapped_line in wrapped {
-                    lines.push(
-                        BlockLine::styled(wrapped_line)
-                            .with_selection_range(Some(RECAP_BODY_RANGE)),
-                    );
+                let markdown = MarkdownContent::new(summary);
+                let mut body = markdown.output((ctx.width as usize).saturating_sub(2).max(20));
+                for line in &mut body.lines {
+                    line.selection_range = Some(RECAP_BODY_RANGE);
                 }
+                lines.extend(body.lines);
 
                 BlockOutput { lines }
             }

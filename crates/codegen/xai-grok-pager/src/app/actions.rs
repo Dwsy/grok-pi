@@ -183,6 +183,14 @@ pub enum Action {
         entry_id: String,
         label: Option<String>,
     },
+    /// Preview file rollback to a Pi session-tree ancestor entry.
+    RollbackFilesPreview {
+        entry_id: String,
+    },
+    /// Execute file rollback to a Pi session-tree ancestor entry (file-only, leaf unchanged).
+    RollbackFilesExecute {
+        entry_id: String,
+    },
     /// Close the session tree modal without navigating.
     SessionTreeClosed,
     /// The session picker overlay was dismissed without a pick: invalidate any
@@ -668,8 +676,12 @@ pub enum Action {
     OpenRecapModelPicker,
     /// Commit auto session-recap toggle (`[ui].session_recap`).
     SetSessionRecap(bool),
+    /// Commit optional Mermaid generation in Recap (`[ui].recap_mermaid`).
+    SetRecapMermaid(bool),
     /// Commit OSC 9;4 terminal-tab progress indicators (`[ui].progress_bar`).
     SetProgressBar(bool),
+    /// Commit the experimental Remote TUI footer toggle (`[ui].remote_tui_footer`).
+    SetRemoteTuiFooter(bool),
     /// Persist a Pi built-in tool preference for the next grok-pi session.
     SetPiBuiltinTool {
         tool: PiBuiltinTool,
@@ -677,6 +689,8 @@ pub enum Action {
     },
     /// Enable PSM's optional SQLite catalog source for Pi `/resume`.
     SetPsmResumeIndex(bool),
+    /// Enable Pi tree file rollback checkpoint tracking.
+    SetPiTreeFileRollback(bool),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
     /// Restart-required — tips are resolved once at startup.
     SetShowTips(bool),
@@ -1545,6 +1559,18 @@ pub enum Effect {
         entry_id: String,
         label: Option<String>,
     },
+    /// Preview file rollback to a Pi tree entry (read-only plan).
+    RollbackFilesPreview {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
+        entry_id: String,
+    },
+    /// Execute file rollback to a Pi tree entry (restores files).
+    RollbackFilesExecute {
+        agent_id: crate::app::agent::AgentId,
+        session_id: String,
+        entry_id: String,
+    },
     /// Fetch session list for the welcome screen session picker.
     FetchSessionList {
         /// Text search pushed down to `x.ai/session/list` as `query` (chat
@@ -2028,6 +2054,8 @@ pub enum Effect {
         model: Option<String>,
         /// Current session reasoning level; omitted for off/unsupported models.
         thinking_level: Option<String>,
+        /// Whether the recap prompt may request an optional Mermaid diagram.
+        recap_mermaid: bool,
     },
     /// Send a mid-turn interjection via x.ai/interject ext method.
     SendInterject {
@@ -2338,6 +2366,16 @@ pub enum TaskResult {
         nodes: Vec<SessionTreeNode>,
     },
     SessionTreeLabelFailed {
+        agent_id: crate::app::agent::AgentId,
+        error: String,
+    },
+    /// File rollback preview/execute completed (toast-only; no modal state change).
+    RollbackFilesCompleted {
+        agent_id: crate::app::agent::AgentId,
+        message: String,
+    },
+    /// File rollback failed.
+    RollbackFilesFailed {
         agent_id: crate::app::agent::AgentId,
         error: String,
     },
