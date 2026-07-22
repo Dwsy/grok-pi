@@ -85,9 +85,9 @@ pub struct SuggestionRow {
 }
 
 impl SuggestionRow {
-    fn from_command(trigger: &CommandTrigger) -> Self {
+    fn from_command(trigger: &CommandTrigger, takes_args: bool) -> Self {
         let mut insert_text = trigger.display.clone();
-        if trigger.takes_args {
+        if takes_args {
             insert_text.push(' ');
         }
         Self {
@@ -294,6 +294,9 @@ pub struct SlashController {
     hide_session_scoped: bool,
     /// Offer `/announcements` when session announcements (critical or promo) exist.
     has_session_announcements: bool,
+    /// Consumer billing surface — gates `/usage` subcommands. Default `true`.
+    billing_surface_visible: bool,
+    workflows_available: bool,
     /// Effective render mode of this process (immutable after startup — it only
     /// changes via a full `/minimal`-`/fullscreen` re-exec). Injected via
     /// [`Self::set_screen_mode`] wherever prompts are created; gates the
@@ -329,6 +332,8 @@ impl SlashController {
             cwd,
             hide_session_scoped: false,
             has_session_announcements: false,
+            billing_surface_visible: true,
+            workflows_available: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
             mru,
         }
@@ -349,6 +354,22 @@ impl SlashController {
         self.has_session_announcements
     }
 
+    pub fn set_billing_surface_visible(&mut self, visible: bool) {
+        self.billing_surface_visible = visible;
+    }
+
+    pub fn billing_surface_visible(&self) -> bool {
+        self.billing_surface_visible
+    }
+
+    pub fn set_workflows_available(&mut self, available: bool) {
+        self.workflows_available = available;
+    }
+
+    pub fn workflows_available(&self) -> bool {
+        self.workflows_available
+    }
+
     /// Record the process's effective screen mode (see the field doc).
     pub(crate) fn set_screen_mode(&mut self, mode: crate::app::ScreenMode) {
         self.screen_mode = mode;
@@ -363,6 +384,8 @@ impl SlashController {
             models,
             cwd: &self.cwd,
             has_session_announcements: self.has_session_announcements,
+            billing_surface_visible: self.billing_surface_visible,
+            workflows_available: self.workflows_available,
             screen_mode: self.screen_mode,
         }
     }
@@ -666,11 +689,8 @@ impl SlashController {
         else {
             return snapshot;
         };
-        let visible = {
-            let ctx = self.app_ctx(models);
-            command.visible(&ctx)
-        };
-        if !visible || !command.takes_args() {
+        let ctx = self.app_ctx(models);
+        if !command.visible(&ctx) || !command.takes_args_now(&ctx) {
             return snapshot;
         }
 
@@ -858,7 +878,12 @@ impl SlashController {
                     continue;
                 }
                 if seen.insert(trigger.command_index) {
-                    rows.push(SuggestionRow::from_command(trigger));
+                    let takes = self
+                        .registry
+                        .commands_by_index(trigger.command_index)
+                        .map(|cmd| cmd.takes_args_now(&ctx))
+                        .unwrap_or(false);
+                    rows.push(SuggestionRow::from_command(trigger, takes));
                 }
             }
             return rows;
@@ -887,8 +912,7 @@ impl SlashController {
         // Deduplicate: keep the best-scoring trigger per command.
         // At equal fuzzy scores the tiebreaker is:
         //   1. Exact match on match_text wins (e.g. alias "/m" for query "m")
-        //   2. Canonical name beats aliases (e.g. "/terminal-setup" over
-        //      "/terminal-check" for query "terminal")
+        //   2. Canonical name beats aliases
         //   3. Lexicographic display order as final fallback
         let mut best_per_command: HashMap<usize, (u32, usize)> = HashMap::new();
         for (visible_idx, score) in hits {
@@ -921,10 +945,22 @@ impl SlashController {
         }
 
         let mut deduped: Vec<(u32, usize)> = best_per_command.into_values().collect();
-        let mut rows: Vec<SuggestionRow> = visible_triggers
-            .iter()
-            .map(|t| SuggestionRow::from_command(t))
-            .collect();
+        // Re-borrow after rank so takes_args_now can see AppCtx without
+        // overlapping the matcher mut borrow.
+        let mut rows: Vec<SuggestionRow> = {
+            let ctx = self.app_ctx(models);
+            visible_triggers
+                .iter()
+                .map(|t| {
+                    let takes = self
+                        .registry
+                        .commands_by_index(t.command_index)
+                        .map(|cmd| cmd.takes_args_now(&ctx))
+                        .unwrap_or(false);
+                    SuggestionRow::from_command(t, takes)
+                })
+                .collect()
+        };
         let sort_meta: Vec<(String, CommandSource)> = visible_triggers
             .iter()
             .map(|t| (t.canonical.clone(), t.source))
@@ -990,10 +1026,10 @@ impl SlashController {
         models: &ModelState,
         query: &str,
     ) -> Vec<SuggestionRow> {
-        if !command.takes_args() {
+        let ctx = self.app_ctx(models);
+        if !command.takes_args_now(&ctx) {
             return Vec::new();
         }
-        let ctx = self.app_ctx(models);
         let Some(items) = command.suggest_args(&ctx, query) else {
             return Vec::new();
         };
@@ -1897,6 +1933,7 @@ mod tests {
             "/btw",
             "/session-info",
             "/find",
+            "/doctor",
         ] {
             assert!(
                 !names.contains(&hide),
@@ -1921,6 +1958,7 @@ mod tests {
             .collect();
         assert!(names.iter().any(|d| d == "/compact"));
         assert!(names.iter().any(|d| d == "/fork"));
+        assert!(names.iter().any(|d| d == "/doctor"));
     }
 
     /// `/cd` is dashboard-only: it appears in the dropdown on the
@@ -2706,28 +2744,33 @@ mod tests {
     }
 
     #[test]
-    fn dedup_prefers_canonical_over_alias_at_equal_score() {
-        // When the query matches both the canonical name and an alias
-        // equally well, the dropdown should show the canonical name.
-        // Regression: "terminal" used to show "/terminal-check" (alias)
-        // instead of "/terminal-setup" (canonical) because the alias
-        // sorts lexicographically first.
+    fn doctor_completion_prefers_canonical_but_honors_exact_aliases() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         let state = SlashState::default();
         let models = ModelState::default();
 
-        let text = "/terminal";
+        let text = "/doctor";
         ctrl.refresh(&state, text, text.len(), &models);
-        let snap = state.snapshot();
-        assert!(snap.open);
-        let displays: Vec<&str> = snap.matches.iter().map(|r| r.display.as_str()).collect();
+        let snapshot = state.snapshot();
+        let displays: Vec<&str> = snapshot
+            .matches
+            .iter()
+            .map(|row| row.display.as_str())
+            .collect();
+        assert!(displays.contains(&"/doctor"), "matches: {displays:?}");
+        assert!(!displays.contains(&"/terminal-setup"));
+
+        let text = "/terminal-setup";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let snapshot = state.snapshot();
+        let displays: Vec<&str> = snapshot
+            .matches
+            .iter()
+            .map(|row| row.display.as_str())
+            .collect();
         assert!(
             displays.contains(&"/terminal-setup"),
-            "expected /terminal-setup (canonical) in matches, got: {displays:?}"
-        );
-        assert!(
-            !displays.contains(&"/terminal-check"),
-            "/terminal-check (alias) should be deduplicated in favor of canonical"
+            "matches: {displays:?}"
         );
     }
 }

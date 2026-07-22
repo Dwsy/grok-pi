@@ -843,6 +843,10 @@ pub(in crate::app::dispatch) fn skip_picker_and_create_session(
         model_id: None,
         preferred_session_id,
         chat_kind,
+        
+        
+        
+        
     }]
 }
 pub(in crate::app::dispatch) fn handle_session_created(
@@ -905,7 +909,10 @@ pub(in crate::app::dispatch) fn handle_session_created(
             agent_id,
             session_id: session_id_clone.clone(),
         });
-        effects.push(Effect::RefreshAvailableCommands { agent_id, cwd });
+        effects.push(Effect::RefreshAvailableCommands {
+            agent_id,
+            session_id: session_id_clone.clone(),
+        });
         effects.push(Effect::CheckMarketplaceUpdates {
             agent_id,
             session_id: session_id_clone.clone(),
@@ -1000,7 +1007,10 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             agent_id,
             session_id: session_id_clone.clone(),
         });
-        effects.push(Effect::RefreshAvailableCommands { agent_id, cwd });
+        effects.push(Effect::RefreshAvailableCommands {
+            agent_id,
+            session_id: session_id_clone.clone(),
+        });
         effects.push(Effect::CheckMarketplaceUpdates {
             agent_id,
             session_id: session_id_clone.clone(),

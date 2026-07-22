@@ -521,6 +521,7 @@ mod tests {
             session_id: None,
             bundle_state: &EMPTY_BUNDLE,
             screen_mode: crate::app::ScreenMode::Inline,
+            billing_surface_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: false,
                 yolo_mode: false,
@@ -567,6 +568,8 @@ mod tests {
             models: &state,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
+            billing_surface_visible: true,
+            workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         let items = cmd.suggest_args(&ctx, "").unwrap();
@@ -680,6 +683,8 @@ mod tests {
             models: &state,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
+            billing_surface_visible: true,
+            workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         // Args query has a trailing space -> effort phase. Items come out
@@ -709,6 +714,8 @@ mod tests {
             models: &state,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
+            billing_surface_visible: true,
+            workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         // Still in effort phase; matcher upstream narrows to high / xhigh.
@@ -727,6 +734,8 @@ mod tests {
             models: &state,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
+            billing_surface_visible: true,
+            workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
         // No trailing space, user is still typing the model name.

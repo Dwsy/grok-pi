@@ -115,6 +115,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 state: TokioMutex::new(State {
                     running_task: None,
                     pending_inputs: VecDeque::new(),
+                    combine_edit_holds: std::collections::HashSet::new(),
                     pending_notifications: Vec::new(),
                     notifications_suppressed: false,
                     rewindable: false,
@@ -131,6 +132,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
                 chat_state_handle,
+                unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
                 current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
@@ -215,6 +217,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     )),
                 )),
                 goal_enabled: false,
+                background_workflows_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
                 goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
                 goal_tracker: Arc::new(parking_lot::Mutex::new(
@@ -225,10 +228,11 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_blocked_streak: std::sync::atomic::AtomicU32::new(0),
-                goal_update_rx: std::cell::RefCell::new(Some(
-                    tokio::sync::mpsc::unbounded_channel().1,
-                )),
+                goal_update_rx: std::cell::RefCell::new(None),
                 goal_update_tx: tokio::sync::mpsc::unbounded_channel().0,
+                workflow_manager: crate::session::workflow::manager::WorkflowManager::test_bundle()
+                    .0,
+                workflow_launch_tx: tokio::sync::mpsc::unbounded_channel().0,
                 goal_classifier_enabled: false,
                 goal_planner_enabled: false,
                 goal_summary_enabled: false,
@@ -240,7 +244,9 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 goal_strategist_every: 5,
                 goal_reverify_after: crate::session::acp_session::GOAL_REVERIFY_AFTER_DEFAULT,
                 goal_plan_reconciled: std::sync::atomic::AtomicBool::new(false),
-                pending_classifier_completions: parking_lot::Mutex::new(VecDeque::new()),
+                pending_classifier_completions: parking_lot::Mutex::new(
+                    std::collections::VecDeque::new(),
+                ),
                 goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
                 managed_mcp_handle: Default::default(),
                 managed_mcp_expires_at: std::sync::Mutex::new(None),
@@ -567,6 +573,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 state: TokioMutex::new(State {
                     running_task: None,
                     pending_inputs: VecDeque::new(),
+                    combine_edit_holds: std::collections::HashSet::new(),
                     pending_notifications: Vec::new(),
                     notifications_suppressed: false,
                     rewindable: false,
@@ -583,6 +590,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
                 chat_state_handle,
+                unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
                 current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
@@ -670,6 +678,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     )),
                 )),
                 goal_enabled: false,
+                background_workflows_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
                 goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
                 goal_tracker: Arc::new(parking_lot::Mutex::new(
@@ -680,10 +689,11 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_blocked_streak: std::sync::atomic::AtomicU32::new(0),
-                goal_update_rx: std::cell::RefCell::new(Some(
-                    tokio::sync::mpsc::unbounded_channel().1,
-                )),
+                goal_update_rx: std::cell::RefCell::new(None),
                 goal_update_tx: tokio::sync::mpsc::unbounded_channel().0,
+                workflow_manager: crate::session::workflow::manager::WorkflowManager::test_bundle()
+                    .0,
+                workflow_launch_tx: tokio::sync::mpsc::unbounded_channel().0,
                 goal_classifier_enabled: false,
                 goal_planner_enabled: false,
                 goal_summary_enabled: false,
@@ -695,7 +705,9 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 goal_strategist_every: 5,
                 goal_reverify_after: crate::session::acp_session::GOAL_REVERIFY_AFTER_DEFAULT,
                 goal_plan_reconciled: std::sync::atomic::AtomicBool::new(false),
-                pending_classifier_completions: parking_lot::Mutex::new(VecDeque::new()),
+                pending_classifier_completions: parking_lot::Mutex::new(
+                    std::collections::VecDeque::new(),
+                ),
                 goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
                 managed_mcp_handle: Default::default(),
                 managed_mcp_expires_at: std::sync::Mutex::new(None),
@@ -810,6 +822,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
             let state = TokioMutex::new(State {
                 running_task: None,
                 pending_inputs: VecDeque::new(),
+                combine_edit_holds: std::collections::HashSet::new(),
                 pending_notifications: Vec::new(),
                 notifications_suppressed: false,
                 rewindable: false,
@@ -850,6 +863,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
                 chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+                unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
                 ),
@@ -944,6 +958,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     ),
                 ),
                 goal_enabled: false,
+                background_workflows_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
                 goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(
                     false,
@@ -960,10 +975,11 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 ),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_blocked_streak: std::sync::atomic::AtomicU32::new(0),
-                goal_update_rx: std::cell::RefCell::new(
-                    Some(tokio::sync::mpsc::unbounded_channel().1),
-                ),
+                goal_update_rx: std::cell::RefCell::new(None),
                 goal_update_tx: tokio::sync::mpsc::unbounded_channel().0,
+                workflow_manager: crate::session::workflow::manager::WorkflowManager::test_bundle()
+                    .0,
+                workflow_launch_tx: tokio::sync::mpsc::unbounded_channel().0,
                 goal_classifier_enabled: false,
                 goal_planner_enabled: false,
                 goal_summary_enabled: false,
@@ -974,7 +990,9 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 goal_strategist_every: 5,
                 goal_reverify_after: crate::session::acp_session::GOAL_REVERIFY_AFTER_DEFAULT,
                 goal_plan_reconciled: std::sync::atomic::AtomicBool::new(false),
-                pending_classifier_completions: parking_lot::Mutex::new(VecDeque::new()),
+                pending_classifier_completions: parking_lot::Mutex::new(
+                    std::collections::VecDeque::new(),
+                ),
                 goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
                 managed_mcp_handle: Default::default(),
                 managed_mcp_expires_at: std::sync::Mutex::new(None),
@@ -1185,7 +1203,6 @@ async fn cancel_without_active_tool_arms_interrupt_reminder() {
 /// Send-now is a silent cancel-and-send — the user is continuing, not
 /// aborting. Its cancel must arm NEITHER the interrupt reminder (no
 /// "[Request interrupted]" injected into the continuation turn) NOR the
-/// prior-interrupt category, and it must zero `blocking_wait_depth` so a
 /// zombie wait guard from the aborted turn can't auto-send-now-cancel (and
 /// drop) the next user prompt.
 #[tokio::test(flavor = "current_thread")]
@@ -1228,16 +1245,12 @@ async fn send_now_cancel_arms_no_interrupt_signals_and_resets_wait_depth() {
                 "send-now must not record a MidTurnAbort interrupt marker"
             );
             let depth = &actor.tool_context.blocking_wait_depth;
-            assert_eq!(
-                depth.load(std::sync::atomic::Ordering::SeqCst),
-                0,
-                "cancel must zero the wait window"
-            );
+            assert_eq!(depth.depth(), 0, "cancel must zero the wait window");
             drop(zombie_guard);
             assert_eq!(
-                depth.load(std::sync::atomic::Ordering::SeqCst),
+                depth.depth(),
                 0,
-                "a late guard drop after the reset must not underflow"
+                "a late old-generation guard drop must be a no-op"
             );
         })
         .await;
@@ -1500,6 +1513,7 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
                 last_editor: None,
                 kind: "prompt".to_string(),
                 text: String::new(),
+                combined_texts: None,
             }),
             send_now: false,
         };
@@ -1880,6 +1894,7 @@ async fn cancel_resolves_front_when_running_task_is_none() {
                 last_editor: None,
                 kind: "prompt".to_string(),
                 text: String::new(),
+                combined_texts: None,
             }),
             send_now: false,
         };
@@ -2042,6 +2057,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             let state = TokioMutex::new(State {
                 running_task: None,
                 pending_inputs: VecDeque::new(),
+                combine_edit_holds: std::collections::HashSet::new(),
                 pending_notifications: Vec::new(),
                 notifications_suppressed: false,
                 rewindable: false,
@@ -2082,6 +2098,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
                 chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+                unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
                 ),
@@ -2176,6 +2193,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     ),
                 ),
                 goal_enabled: false,
+                background_workflows_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
                 goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(
                     false,
@@ -2192,10 +2210,11 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 ),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_blocked_streak: std::sync::atomic::AtomicU32::new(0),
-                goal_update_rx: std::cell::RefCell::new(
-                    Some(tokio::sync::mpsc::unbounded_channel().1),
-                ),
+                goal_update_rx: std::cell::RefCell::new(None),
                 goal_update_tx: tokio::sync::mpsc::unbounded_channel().0,
+                workflow_manager: crate::session::workflow::manager::WorkflowManager::test_bundle()
+                    .0,
+                workflow_launch_tx: tokio::sync::mpsc::unbounded_channel().0,
                 goal_classifier_enabled: false,
                 goal_planner_enabled: false,
                 goal_summary_enabled: false,
@@ -2206,7 +2225,9 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 goal_strategist_every: 5,
                 goal_reverify_after: crate::session::acp_session::GOAL_REVERIFY_AFTER_DEFAULT,
                 goal_plan_reconciled: std::sync::atomic::AtomicBool::new(false),
-                pending_classifier_completions: parking_lot::Mutex::new(VecDeque::new()),
+                pending_classifier_completions: parking_lot::Mutex::new(
+                    std::collections::VecDeque::new(),
+                ),
                 goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
                 managed_mcp_handle: Default::default(),
                 managed_mcp_expires_at: std::sync::Mutex::new(None),
@@ -2325,11 +2346,11 @@ async fn skill_reminder_deferred_while_turn_running_flushed_when_idle() {
             .iter()
             .filter(|item| {
                 matches!(
-                                    item, ConversationItem::User(u) if u.content.iter().any(| p |
-                                    matches!(p, xai_grok_sampling_types::ContentPart::Text { text }
-                if
-                                    text.contains("pdf-tools")))
-                                )
+                    item, ConversationItem::User(u) if u.content.iter().any(| p |
+                    matches!(p, xai_grok_sampling_types::ContentPart::Text { text }
+if
+                    text.contains("pdf-tools")))
+                )
             })
             .count()
     }
@@ -2409,6 +2430,7 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
                 last_editor: None,
                 kind: "prompt".to_string(),
                 text: String::new(),
+                combined_texts: None,
             }),
             send_now: false,
         }

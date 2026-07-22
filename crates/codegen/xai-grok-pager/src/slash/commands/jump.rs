@@ -28,3 +28,46 @@ impl SlashCommand for JumpCommand {
         CommandResult::Action(Action::JumpShowPicker)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acp::model_state::ModelState;
+    use crate::app::bundle::BundleState;
+    use crate::settings::PagerLocalSnapshot;
+
+    static DEFAULT_BUNDLE_STATE: BundleState = BundleState {
+        has_cache: false,
+        version: String::new(),
+        personas: Vec::new(),
+        roles: Vec::new(),
+        agents: Vec::new(),
+        skills: Vec::new(),
+        persona_details: Vec::new(),
+        role_details: Vec::new(),
+    };
+
+    #[test]
+    fn jump_returns_show_picker_action() {
+        let models = ModelState::default();
+        let mut ctx = CommandExecCtx {
+            models: &models,
+            session_id: None,
+            bundle_state: &DEFAULT_BUNDLE_STATE,
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+            billing_surface_visible: true,
+            pager_state: PagerLocalSnapshot::default(),
+        };
+        let result = JumpCommand.run(&mut ctx, "");
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::JumpShowPicker)
+        ));
+    }
+
+    #[test]
+    fn not_available_in_minimal() {
+        // Native terminal scrollback replaces in-app scrolling in minimal.
+        assert!(!JumpCommand.available_in_minimal());
+    }
+}

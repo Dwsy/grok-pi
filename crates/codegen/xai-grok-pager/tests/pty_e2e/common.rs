@@ -6,9 +6,9 @@ pub(crate) use serde_json::json;
 pub(crate) use std::path::Path;
 pub(crate) use std::time::{Duration, Instant};
 pub(crate) use xai_grok_pager_pty_harness::{
-    ContentController, InferenceEndpoint, InferenceRequestMatcher, MockModel, PtyHarness,
-    ScriptedResponse, SseEvent, keys, oauth_env_for_pager, pager_binary, seed_fake_oauth, sse,
-    wait_for_labels_absent, wait_for_model_via_new_sessions,
+    AgentTurnExpectation, ContentController, MockModel, PtyHarness, ScriptedResponse, SseEvent,
+    keys, oauth_env_for_pager, pager_binary, seed_fake_oauth, sse, wait_for_labels_absent,
+    wait_for_model_via_new_sessions,
 };
 
 /// Default PTY size used by every e2e test. Large enough to render the
@@ -21,6 +21,17 @@ pub(crate) const DEFAULT_COLS: u16 = 120;
 /// Default wait-for-welcome timeout. The pager spawns a child shell agent,
 /// which can take a few seconds on cold build directories.
 pub(crate) const WELCOME_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Wait budget for a `--continue` / resume to replay the prior transcript back
+/// into scrollback. Resume is strictly heavier than a cold start: it runs
+/// `session/load` (MCP startup, git chores, a full `updates.jsonl` replay, and
+/// session spawn) on the agent's single-threaded runtime, and the client-side
+/// `acp_send` has no timeout — so under the fully-parallel pty_e2e suite the
+/// starved agent thread can push this well past the 20s `WELCOME_TIMEOUT`
+/// (leaving the "Loading session…" placeholder up). Sized generously for the
+/// same contention reason as `WRAP_TIMEOUT`, not because resume is slow when
+/// run alone.
+pub(crate) const RESUME_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Substring we wait for on the welcome screen. Matches the menu label `"Quit"`
 /// (`render_welcome_done` / gate menus); case-sensitive, so it does **not**
@@ -598,11 +609,6 @@ pub(crate) fn responses_api_tool_call_events(
     events
 }
 
-/// Chat Completions SSE stream with a single tool_call (fallback endpoint).
-pub(crate) fn chat_completions_tool_call_events(name: &str, arguments: &str) -> Vec<SseEvent> {
-    chat_completions_tool_call_events_with_id("call_read_hdr", name, arguments)
-}
-
 /// [`chat_completions_tool_call_events`] with an explicit `tool_call` id, for
 /// tests scripting several calls into ONE conversation (a reused id would
 /// alias distinct calls in history and confuse dangling-call bookkeeping).
@@ -651,100 +657,6 @@ pub(crate) fn chat_completions_tool_call_events_with_id(
                     "prompt_tokens": 10,
                     "completion_tokens": 20,
                     "total_tokens": 30
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]".to_string()),
-    ]
-}
-
-/// Responses API SSE stream that emits a single assistant text message —
-/// the FIFO counterpart of `set_response` for tests scripting DISTINCT text
-/// replies per turn (e.g. one per auto-wake).
-pub(crate) fn responses_api_message_events(text: &str) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "type": "response.created",
-                "sequence_number": 0,
-                "response": {
-                    "id": "resp_text",
-                    "object": "response",
-                    "created_at": 1234567890,
-                    "model": "test-model",
-                    "status": "in_progress",
-                    "output": []
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 1,
-                "item_id": "item_text",
-                "output_index": 0,
-                "content_index": 0,
-                "delta": text
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.completed",
-                "sequence_number": 2,
-                "response": {
-                    "id": "resp_text",
-                    "object": "response",
-                    "created_at": 1234567890,
-                    "model": "test-model",
-                    "status": "completed",
-                    "output": [{
-                        "type": "message",
-                        "id": "msg_text",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": []
-                        }]
-                    }],
-                    "usage": {
-                        "input_tokens": 10,
-                        "output_tokens": 10,
-                        "total_tokens": 20,
-                        "input_tokens_details": { "cached_tokens": 0 },
-                        "output_tokens_details": { "reasoning_tokens": 0 }
-                    }
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]".to_string()),
-    ]
-}
-
-/// Chat Completions SSE stream with a single assistant text message
-/// (fallback endpoint counterpart of [`responses_api_message_events`]).
-pub(crate) fn chat_completions_message_events(text: &str) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "id": "chatcmpl-text",
-                "object": "chat.completion.chunk",
-                "created": 1234567890,
-                "model": "test-model",
-                "choices": [{
-                    "index": 0,
-                    "delta": { "role": "assistant", "content": text },
-                    "finish_reason": "stop"
-                }],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 10,
-                    "total_tokens": 20
                 }
             })
             .to_string(),
@@ -836,43 +748,184 @@ pub(crate) fn locate_screen_text(screen: &str, needle: &str) -> Option<(u16, u16
     None
 }
 
-/// Queue one scripted tool-call turn on both inference endpoints (only the
-/// endpoint the agent actually uses drains its FIFO; the other stays parked).
-pub(crate) fn enqueue_tool_turn(
+/// Register one named scripted tool-call turn on both inference endpoints.
+pub(crate) fn expect_tool_turn(
     content: &ContentController,
     call_id: &str,
     name: &str,
     args: String,
+) -> AgentTurnExpectation {
+    content.expect_agent_turn_with_responses(
+        format!("tool turn {call_id}"),
+        ScriptedResponse::sse(responses_api_tool_call_events(call_id, name, &args)),
+        ScriptedResponse::sse(chat_completions_tool_call_events_with_id(
+            call_id, name, &args,
+        )),
+    )
+}
+
+/// Responses API SSE stream whose `response.completed` output carries one
+/// `function_call` item per entry of `calls` — a single model turn invoking
+/// parallel tool calls. Each entry is `(call_id, name, arguments)`; ids must
+/// be distinct or history bookkeeping aliases the calls.
+pub(crate) fn responses_api_parallel_tool_call_events(
+    calls: &[(&str, &str, String)],
+) -> Vec<SseEvent> {
+    let mut events = Vec::new();
+    let mut seq = 0u64;
+    events.push(SseEvent::data(
+        json!({
+            "type": "response.created",
+            "sequence_number": seq,
+            "response": {
+                "id": "resp_parallel_tools",
+                "object": "response",
+                "created_at": 1234567890,
+                "model": "test-model",
+                "status": "in_progress",
+                "output": []
+            }
+        })
+        .to_string(),
+    ));
+    for (i, (call_id, _name, arguments)) in calls.iter().enumerate() {
+        seq += 1;
+        events.push(SseEvent::data(
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "sequence_number": seq,
+                "item_id": call_id,
+                "output_index": i,
+                "delta": arguments
+            })
+            .to_string(),
+        ));
+    }
+    seq += 1;
+    let output: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|(call_id, name, arguments)| {
+            json!({
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments
+            })
+        })
+        .collect();
+    events.push(SseEvent::data(
+        json!({
+            "type": "response.completed",
+            "sequence_number": seq,
+            "response": {
+                "id": "resp_parallel_tools",
+                "object": "response",
+                "created_at": 1234567890,
+                "model": "test-model",
+                "status": "completed",
+                "output": output,
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "total_tokens": 30,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens_details": { "reasoning_tokens": 0 }
+                }
+            }
+        })
+        .to_string(),
+    ));
+    events.push(SseEvent::data("[DONE]".to_string()));
+    events
+}
+
+/// Chat Completions twin of [`responses_api_parallel_tool_call_events`]: one
+/// chunk whose `delta.tool_calls` carries every call (index 0, 1, …), then a
+/// `finish_reason: "tool_calls"` chunk.
+pub(crate) fn chat_completions_parallel_tool_call_events(
+    calls: &[(&str, &str, String)],
+) -> Vec<SseEvent> {
+    let tool_calls: Vec<serde_json::Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(i, (call_id, name, arguments))| {
+            json!({
+                "index": i,
+                "id": call_id,
+                "type": "function",
+                "function": { "name": name, "arguments": arguments }
+            })
+        })
+        .collect();
+    vec![
+        SseEvent::data(
+            json!({
+                "id": "chatcmpl-parallel-tools",
+                "object": "chat.completion.chunk",
+                "created": 1234567890,
+                "model": "test-model",
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": tool_calls
+                    },
+                    "finish_reason": null
+                }]
+            })
+            .to_string(),
+        ),
+        SseEvent::data(
+            json!({
+                "id": "chatcmpl-parallel-tools",
+                "object": "chat.completion.chunk",
+                "created": 1234567890,
+                "model": "test-model",
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "total_tokens": 30
+                }
+            })
+            .to_string(),
+        ),
+        SseEvent::data("[DONE]".to_string()),
+    ]
+}
+
+/// Queue one scripted turn with parallel tool calls on both inference
+/// endpoints (see [`expect_tool_turn`]).
+pub(crate) fn enqueue_parallel_tool_turn(
+    content: &ContentController,
+    calls: &[(&str, &str, String)],
 ) {
     content.enqueue_response(
         "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(call_id, name, &args)),
+        ScriptedResponse::sse(responses_api_parallel_tool_call_events(calls)),
     );
     content.enqueue_response(
         "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events(name, &args)),
+        ScriptedResponse::sse(chat_completions_parallel_tool_call_events(calls)),
     );
 }
 
 /// Seed a target file under the isolated HOME and queue a scripted `read_file`
 /// tool call (Responses + Chat Completions) so the pager renders a Read header.
-pub(crate) fn seed_read_file_tool_call(content: &ContentController, abs_path: &Path) {
+pub(crate) fn seed_read_file_tool_call(
+    content: &ContentController,
+    abs_path: &Path,
+) -> AgentTurnExpectation {
     let args = json!({ "target_file": abs_path.to_string_lossy() }).to_string();
-    // Prefer Responses API (primary agent path); also queue Chat Completions.
-    content.enqueue_response(
-        "/v1/responses",
-        ScriptedResponse::sse(responses_api_tool_call_events(
-            "call_read_hdr",
-            "read_file",
-            &args,
-        )),
-    );
-    content.enqueue_response(
-        "/v1/chat/completions",
-        ScriptedResponse::sse(chat_completions_tool_call_events("read_file", &args)),
-    );
+    let turn = expect_tool_turn(content, "call_read_hdr", "read_file", args);
     // Follow-up turn after tool result: plain completion so the session settles.
     content.set_response(READ_HDR_SENTINEL);
+    turn
 }
 
 // ── Minimal (scrollback-native) mode e2e helpers ────────────────────────

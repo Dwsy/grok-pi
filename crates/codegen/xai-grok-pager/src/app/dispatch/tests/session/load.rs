@@ -1,5 +1,6 @@
 //! Tests for session loading, restore, pickers, and deep search.
 use super::*;
+use xai_grok_shell::session::unified_list::ListScope;
 #[test]
 fn external_resume_uses_current_tab_then_loads_all_on_refresh() {
     use crate::views::modal::ActiveModal;
@@ -1005,8 +1006,7 @@ fn resume_unknown_session_still_creates_new_agent() {
         effects
             .iter()
             .any(|e| matches!(e, Effect::LoadSession { agent_id, session_id,
-        .. }
-if * agent_id == new_id && session_id == "sess-never-open"))
+        .. } if * agent_id == new_id && session_id == "sess-never-open"))
     );
 }
 /// Stale `attached_agent` (not equal to visible agent) must not re-arm overlay.
@@ -1069,8 +1069,7 @@ fn resume_conversation_does_not_focus_build_id_collision() {
         effects
             .iter()
             .any(|e| matches!(e, Effect::LoadSession { session_id, chat_kind
-        : true, .. }
-if session_id == "shared-id"))
+        : true, .. } if session_id == "shared-id"))
     );
     assert!(!app.agents[&agent_0].chat_kind);
 }
@@ -1232,8 +1231,7 @@ if *
         effects
             .iter()
             .any(|e| matches!(e, Effect::LoadSession { agent_id, session_id,
-        .. }
-if * agent_id != agent_0 && session_id == "fail-then-retry")),
+        .. } if * agent_id != agent_0 && session_id == "fail-then-retry")),
         "retry after failure must emit LoadSession for a new agent, got {effects:?}"
     );
     assert_eq!(app.agents.len(), count_before + 1);
@@ -1922,6 +1920,7 @@ fn stale_session_list_responses_are_dropped() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-stale-1")],
             partial: None,
             seq: 1,
@@ -1947,6 +1946,7 @@ fn stale_session_list_responses_are_dropped() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-fresh-2")],
             partial: None,
             seq: 2,
@@ -1992,6 +1992,7 @@ fn modal_search_response_lands_and_stale_is_dropped() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-hit-1")],
             partial: None,
             seq: 1,
@@ -2030,6 +2031,7 @@ fn modal_search_response_lands_and_stale_is_dropped() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-stale-m")],
             partial: None,
             seq: 1,
@@ -2085,6 +2087,7 @@ fn modal_close_drops_in_flight_search_response() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-late-1")],
             partial: None,
             seq,
@@ -2131,6 +2134,7 @@ fn modal_pick_drops_in_flight_search_response() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-late-p")],
             partial: None,
             seq,
@@ -2175,6 +2179,7 @@ fn welcome_esc_drops_in_flight_fetch_response() {
     let _ = dispatch(Action::SessionPickerClosed, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-late-w")],
             partial: None,
             seq,
@@ -2205,6 +2210,7 @@ fn build_mode_modal_close_does_not_invalidate_plain_fetch() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("build-late-1", "/tmp/repo")],
             partial: None,
             seq,
@@ -2228,6 +2234,7 @@ fn zero_hit_search_shows_empty_list_without_toast() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![],
             partial: None,
             seq: 1,
@@ -2249,6 +2256,7 @@ fn zero_hit_search_shows_empty_list_without_toast() {
     let _ = dispatch(Action::FetchSessionList, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![],
             partial: None,
             seq: 2,
@@ -2433,6 +2441,7 @@ fn build_mode_list_response_preserves_deep_search_spinner() {
     assert!(app.session_picker_content_loading, "deep search in flight");
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("local-1", "/r")],
             partial: None,
             seq: app.session_picker_list_seq,
@@ -2486,6 +2495,7 @@ fn build_mode_rapid_plain_fetches_keep_last_write_wins() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("build-first", "/r")],
             partial: None,
             seq: 0,
@@ -2502,6 +2512,7 @@ fn build_mode_rapid_plain_fetches_keep_last_write_wins() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("build-second", "/r")],
             partial: None,
             seq: 0,

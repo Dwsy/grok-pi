@@ -770,6 +770,7 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
 }
 
 impl ReasoningEffort {
@@ -781,6 +782,7 @@ impl ReasoningEffort {
             Self::Medium => crate::rs::ReasoningEffort::Medium,
             Self::High => crate::rs::ReasoningEffort::High,
             Self::Xhigh => crate::rs::ReasoningEffort::Xhigh,
+            Self::Max => crate::rs::ReasoningEffort::Max,
         }
     }
 
@@ -794,6 +796,7 @@ impl ReasoningEffort {
             crate::rs::ReasoningEffort::Medium => Self::Medium,
             crate::rs::ReasoningEffort::High => Self::High,
             crate::rs::ReasoningEffort::Xhigh => Self::Xhigh,
+            crate::rs::ReasoningEffort::Max => Self::Max,
         }
     }
 
@@ -805,17 +808,14 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
-    /// Anthropic Messages API `output_config.effort` string; `None` for unsupported variants.
     pub fn to_messages_api(self) -> Option<&'static str> {
         match self {
             Self::None | Self::Minimal => None,
-            Self::Low => Some("low"),
-            Self::Medium => Some("medium"),
-            Self::High => Some("high"),
-            Self::Xhigh => Some("max"),
+            _ => Some(self.as_str()),
         }
     }
 }
@@ -836,7 +836,8 @@ impl std::str::FromStr for ReasoningEffort {
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
-            "xhigh" | "max" => Ok(Self::Xhigh), // max is a CLI/UX alias of xhigh
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
             _ => Err(format!(
                 "invalid reasoning effort: {s:?} (expected one of: none, minimal, low, medium, high, xhigh, max)"
             )),
@@ -844,7 +845,6 @@ impl std::str::FromStr for ReasoningEffort {
     }
 }
 
-/// Canonical wire parse only (`max` → `Xhigh`); remapped menu ids need a model catalog.
 pub fn parse_canonical_effort_token(token: &str) -> Option<ReasoningEffort> {
     token.parse().ok()
 }
@@ -1207,6 +1207,7 @@ mod tests {
             ReasoningEffort::Medium,
             ReasoningEffort::High,
             ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
         ] {
             let json = serde_json::to_string(&v).unwrap();
             assert_eq!(json, format!("\"{}\"", v.as_str()), "serialize {v:?}");
@@ -1214,31 +1215,25 @@ mod tests {
             assert_eq!(back, v, "round-trip {v:?}");
         }
         assert!(serde_json::from_str::<ReasoningEffort>("\"BOGUS\"").is_err());
-        assert!(serde_json::from_str::<ReasoningEffort>("\"max\"").is_err());
     }
 
     #[test]
-    fn reasoning_effort_from_str_accepts_max_as_xhigh() {
+    fn reasoning_effort_from_str_parses_max_and_xhigh_as_distinct_tiers() {
         assert_eq!(
             "max".parse::<ReasoningEffort>().unwrap(),
-            ReasoningEffort::Xhigh
-        );
-        assert_eq!(
-            "MAX".parse::<ReasoningEffort>().unwrap(),
-            ReasoningEffort::Xhigh
+            ReasoningEffort::Max
         );
         assert_eq!(
             "xhigh".parse::<ReasoningEffort>().unwrap(),
             ReasoningEffort::Xhigh
         );
-        assert_eq!(ReasoningEffort::Xhigh.as_str(), "xhigh");
     }
 
     #[test]
     fn parse_canonical_effort_token_helper() {
         assert_eq!(
             parse_canonical_effort_token("max"),
-            Some(ReasoningEffort::Xhigh)
+            Some(ReasoningEffort::Max)
         );
         assert_eq!(
             parse_canonical_effort_token("high"),
