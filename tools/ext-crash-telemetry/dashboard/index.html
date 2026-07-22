@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Extension Crash Telemetry</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #7c9cff;
+      --border: #2a2f3a;
+      --danger: #f87171;
+      --ok: #4ade80;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    .header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 8px; }
+    .sub { color: var(--muted); margin: 0 0 20px; max-width: 52rem; }
+    .lang {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .lang button {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      border-radius: 0;
+      padding: 6px 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .lang button[aria-pressed="true"] {
+      background: var(--accent);
+      color: #0b1020;
+    }
+    .bar {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; align-items: center;
+    }
+    input {
+      background: var(--panel); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 10px; border-radius: 8px; min-width: 280px;
+    }
+    button {
+      background: var(--accent); color: #0b1020; border: 0; border-radius: 8px;
+      padding: 8px 14px; font-weight: 600; cursor: pointer;
+    }
+    button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1fr; }
+    @media (min-width: 900px) {
+      .grid { grid-template-columns: 1.4fr 1fr; }
+    }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px;
+    }
+    .card h2 { font-size: 0.95rem; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    .n { font-variant-numeric: tabular-nums; font-weight: 600; }
+    .kind-crash { color: var(--danger); }
+    .kind-combo { color: #fbbf24; }
+    .kind-unknown { color: var(--muted); }
+    .stat { font-size: 2rem; font-weight: 700; }
+    .err { color: var(--danger); margin-top: 12px; }
+    .ok { color: var(--ok); }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    select, .note {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; padding: 4px 6px;
+    }
+    .note { width: 100%; min-width: 120px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1 data-i18n="title">Extension Crash Telemetry</h1>
+    </div>
+    <div class="lang" role="group" aria-label="Language">
+      <button type="button" id="langEn" data-lang="en" aria-pressed="true">EN</button>
+      <button type="button" id="langZh" data-lang="zh" aria-pressed="false">中文</button>
+    </div>
+  </div>
+  <p class="sub" data-i18n="subtitle">
+    Stats only: extension name + package directory · Cloudflare D1 · no absolute paths
+  </p>
+
+  <div class="bar">
+    <input id="api" type="url" data-i18n-placeholder="phApi" placeholder="Worker URL (https://….workers.dev)" />
+    <input id="token" type="password" data-i18n-placeholder="phToken" placeholder="Admin token (optional)" style="min-width:160px" />
+    <button id="refresh" type="button" data-i18n="refresh">Refresh</button>
+    <button id="saveLocal" class="secondary" type="button" data-i18n="saveUrl">Remember URL</button>
+  </div>
+
+  <div id="error" class="err" hidden></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2 data-i18n="totalReports">TOTAL REPORTS</h2>
+      <div class="stat" id="total">—</div>
+    </div>
+    <div class="card">
+      <h2 data-i18n="byDay">BY DAY (last 30)</h2>
+      <table>
+        <thead><tr><th data-i18n="colDay">Day</th><th data-i18n="colCount">Count</th></tr></thead>
+        <tbody id="byDay"></tbody>
+      </table>
+    </div>
+    <div class="card" style="grid-column: 1 / -1">
+      <h2 data-i18n="topTitle">TOP CRASH EXTENSIONS</h2>
+      <table>
+        <thead>
+          <tr>
+            <th data-i18n="colPkg">package_dir</th>
+            <th data-i18n="colExt">ext_name</th>
+            <th data-i18n="colKind">kind</th>
+            <th data-i18n="colN">n</th>
+            <th data-i18n="colTriage">triage</th>
+          </tr>
+        </thead>
+        <tbody id="top"></tbody>
+      </table>
+    </div>
+    <div class="card" style="grid-column: 1 / -1">
+      <h2 data-i18n="triageTitle">TRIAGE LOG</h2>
+      <table>
+        <thead>
+          <tr>
+            <th data-i18n="colPkg">package_dir</th>
+            <th data-i18n="colStatus">status</th>
+            <th data-i18n="colNote">note</th>
+            <th data-i18n="colUpdated">updated</th>
+          </tr>
+        </thead>
+        <tbody id="triage"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const I18N = {
+      en: {
+        title: "Extension Crash Telemetry",
+        subtitle:
+          "Stats only: extension name + package directory · Cloudflare D1 · no absolute paths",
+        phApi: "Worker URL (https://….workers.dev)",
+        phToken: "Admin token (optional)",
+        refresh: "Refresh",
+        saveUrl: "Remember URL",
+        saved: "Saved to localStorage",
+        needUrl: "Please enter the Worker URL",
+        totalReports: "TOTAL REPORTS",
+        byDay: "BY DAY (last 30)",
+        topTitle: "TOP CRASH EXTENSIONS",
+        triageTitle: "TRIAGE LOG",
+        colDay: "Day",
+        colCount: "Count",
+        colPkg: "package_dir",
+        colExt: "ext_name",
+        colKind: "kind",
+        colN: "n",
+        colTriage: "triage",
+        colStatus: "status",
+        colNote: "note",
+        colUpdated: "updated",
+        empty: "No data",
+        emptyTriage: "No triage records",
+        save: "Save",
+        notePh: "note",
+        triageFail: "Triage failed: ",
+        loadFail: "Load failed: ",
+      },
+      zh: {
+        title: "扩展崩溃遥测",
+        subtitle: "仅统计扩展名 / 包目录名 · Cloudflare D1 · 无绝对路径",
+        phApi: "Worker URL（https://….workers.dev）",
+        phToken: "管理 Token（可选）",
+        refresh: "刷新",
+        saveUrl: "记住 URL",
+        saved: "已保存到 localStorage",
+        needUrl: "请填写 Worker URL",
+        totalReports: "上报总数",
+        byDay: "按日统计（近 30 天）",
+        topTitle: "崩溃扩展热榜",
+        triageTitle: "处理记录",
+        colDay: "日期",
+        colCount: "次数",
+        colPkg: "package_dir",
+        colExt: "ext_name",
+        colKind: "类型",
+        colN: "次数",
+        colTriage: "处理",
+        colStatus: "状态",
+        colNote: "备注",
+        colUpdated: "更新时间",
+        empty: "无数据",
+        emptyTriage: "无处理记录",
+        save: "存",
+        notePh: "备注",
+        triageFail: "处理状态保存失败：",
+        loadFail: "加载失败：",
+      },
+    };
+
+    const LS_API = "ext-crash-api";
+    const LS_TOKEN = "ext-crash-token";
+    const LS_LANG = "ext-crash-lang";
+
+    const $ = (id) => document.getElementById(id);
+
+    let lang = (() => {
+      const stored = localStorage.getItem(LS_LANG);
+      if (stored === "en" || stored === "zh") return stored;
+      return (navigator.language || "").toLowerCase().startsWith("zh")
+        ? "zh"
+        : "en";
+    })();
+
+    function t(key) {
+      return (I18N[lang] && I18N[lang][key]) || I18N.en[key] || key;
+    }
+
+    function applyI18n() {
+      document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        const key = el.getAttribute("data-i18n");
+        if (key) el.textContent = t(key);
+      });
+      document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+        const key = el.getAttribute("data-i18n-placeholder");
+        if (key) el.setAttribute("placeholder", t(key));
+      });
+      $("langEn").setAttribute("aria-pressed", lang === "en" ? "true" : "false");
+      $("langZh").setAttribute("aria-pressed", lang === "zh" ? "true" : "false");
+      document.title = t("title");
+    }
+
+    function setLang(next) {
+      lang = next;
+      localStorage.setItem(LS_LANG, lang);
+      applyI18n();
+      // Re-render tables with current data if any
+      if (lastData) renderData(lastData);
+    }
+
+    $("langEn").onclick = () => setLang("en");
+    $("langZh").onclick = () => setLang("zh");
+
+    $("api").value = localStorage.getItem(LS_API) || "";
+    $("token").value = localStorage.getItem(LS_TOKEN) || "";
+
+    $("saveLocal").onclick = () => {
+      localStorage.setItem(LS_API, $("api").value.trim());
+      localStorage.setItem(LS_TOKEN, $("token").value);
+      $("error").hidden = false;
+      $("error").className = "ok";
+      $("error").textContent = t("saved");
+    };
+
+    let lastData = null;
+
+    function esc(v) {
+      return String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function renderData(data) {
+      lastData = data;
+      $("total").textContent = String(data.total ?? 0);
+
+      $("byDay").innerHTML =
+        (data.by_day || [])
+          .map(
+            (r) =>
+              `<tr><td>${esc(r.day)}</td><td class="n">${esc(r.n)}</td></tr>`
+          )
+          .join("") ||
+        `<tr><td colspan="2">${esc(t("empty"))}</td></tr>`;
+
+      const triageMap = Object.fromEntries(
+        (data.triage || []).map((x) => [x.package_dir, x])
+      );
+
+      $("top").innerHTML =
+        (data.top || [])
+          .map((r) => {
+            const tr = triageMap[r.package_dir];
+            const status = tr?.status || "open";
+            return `<tr>
+            <td><code>${esc(r.package_dir)}</code></td>
+            <td>${esc(r.ext_name)}</td>
+            <td class="kind-${esc(r.kind)}">${esc(r.kind)}</td>
+            <td class="n">${esc(r.n)}</td>
+            <td class="row-actions">
+              <select data-pkg="${esc(r.package_dir)}">
+                ${["open", "blocked", "wontfix", "fixed"]
+                  .map(
+                    (s) =>
+                      `<option value="${s}" ${
+                        s === status ? "selected" : ""
+                      }>${s}</option>`
+                  )
+                  .join("")}
+              </select>
+              <input class="note" data-note="${esc(
+                r.package_dir
+              )}" placeholder="${esc(t("notePh"))}" value="${esc(
+              tr?.note || ""
+            )}" />
+              <button type="button" data-save="${esc(r.package_dir)}">${esc(
+              t("save")
+            )}</button>
+            </td>
+          </tr>`;
+          })
+          .join("") ||
+        `<tr><td colspan="5">${esc(t("empty"))}</td></tr>`;
+
+      $("triage").innerHTML =
+        (data.triage || [])
+          .map(
+            (x) => `<tr>
+          <td><code>${esc(x.package_dir)}</code></td>
+          <td>${esc(x.status)}</td>
+          <td>${esc(x.note || "")}</td>
+          <td>${esc(x.updated_at || "")}</td>
+        </tr>`
+          )
+          .join("") ||
+        `<tr><td colspan="4">${esc(t("emptyTriage"))}</td></tr>`;
+
+      document.querySelectorAll("button[data-save]").forEach((btn) => {
+        btn.onclick = () => saveTriage(btn.getAttribute("data-save"));
+      });
+    }
+
+    async function load() {
+      $("error").hidden = true;
+      const base = $("api").value.trim().replace(/\/$/, "");
+      if (!base) {
+        $("error").hidden = false;
+        $("error").className = "err";
+        $("error").textContent = t("needUrl");
+        return;
+      }
+      const headers = {};
+      const token = $("token").value.trim();
+      if (token) headers.authorization = "Bearer " + token;
+
+      const res = await fetch(base + "/v1/stats", { headers });
+      if (!res.ok) throw new Error(res.status + " " + (await res.text()));
+      const data = await res.json();
+      renderData(data);
+    }
+
+    async function saveTriage(pkg) {
+      const base = $("api").value.trim().replace(/\/$/, "");
+      const token = $("token").value.trim();
+      const sel = document.querySelector(
+        `select[data-pkg="${CSS.escape(pkg)}"]`
+      );
+      const noteEl = document.querySelector(
+        `input[data-note="${CSS.escape(pkg)}"]`
+      );
+      const headers = { "content-type": "application/json" };
+      if (token) headers.authorization = "Bearer " + token;
+      const res = await fetch(base + "/v1/triage", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          package_dir: pkg,
+          status: sel?.value || "open",
+          note: noteEl?.value || "",
+        }),
+      });
+      if (!res.ok) {
+        $("error").hidden = false;
+        $("error").className = "err";
+        $("error").textContent = t("triageFail") + (await res.text());
+        return;
+      }
+      await load();
+    }
+
+    $("refresh").onclick = () =>
+      load().catch((e) => {
+        $("error").hidden = false;
+        $("error").className = "err";
+        $("error").textContent = t("loadFail") + String(e.message || e);
+      });
+
+    applyI18n();
+    if ($("api").value) $("refresh").click();
+  </script>
+</body>
+</html>

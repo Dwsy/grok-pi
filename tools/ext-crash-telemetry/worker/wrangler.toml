@@ -1,0 +1,12 @@
+name = "ext-crash-telemetry"
+main = "src/index.ts"
+compatibility_date = "2025-07-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ext_crash"
+database_id = "d85c550a-1808-4a57-b6f9-ef90352f6b74"
+
+# Required secrets (writes fail closed without them):
+#   openssl rand -hex 32 | wrangler secret put REPORT_TOKEN
+#   openssl rand -hex 32 | wrangler secret put ADMIN_TOKEN

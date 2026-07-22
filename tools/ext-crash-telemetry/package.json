@@ -1,0 +1,22 @@
+{
+  "name": "ext-crash-telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ext-bisect": "./src/cli.ts"
+  },
+  "scripts": {
+    "cli": "bun run src/cli.ts",
+    "test": "bun test",
+    "worker:dev": "cd worker && wrangler dev",
+    "worker:deploy": "cd worker && wrangler deploy",
+    "db:migrate": "cd worker && wrangler d1 execute ext_crash --local --file=schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250712.0",
+    "@types/bun": "latest",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.24.0"
+  }
+}
