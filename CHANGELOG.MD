@@ -49,38 +49,46 @@ Range: `v0.0.7` → `v0.0.8` (2026-07-21 → 2026-07-22).
 
 #### Session picker & theming
 
-- Session picker **full-text search** (`Ctrl+F`) for external Pi sessions
-- Transparent themes: code blocks use terminal default background; user messages get **left accent bar** when canvas is transparent
-- Transparent theme asset refresh + Pi theme map updates
+- Session picker **full-text search** (`Ctrl+F`) for external Pi sessions; dedicated search page on the external catalog, state reset on each toggle
+- Transparent themes (`pi:transparent` / `pi:transparent-light`): code blocks use terminal default background (`Color::Reset`); user messages get a **left accent bar** when canvas bg is Reset
+- Transparent theme JSON assets + Pi theme map (`theme/pi/map.rs`) updates for code/user surfaces
+- Pager app/view/dispatch wiring for session load, jump, modals, welcome, and overlay list polish that landed with the picker/search work
+
+#### Adapter / queue (pre-isolation wave)
+
+- `pi-grok-adapter` model / RPC / session / queue bridge updates: richer session catalog fields, queue mirror alignment with Pager optimistic dequeue, RPC client/session path hardening for workflow/goal hosts that follow
 
 #### Upstream & tooling
 
-- Sync Grok Build **`3af4d5d`** (`SOURCE_REV` `0f4d7c91`): monorepo pull including `xai-workflow`, workspace permission/security overhaul, shell/pager/doctor surfaces (see `docs/upstream/UPSTREAM_CHANGELOG.md`)
-- **`upstream-changelog`** skill + first structured entry for 3af4d5d
-- `pi-main` submodule advanced to latest **earendil-works/pi** `main` (`a5afc3f1`)
+- Sync Grok Build **`3af4d5d`** (`SOURCE_REV` `0f4d7c91`): monorepo pull including new **`xai-workflow`** crate, workspace permission/security overhaul (exec-risk, auto-mode, hardened shell), shell working-directory relocation, doctor/terminal-setup surfaces, prompt-queue batching knobs — full list in `docs/upstream/UPSTREAM_CHANGELOG.md`
+- **`upstream-changelog`** skill (`.pi/skills/upstream-changelog/`) + first structured entry for 3af4d5d; AGENTS.md documents two-phase sync (changelog first, merge second)
+- `pi-main` submodule advanced to latest **earendil-works/pi** `main` (`a5afc3f1`); **local dirty RPC edits in the submodule are rejected** — pin only
+- Release CI: **Swatinem/rust-cache**; release notes body built from `CHANGELOG.MD` via `scripts/extract-changelog-section.py` (strict, optional cumulative `--since 0.0.6`, install footer) then GitHub auto commit list
 
 #### Docs / legal
 
-- Queue architecture redesign research: `docs/issues/queue-architecture-redesign.md`, `queue-redesign-feasibility.md`
-- Isolation / workflow / goal Issues under `docs/issues/`
-- LICENSE: retain SpaceXAI upstream Apache-2.0; note Dwsy fork copyright
-- README / FEATURE_MATRIX / AGENTS bilingual updates for isolation + workflows
+- Queue architecture redesign research: `docs/issues/queue-architecture-redesign.md`, `queue-redesign-feasibility.md` (Pager-owned queue / eliminate multi-layer reconcile — research only, not shipped)
+- Isolation / workflow / goal Issues under `docs/issues/架构/` and `docs/issues/adapter/`
+- LICENSE: retain SpaceXAI upstream Apache-2.0; note Dwsy fork copyright for modifications
+- README / FEATURE_MATRIX / AGENTS bilingual updates for product isolation, workflows, goal, export
 
 ### Changed
 
 - Adapter model / RPC / session / queue bridge updates for upstream + workflow/goal hosts
-- Pager app logic, jump/session picker views, dispatch, and `grok-pi` bin wiring for new F2 gates and extensions
+- Pager app logic, jump/session picker views, dispatch, effects, and `grok-pi` bin wiring for new F2 gates (`pi_workflows`, `pi_goal`) and extension injection order
 - `install.sh` / path helpers respect product-isolated homes where applicable
+- Slash command registration: external-profile gating consistency across Pager-local commands; `/doctor` treated as pager-native terminal diagnostics
 
 ### Fixed
 
-- `pi-grok-bash` extension updates aligned with background-task kill control path
+- `pi-grok-bash` extension updates aligned with background-task kill control path (`x.ai/task/kill`)
 
 ### Notes
 
 - Local dirty edits to **`pi-main`** source are **not** allowed; submodule is a clean pin only
 - F2 **Pi workflows** / **Pi goal** require full quit + restart (extension inject at process start)
 - Uncommitted WIP (e.g. `/review-session` polish) is **not** part of this tag unless landed before cut
+- Upgrading from **0.0.6**: read **[0.0.7]** as well (plan mode, `/jump`, `/fork`/`/clone`/`/reload`, resource policy, Remote TUI, tree rollback, update proxy) — GitHub Release notes for 0.0.8 embed both sections by default
 
 ---
 
