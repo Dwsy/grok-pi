@@ -2,19 +2,29 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
-First, run the development server:
+Local development (no basePath):
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
+
+### GitHub Pages
+
+Production site: **https://dwsy.github.io/grok-pi/**
+
+CI (`.github/workflows/website.yml`) builds a static export with
+`GITHUB_PAGES=true` (`basePath=/grok-pi`) and deploys via `actions/deploy-pages`.
+
+Local static preview matching Pages:
+
+```bash
+GITHUB_PAGES=true npm run build
+npx serve out
+# open http://localhost:3000/grok-pi/
+```
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

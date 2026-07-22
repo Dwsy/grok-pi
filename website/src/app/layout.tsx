@@ -24,7 +24,7 @@ export const metadata: Metadata = {
     title: "grok-pi",
     description: "Pi's brain. Grok's body. Your terminal.",
     type: "website",
-    url: "https://grok-pi.dev",
+    url: "https://dwsy.github.io/grok-pi/",
   },
   twitter: {
     card: "summary_large_image",
