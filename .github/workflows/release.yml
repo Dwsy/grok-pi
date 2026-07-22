@@ -128,8 +128,31 @@ jobs:
           cp install.sh install.ps1 release-assets/
           chmod +x release-assets/install.sh
 
+      - name: Extract CHANGELOG section for this tag
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF_NAME}"
+          ver="${ref#v}"
+          mkdir -p dist
+          python3 scripts/extract-changelog-section.py \
+            "${ver}" \
+            CHANGELOG.MD \
+            -o dist/release-notes.md \
+            --repo "${GITHUB_REPOSITORY}"
+          # softprops prepends body_path when generate_release_notes is true,
+          # so keep a blank line before the auto-generated commit list.
+          printf '\n---\n\n' >> dist/release-notes.md
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "notes_path=dist/release-notes.md" >> "$GITHUB_OUTPUT"
+          echo "--- release notes preview (first 40 lines) ---"
+          head -n 40 dist/release-notes.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          # CHANGELOG.MD section for this tag, then GitHub auto commit notes.
+          body_path: ${{ steps.notes.outputs.notes_path }}
           generate_release_notes: true
           files: release-assets/*
