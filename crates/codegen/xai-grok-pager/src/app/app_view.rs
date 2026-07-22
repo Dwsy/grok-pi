@@ -122,6 +122,21 @@ pub struct ExternalUiState {
     /// Experimental Remote TUI session id (PI_GROK_REMOTE_TUI). When set,
     /// keyboard input is forwarded as Pi key sequences instead of prompt edit.
     pub remote_tui_id: Option<String>,
+    /// Overlay stack for Remote TUI components (push/pop/focus).
+    /// The top of the stack receives key input. Corresponds to TS-side
+    /// showOverlay/hideOverlay semantics.
+    pub remote_tui_overlays: Vec<RemoteTuiOverlay>,
+    /// Extension shortcut registry (populated from pi/ui/shortcuts RPC).
+    pub extension_shortcuts: crate::app::extension_shortcuts::ExtensionShortcutRegistry,
+}
+
+/// A single overlay entry in the Remote TUI overlay stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteTuiOverlay {
+    pub id: String,
+    pub title: Option<String>,
+    /// Last rendered frame lines (projected to the widget surface).
+    pub lines: Vec<String>,
 }
 
 /// Semantic placement supplied by an external ACP adapter. Grok's native
@@ -439,6 +454,9 @@ pub struct SessionPickerEntry {
     pub repo_name: String,
     /// Human-readable worktree label (if the session was created in a named worktree).
     pub worktree_label: Option<String>,
+    /// Backing Pi session path of the fork/copy parent, when this session was
+    /// branched from another. Used to render the fork/copy relationship tree.
+    pub parent_session_path: Option<String>,
     /// Lazy-loaded detail for the expanded card view.
     pub card_detail: Option<CardDetail>,
 }
@@ -2181,45 +2199,109 @@ impl AppView {
     ) -> bool {
         match op {
             "open" => {
-                if let Some(id) = id {
-                    self.external_ui.remote_tui_id = Some(id);
-                }
-                let mut header = vec!["[Remote TUI experimental]".to_string()];
-                if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
-                    header.push(title);
-                }
-                header.push("↑/↓ · Enter · Esc".to_string());
-                self.set_external_widget(
-                    "remote_tui".to_string(),
-                    Some(header),
-                    ExternalWidgetPlacement::AboveEditor,
-                )
+                let overlay_id = id.unwrap_or_else(|| "default".to_string());
+                self.external_ui.remote_tui_id = Some(overlay_id.clone());
+                self.external_ui.remote_tui_overlays.push(RemoteTuiOverlay {
+                    id: overlay_id,
+                    title: title.clone(),
+                    lines: lines.unwrap_or_default(),
+                });
+                self.project_remote_tui_frame()
             }
             "frame" => {
-                if let Some(id) = id {
-                    self.external_ui.remote_tui_id = Some(id);
+                if let Some(id) = &id {
+                    self.external_ui.remote_tui_id = Some(id.clone());
                 }
-                let mut frame = vec!["[Remote TUI experimental]".to_string()];
-                if let Some(lines) = lines {
-                    frame.extend(lines);
+                // Update the top overlay's lines (or create one if stack is empty)
+                if let Some(top) = self.external_ui.remote_tui_overlays.last_mut() {
+                    if let Some(lines) = lines {
+                        top.lines = lines;
+                    }
+                    if let Some(t) = title {
+                        top.title = Some(t);
+                    }
+                } else {
+                    let overlay_id = id.unwrap_or_else(|| "default".to_string());
+                    self.external_ui.remote_tui_id = Some(overlay_id.clone());
+                    self.external_ui.remote_tui_overlays.push(RemoteTuiOverlay {
+                        id: overlay_id,
+                        title,
+                        lines: lines.unwrap_or_default(),
+                    });
                 }
-                frame.push("↑/↓ · Enter · Esc".to_string());
-                self.set_external_widget(
-                    "remote_tui".to_string(),
-                    Some(frame),
-                    ExternalWidgetPlacement::AboveEditor,
-                )
+                self.project_remote_tui_frame()
+            }
+            "overlay_push" => {
+                // showOverlay: push a new overlay onto the stack
+                let overlay_id = id.unwrap_or_else(|| format!("overlay-{}", self.external_ui.remote_tui_overlays.len()));
+                self.external_ui.remote_tui_id = Some(overlay_id.clone());
+                self.external_ui.remote_tui_overlays.push(RemoteTuiOverlay {
+                    id: overlay_id,
+                    title,
+                    lines: lines.unwrap_or_default(),
+                });
+                self.project_remote_tui_frame()
+            }
+            "overlay_pop" => {
+                // hideOverlay: pop the top overlay, restore previous
+                self.external_ui.remote_tui_overlays.pop();
+                if let Some(top) = self.external_ui.remote_tui_overlays.last() {
+                    self.external_ui.remote_tui_id = Some(top.id.clone());
+                    self.project_remote_tui_frame()
+                } else {
+                    // Stack empty — close entirely
+                    self.external_ui.remote_tui_id = None;
+                    self.set_external_widget(
+                        "remote_tui".to_string(),
+                        None,
+                        ExternalWidgetPlacement::AboveEditor,
+                    )
+                }
             }
             "close" => {
-                self.external_ui.remote_tui_id = None;
-                self.set_external_widget(
-                    "remote_tui".to_string(),
-                    None,
-                    ExternalWidgetPlacement::AboveEditor,
-                )
+                // Close a specific overlay by id, or the top one
+                if let Some(id) = &id {
+                    self.external_ui.remote_tui_overlays.retain(|o| &o.id != id);
+                } else {
+                    self.external_ui.remote_tui_overlays.pop();
+                }
+                if let Some(top) = self.external_ui.remote_tui_overlays.last() {
+                    self.external_ui.remote_tui_id = Some(top.id.clone());
+                    self.project_remote_tui_frame()
+                } else {
+                    self.external_ui.remote_tui_id = None;
+                    self.set_external_widget(
+                        "remote_tui".to_string(),
+                        None,
+                        ExternalWidgetPlacement::AboveEditor,
+                    )
+                }
             }
             _ => false,
         }
+    }
+
+    /// Project the top overlay's frame lines to the widget surface.
+    fn project_remote_tui_frame(&mut self) -> bool {
+        let Some(top) = self.external_ui.remote_tui_overlays.last() else {
+            return self.set_external_widget(
+                "remote_tui".to_string(),
+                None,
+                ExternalWidgetPlacement::AboveEditor,
+            );
+        };
+        let mut frame = Vec::new();
+        if let Some(title) = &top.title {
+            if !title.trim().is_empty() {
+                frame.push(format!("\x1b[1m{}\x1b[0m", title));
+            }
+        }
+        frame.extend(top.lines.iter().cloned());
+        self.set_external_widget(
+            "remote_tui".to_string(),
+            Some(frame),
+            ExternalWidgetPlacement::AboveEditor,
+        )
     }
 
     /// Map a crossterm key to a Pi-TUI legacy key sequence for remote host.
@@ -2696,6 +2778,18 @@ impl AppView {
             Event::Key(k) if k.kind != KeyEventKind::Release => Some(k),
             _ => None,
         };
+        // Extension shortcut dispatch: check registered extension shortcuts
+        // BEFORE remote-tui and normal prompt handling.
+        if self.external_agent
+            && let Some(key) = key_event
+        {
+            if let Some(shortcut_key) = self.external_ui.extension_shortcuts.match_key(key) {
+                let key_owned = shortcut_key.to_string();
+                self.pending_effects
+                    .push(crate::app::actions::Effect::ShortcutDispatch { key: key_owned });
+                return InputOutcome::Changed;
+            }
+        }
         // Experimental Remote TUI: when a remote component session is open,
         // forward keys to the Pi process host instead of editing the prompt.
         if self.external_agent
@@ -8104,6 +8198,7 @@ pub(crate) mod tests {
             branch: None,
             repo_name: "tmp-repo".into(),
             worktree_label: None,
+            parent_session_path: None,
             card_detail: None,
         }
     }
@@ -11969,6 +12064,7 @@ pub(crate) mod tests {
             branch: None,
             repo_name: "r".into(),
             worktree_label: None,
+            parent_session_path: None,
             card_detail: None,
         };
         let f_key = Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));

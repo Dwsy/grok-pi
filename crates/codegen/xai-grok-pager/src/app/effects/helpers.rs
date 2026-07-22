@@ -582,6 +582,11 @@ pub(super) fn parse_session_picker_entries(
                 .or_else(|| v.get("worktree_label"))
                 .and_then(|s| s.as_str())
                 .map(String::from);
+            let parent_session_path = v
+                .get("parentSessionPath")
+                .or_else(|| v.get("parent_session_path"))
+                .and_then(|s| s.as_str())
+                .map(String::from);
             let repo_name = crate::views::session_picker::repo_name_from_cwd(&cwd_str);
             Some(SessionPickerEntry {
                 id,
@@ -602,6 +607,7 @@ pub(super) fn parse_session_picker_entries(
                 branch,
                 repo_name,
                 worktree_label,
+                parent_session_path,
                 card_detail: None,
             })
         })

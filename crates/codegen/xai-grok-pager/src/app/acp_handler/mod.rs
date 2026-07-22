@@ -712,8 +712,33 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "pi/ui/plan_file" => handle_pi_ui_plan_file(notif, app),
         // Experimental Remote TUI frame projection (PI_GROK_REMOTE_TUI=1 on Pi).
         "pi/ui/remote_tui" => handle_pi_ui_remote_tui(notif, app),
+        // Extension shortcut registry sync from Pi.
+        "pi/ui/shortcuts" => handle_pi_ui_shortcuts(notif, app),
         _ => false,
     }
+}
+
+fn handle_pi_ui_shortcuts(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(shortcuts_arr) = params.get("shortcuts").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    let shortcuts: Vec<crate::app::extension_shortcuts::ExtensionShortcut> = shortcuts_arr
+        .iter()
+        .filter_map(|v| {
+            Some(crate::app::extension_shortcuts::ExtensionShortcut {
+                key: v.get("key")?.as_str()?.to_string(),
+                description: v.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                extension: v.get("extension").and_then(|e| e.as_str()).unwrap_or("unknown").to_string(),
+                enabled: v.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true),
+                remapped_to: v.get("remappedTo").and_then(|r| r.as_str()).map(|s| s.to_string()),
+            })
+        })
+        .collect();
+    app.external_ui.extension_shortcuts.set_shortcuts(shortcuts);
+    true
 }
 
 fn pi_ui_params(notif: &acp::ExtNotification) -> Option<serde_json::Value> {
@@ -930,6 +955,10 @@ fn handle_pi_ui_session_catalog(notif: &acp::ExtNotification, app: &mut AppView)
                 branch: None,
                 repo_name: crate::views::session_picker::repo_name_from_cwd(&cwd),
                 worktree_label: None,
+                parent_session_path: session
+                    .get("parentSessionPath")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
                 card_detail: None,
             })
         })

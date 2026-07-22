@@ -743,6 +743,7 @@ fn make_picker_entry(id: &str, cwd: &str) -> crate::app::app_view::SessionPicker
         branch: None,
         repo_name: "repo".into(),
         worktree_label: None,
+        parent_session_path: None,
         card_detail: None,
     }
 }
@@ -773,6 +774,8 @@ fn open_session_picker_with(
         pending_delete: None,
         preview_scroll: 0,
         search_mode: false,
+        preview_mode: false,
+        preview_messages: None,
     });
 }
 /// Toast strings match the expected format and contain on/off

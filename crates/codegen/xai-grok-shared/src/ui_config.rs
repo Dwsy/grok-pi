@@ -21,6 +21,10 @@ pub struct UiConfig {
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
     pub pi_tree_file_rollback: bool,
+    /// Skip the "Summarize branch?" prompt when navigating the session tree.
+    /// When true, Enter navigates immediately without summarization.
+    #[serde(default)]
+    pub pi_tree_skip_summary_prompt: bool,
     /// Enable upstream-compatible Rhai workflows in grok-pi (xai-workflow + Pi spawn).
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
@@ -335,6 +339,7 @@ impl Default for UiConfig {
             pi_builtin_tools: PiBuiltinTools::default(),
             psm_resume_index: false,
             pi_tree_file_rollback: false,
+            pi_tree_skip_summary_prompt: false,
             pi_workflows: false,
             pi_goal: false,
             pi_cache_graph: true,

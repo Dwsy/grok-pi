@@ -24,6 +24,10 @@ pub struct PiSessionInfo {
     pub model_id: Option<String>,
     pub total_tokens: Option<u64>,
     pub total_cost: Option<f64>,
+    /// Path of the parent session this one was forked/copied from (PSM
+    /// `sessions.parent_session_path`). Used to render the fork/copy
+    /// relationship tree in the resume picker. `None` for root sessions.
+    pub parent_session_path: Option<String>,
 }
 
 /// Pi's `switch_session` response. A cancelled response is successful RPC
@@ -663,6 +667,7 @@ fn parse_session_file(path: &Path) -> Option<PiSessionInfo> {
         model_id,
         total_tokens,
         total_cost,
+        parent_session_path: None,
     })
 }
 

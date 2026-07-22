@@ -1122,6 +1122,8 @@ impl AgentView {
                 pending_delete: None,
                 preview_scroll: 0,
                 search_mode: false,
+                preview_mode: false,
+                preview_messages: None,
             });
             return InputOutcome::Action(Action::FetchSessionList);
         }

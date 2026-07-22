@@ -1090,12 +1090,15 @@ fn session_picker_is_external(app: &AppView) -> bool {
     app.session_picker_source_filter == crate::views::session_picker::SourceFilter::External
 }
 /// The cwd to scope a Pi session search to, taken from the live picker surface.
+/// Returns `None` (global search) when the picker is on the "All" tab, so a
+/// full-text search isn't silently limited to the current folder.
 fn active_picker_cwd(app: &AppView) -> Option<std::path::PathBuf> {
     use crate::views::modal::ActiveModal;
     if let Some(agent) = get_active_agent(app)
-        && let Some(ActiveModal::SessionPicker { .. }) = agent.active_modal.as_ref()
+        && let Some(ActiveModal::SessionPicker { window, .. }) = agent.active_modal.as_ref()
     {
-        return Some(agent.session.cwd.clone());
+        // Tab 1 == "All" → search globally (no cwd scope).
+        return (window.active_tab == 0).then(|| agent.session.cwd.clone());
     }
     Some(app.cwd.clone())
 }
@@ -1269,6 +1272,8 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
             pending_delete: None,
             preview_scroll: 0,
             search_mode: false,
+            preview_mode: false,
+            preview_messages: None,
         });
     });
     if external_agent {

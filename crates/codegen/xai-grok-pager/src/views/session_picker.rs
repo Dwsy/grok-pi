@@ -83,6 +83,8 @@ pub enum PickerItem {
 /// the welcome-screen `render_session_picker` and the
 /// `ActiveModal::SessionPicker` rendering in `agent_view.rs`.
 pub struct SessionEntryData {
+    /// Display label with tree prefix prepended (e.g. "├─ Fix bug").
+    pub display_label: String,
     pub summary: String,
     pub right_text: String,
     pub is_selected: bool,
@@ -94,6 +96,12 @@ pub struct SessionEntryData {
     pub badge: &'static str,
     pub badge_color: Option<ratatui::style::Color>,
     pub collapsible: bool,
+    /// Tree connector prefix (e.g. "├─ ", "└─ ", "│  ") for fork/copy hierarchy.
+    pub tree_prefix: String,
+    /// Tree depth (0 = root, 1+ = forked children).
+    pub tree_depth: usize,
+    /// Whether this entry has fork children (shown with a ▸/▾ indicator).
+    pub has_children: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -592,6 +600,123 @@ pub(crate) fn sync_session_picker_query_expansion(
 }
 
 // ---------------------------------------------------------------------------
+// Fork tree building
+// ---------------------------------------------------------------------------
+
+/// Per-entry tree display info: connector prefix, depth, and child flag.
+#[derive(Debug, Clone, Default)]
+struct TreeDisplayInfo {
+    prefix: String,
+    depth: usize,
+    has_children: bool,
+}
+
+/// Compute tree display info for each filtered entry based on
+/// `parent_session_path` relationships. Returns a map from
+/// filtered-index position to [`TreeDisplayInfo`].
+///
+/// Sessions whose parent is also in the filtered list are rendered as
+/// children with `├─`/`└─` connectors (like pi-main's threaded view).
+/// Sessions without a parent in the list are roots (no prefix).
+fn compute_tree_display(
+    entries_data: &[SessionPickerEntry],
+    filtered_indices: &[usize],
+) -> std::collections::HashMap<usize, TreeDisplayInfo> {
+    use std::collections::HashMap;
+
+    // Map session_path -> filtered position (fi)
+    let mut path_to_fi: HashMap<&str, usize> = HashMap::new();
+    for (fi, &orig_idx) in filtered_indices.iter().enumerate() {
+        if let Some(ref path) = entries_data[orig_idx].session_path {
+            path_to_fi.insert(path.as_str(), fi);
+        }
+    }
+
+    // Build children map: fi -> Vec<child fi>
+    let mut children_of: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut parent_of: HashMap<usize, usize> = HashMap::new();
+    for (fi, &orig_idx) in filtered_indices.iter().enumerate() {
+        if let Some(ref parent_path) = entries_data[orig_idx].parent_session_path
+            && let Some(&parent_fi) = path_to_fi.get(parent_path.as_str())
+        {
+            children_of.entry(parent_fi).or_default().push(fi);
+            parent_of.insert(fi, parent_fi);
+        }
+    }
+
+    // Sort children by latest activity descending
+    for children in children_of.values_mut() {
+        children.sort_by(|&a, &b| {
+            let ta = entries_data[filtered_indices[a]]
+                .last_active_at
+                .unwrap_or(entries_data[filtered_indices[a]].updated_at)
+                .timestamp_millis();
+            let tb = entries_data[filtered_indices[b]]
+                .last_active_at
+                .unwrap_or(entries_data[filtered_indices[b]].updated_at)
+                .timestamp_millis();
+            tb.cmp(&ta)
+        });
+    }
+
+    // Flatten via DFS from roots, tracking ancestor continuation lines.
+    let mut result: HashMap<usize, TreeDisplayInfo> = HashMap::new();
+    let roots: Vec<usize> = (0..filtered_indices.len())
+        .filter(|fi| !parent_of.contains_key(fi))
+        .collect();
+
+    fn walk(
+        fi: usize,
+        depth: usize,
+        ancestors: &[bool],
+        is_last: bool,
+        children_of: &HashMap<usize, Vec<usize>>,
+        result: &mut HashMap<usize, TreeDisplayInfo>,
+    ) {
+        // Build prefix
+        let prefix = if depth == 0 {
+            String::new()
+        } else {
+            let mut parts: Vec<&str> = ancestors
+                .iter()
+                .map(|&cont| if cont { "│  " } else { "   " })
+                .collect();
+            parts.push(if is_last { "└─ " } else { "├─ " });
+            parts.join("")
+        };
+        let kids = children_of.get(&fi).cloned().unwrap_or_default();
+        result.insert(
+            fi,
+            TreeDisplayInfo {
+                prefix,
+                depth,
+                has_children: !kids.is_empty(),
+            },
+        );
+        for (ci, &child_fi) in kids.iter().enumerate() {
+            let child_is_last = ci == kids.len() - 1;
+            let continues = if depth > 0 { !is_last } else { false };
+            let mut new_ancestors = ancestors.to_vec();
+            new_ancestors.push(continues);
+            walk(
+                child_fi,
+                depth + 1,
+                &new_ancestors,
+                child_is_last,
+                children_of,
+                result,
+            );
+        }
+    }
+
+    for &root_fi in &roots {
+        walk(root_fi, 0, &[], true, &children_of, &mut result);
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Session entry data building
 // ---------------------------------------------------------------------------
 
@@ -606,6 +731,9 @@ pub(crate) fn build_session_entry_data(
     content_width: u16,
 ) -> Vec<SessionEntryData> {
     use crate::render::line_utils::truncate_str;
+
+    // Build fork tree and flatten to get tree prefixes for each entry.
+    let tree_info = compute_tree_display(entries_data, filtered_indices);
 
     filtered_indices
         .iter()
@@ -627,6 +755,17 @@ pub(crate) fn build_session_entry_data(
                 .name
                 .as_deref()
                 .is_some_and(|name| !name.trim().is_empty());
+
+            // Tree display info for fork/copy hierarchy
+            let tree_display = tree_info.get(&fi);
+            let tree_prefix = tree_display.map(|t| t.prefix.clone()).unwrap_or_default();
+            let tree_depth = tree_display.map(|t| t.depth).unwrap_or(0);
+            let has_children = tree_display.map(|t| t.has_children).unwrap_or(false);
+            let display_label = if tree_prefix.is_empty() {
+                summary.clone()
+            } else {
+                format!("{tree_prefix}{summary}")
+            };
 
             let mut field_data: Vec<(String, String)> = Vec::new();
             if is_expanded {
@@ -684,6 +823,7 @@ pub(crate) fn build_session_entry_data(
 
             SessionEntryData {
                 summary,
+                display_label,
                 right_text,
                 is_selected,
                 is_expanded,
@@ -693,6 +833,9 @@ pub(crate) fn build_session_entry_data(
                 badge: crate::app::badge_for_picker_source(&entry.source),
                 badge_color: None,
                 collapsible: !is_foreign,
+                tree_prefix,
+                tree_depth,
+                has_children,
             }
         })
         .collect()
@@ -738,7 +881,7 @@ pub(crate) fn build_grouped_picker_entries<'a>(
             // Use grouped position for selection, not flat filtered index.
             let selected = !state.selection_hidden && grouped_pos == state.selected;
             result.push(PickerEntry::Row(PickerRow {
-                label: &b.summary,
+                label: &b.display_label,
                 right_label: &b.right_text,
                 selected,
                 expanded: b.is_expanded,
@@ -826,7 +969,7 @@ pub(crate) fn build_content_entry_data(
             });
 
             SessionEntryData {
-                summary,
+                summary: summary.clone(),
                 right_text,
                 is_selected,
                 is_expanded,
@@ -836,6 +979,10 @@ pub(crate) fn build_content_entry_data(
                 badge: "",
                 badge_color: None,
                 collapsible: true,
+                tree_prefix: String::new(),
+                tree_depth: 0,
+                has_children: false,
+                display_label: summary,
             }
         })
         .collect()
@@ -1022,6 +1169,7 @@ mod tests {
             branch: None,
             repo_name: repo.into(),
             worktree_label: None,
+            parent_session_path: None,
             card_detail: None,
         }
     }

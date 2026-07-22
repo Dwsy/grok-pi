@@ -1040,6 +1040,8 @@ impl AgentView {
                                         pending_delete: None,
                                         preview_scroll: 0,
                                         search_mode: false,
+                                        preview_mode: false,
+                                        preview_messages: None,
                                     });
                                     return InputOutcome::Action(Action::FetchSessionList);
                                 }
@@ -1132,6 +1134,7 @@ impl AgentView {
                 pending_delete,
                 window,
                 search_mode,
+                preview_mode,
                 ..
             } => {
                 use crate::views::session_picker::{
@@ -1264,6 +1267,40 @@ impl AgentView {
                         state.scroll_offset = None;
                     }
                     return InputOutcome::Changed;
+                }
+
+                // ── Preview mode (PSM/external picker only) ──
+                // When PSM is open, Right arrow enters preview mode to browse
+                // session content (like review-x), Left arrow exits. This is
+                // distinct from the expand/collapse behavior (which shows info
+                // fields already visible in the preview pane below).
+                if *source_filter == crate::views::session_picker::SourceFilter::External
+                    && let crossterm::event::Event::Key(key) = ev
+                    && key.kind == KeyEventKind::Press
+                    && key.modifiers.is_empty()
+                {
+                    match key.code {
+                        // Right arrow: enter preview mode
+                        crossterm::event::KeyCode::Right if !*preview_mode => {
+                            *preview_mode = true;
+                            return InputOutcome::Changed;
+                        }
+                        // Left arrow: exit preview mode
+                        crossterm::event::KeyCode::Left if *preview_mode => {
+                            *preview_mode = false;
+                            return InputOutcome::Changed;
+                        }
+                        // Up/Down in preview mode: scroll the preview content
+                        crossterm::event::KeyCode::Up if *preview_mode => {
+                            // Scroll preview up (handled by preview_scroll in render)
+                            return InputOutcome::Changed;
+                        }
+                        crossterm::event::KeyCode::Down if *preview_mode => {
+                            // Scroll preview down (handled by preview_scroll in render)
+                            return InputOutcome::Changed;
+                        }
+                        _ => {}
+                    }
                 }
 
                 // ── Search mode input handling ──
@@ -1943,6 +1980,7 @@ impl AgentView {
 
         // SessionTree: chrome first, then list click / scroll / double-click go.
         if let Some(ActiveModal::SessionTree { state, window }) = &mut self.active_modal {
+            let skip_summary = state.skip_summary_prompt;
             let outcome = mw::handle_modal_mouse(window, mouse.kind, mouse.column, mouse.row);
             match outcome {
                 ModalWindowOutcome::CloseRequested => {
@@ -1951,7 +1989,7 @@ impl AgentView {
                 }
                 ModalWindowOutcome::Handled => return InputOutcome::Changed,
                 ModalWindowOutcome::Unhandled => {
-                    return Self::handle_session_tree_mouse(state, mouse);
+                    return Self::handle_session_tree_mouse(state, mouse, skip_summary);
                 }
                 _ => return InputOutcome::Changed,
             }
@@ -2525,9 +2563,70 @@ impl AgentView {
                 pending_delete,
                 preview_scroll,
                 search_mode,
+                preview_mode,
+                preview_messages,
                 ..
             } = active_modal
             {
+                // ── Preview mode: scrollable session message preview (PSM) ──
+                if *preview_mode {
+                    let compact = self.scrollback.appearance().prompt.compact;
+                    let preview_shortcuts: Vec<Shortcut> = vec![
+                        Shortcut { label: "\u{2191}\u{2193} scroll", clickable: false, id: 0 },
+                        Shortcut { label: "PgUp/PgDn page", clickable: false, id: 0 },
+                        Shortcut { label: "\u{2190} back", clickable: false, id: 0 },
+                        Shortcut { label: "\u{23ce} resume", clickable: false, id: 0 },
+                    ];
+                    let modal_config = ModalWindowConfig {
+                        title: "Session preview",
+                        tabs: None,
+                        shortcuts: &preview_shortcuts,
+                        sizing: ModalSizing {
+                            width_pct: 0.85,
+                            max_width: 180,
+                            min_width: 48,
+                            v_margin: 3,
+                            h_pad: 1,
+                            v_pad: 0,
+                            footer_lines: 2,
+                        }
+                        .with_compact(compact),
+                        fold_info: None,
+                    };
+                    if let Some(mca) = mw::render_modal_window(buf, area, window, &modal_config, &theme) {
+                        let content_area = mca.content;
+                        let messages = preview_messages.as_deref().unwrap_or(&[]);
+                        if messages.is_empty() {
+                            let line = ratatui::text::Line::from(ratatui::text::Span::styled(
+                                "  No messages to preview",
+                                ratatui::style::Style::default().fg(theme.gray_dim),
+                            ));
+                            ratatui::widgets::Paragraph::new(vec![line]).render(content_area, buf);
+                        } else {
+                            let lines: Vec<ratatui::text::Line> = messages
+                                .iter()
+                                .map(|msg| {
+                                    ratatui::text::Line::from(ratatui::text::Span::styled(
+                                        msg.clone(),
+                                        ratatui::style::Style::default().fg(theme.text_primary),
+                                    ))
+                                })
+                                .collect();
+                            let total = lines.len();
+                            let max_scroll = total.saturating_sub(content_area.height as usize);
+                            let scroll = (*preview_scroll as usize).min(max_scroll);
+                            let visible: Vec<ratatui::text::Line> = lines
+                                .iter()
+                                .skip(scroll)
+                                .take(content_area.height as usize)
+                                .cloned()
+                                .collect();
+                            let para = ratatui::widgets::Paragraph::new(visible)
+                                .wrap(ratatui::widgets::Wrap { trim: false });
+                            para.render(content_area, buf);
+                        }
+                    }
+                } else
                 // ── Search mode: dedicated full-text search page ──
                 if *search_mode {
                     let compact = self.scrollback.appearance().prompt.compact;
@@ -2695,12 +2794,27 @@ impl AgentView {
                     }];
                     shortcuts.extend([
                         Shortcut {
-                            label: "s sort",
+                            label: "\u{23ce} resume",
+                            clickable: false,
+                            id: 0,
+                        },
+                        Shortcut {
+                            label: "\u{2192} preview",
+                            clickable: false,
+                            id: 0,
+                        },
+                        Shortcut {
+                            label: "e expand",
                             clickable: false,
                             id: 0,
                         },
                         Shortcut {
                             label: "/ search",
+                            clickable: false,
+                            id: 0,
+                        },
+                        Shortcut {
+                            label: "s sort",
                             clickable: false,
                             id: 0,
                         },
@@ -2712,11 +2826,21 @@ impl AgentView {
                             id: 0,
                         });
                         shortcuts.push(Shortcut {
+                            label: "y copy",
+                            clickable: false,
+                            id: 0,
+                        });
+                        shortcuts.push(Shortcut {
                             label: "d delete",
                             clickable: false,
                             id: 0,
                         });
                     }
+                    shortcuts.push(Shortcut {
+                        label: "Esc close",
+                        clickable: false,
+                        id: 0,
+                    });
                     shortcuts
                 };
                 // Surface `i search` in the footer when vim nav mode is active.
@@ -3240,8 +3364,8 @@ impl AgentView {
     fn handle_session_tree_mouse(
         state: &mut crate::views::session_tree::SessionTreeState,
         mouse: &crossterm::event::MouseEvent,
+        skip_summary: bool,
     ) -> InputOutcome {
-        use crate::app::actions::Action;
         use crate::views::session_tree::SessionTreeFocus;
         use crossterm::event::{MouseButton, MouseEventKind};
         use std::time::{Duration, Instant};
@@ -3286,11 +3410,18 @@ impl AgentView {
                     state.ensure_visible(state.list_viewport.max(1));
                     if is_double {
                         if let Some(entry_id) = state.selected_id() {
-                            return InputOutcome::Action(Action::NavigateSessionTree {
-                                entry_id,
-                                summarize: false,
-                                custom_instructions: None,
-                            });
+                            if Some(entry_id.as_str()) == state.leaf_id.as_deref() {
+                                return InputOutcome::Changed;
+                            }
+                            if skip_summary {
+                                return InputOutcome::Action(Action::NavigateSessionTree {
+                                    entry_id,
+                                    summarize: false,
+                                    custom_instructions: None,
+                                });
+                            }
+                            state.begin_summarize_prompt(entry_id);
+                            return InputOutcome::Changed;
                         }
                     }
                     return InputOutcome::Changed;
@@ -3316,6 +3447,10 @@ impl AgentView {
         let Some(ActiveModal::SessionTree { state, .. }) = self.active_modal.as_mut() else {
             return InputOutcome::Unchanged;
         };
+
+        // Skip-summary preference is stored on the tree state (set when the
+        // modal opened) so we don't need AppView access here.
+        let skip_summary_prompt = state.skip_summary_prompt;
 
         if matches!(state.focus, SessionTreeFocus::LabelEdit) {
             match key.code {
@@ -3345,6 +3480,77 @@ impl AgentView {
                 }
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     state.label_draft.push(c);
+                    return InputOutcome::Changed;
+                }
+                _ => return InputOutcome::Unchanged,
+            }
+        }
+
+        if matches!(state.focus, SessionTreeFocus::SummarizePrompt) {
+            match key.code {
+                KeyCode::Esc => {
+                    state.cancel_summarize();
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Up => {
+                    state.summarize_move(-1);
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Down => {
+                    state.summarize_move(1);
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Enter => {
+                    use crate::views::session_tree::SummarizeConfirmAction;
+                    match state.summarize_confirm() {
+                        SummarizeConfirmAction::Navigate {
+                            entry_id,
+                            summarize,
+                            custom_instructions,
+                        } => {
+                            return InputOutcome::Action(Action::NavigateSessionTree {
+                                entry_id,
+                                summarize,
+                                custom_instructions,
+                            });
+                        }
+                        SummarizeConfirmAction::EnterCustomEditor => {
+                            return InputOutcome::Changed;
+                        }
+                    }
+                }
+                _ => return InputOutcome::Unchanged,
+            }
+        }
+
+        if matches!(state.focus, SessionTreeFocus::SummarizeCustom) {
+            match key.code {
+                KeyCode::Esc => {
+                    state.cancel_summarize();
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Enter => {
+                    use crate::views::session_tree::SummarizeConfirmAction;
+                    if let SummarizeConfirmAction::Navigate {
+                        entry_id,
+                        summarize,
+                        custom_instructions,
+                    } = state.summarize_custom_confirm()
+                    {
+                        return InputOutcome::Action(Action::NavigateSessionTree {
+                            entry_id,
+                            summarize,
+                            custom_instructions,
+                        });
+                    }
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Backspace => {
+                    state.summarize_custom_draft.pop();
+                    return InputOutcome::Changed;
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.summarize_custom_draft.push(c);
                     return InputOutcome::Changed;
                 }
                 _ => return InputOutcome::Unchanged,
@@ -3394,6 +3600,14 @@ impl AgentView {
                 state.move_selection(1);
                 InputOutcome::Changed
             }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                let _ = state.fold_or_navigate(crate::views::session_tree::FoldDirection::Up);
+                InputOutcome::Changed
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                let _ = state.fold_or_navigate(crate::views::session_tree::FoldDirection::Down);
+                InputOutcome::Changed
+            }
             KeyCode::Left | KeyCode::PageUp => {
                 state.page(-1, 10);
                 InputOutcome::Changed
@@ -3402,18 +3616,30 @@ impl AgentView {
                 state.page(1, 10);
                 InputOutcome::Changed
             }
-            KeyCode::Tab => {
-                let _ = state.toggle_fold_selected();
+            KeyCode::Tab | KeyCode::BackTab => {
+                let dir = if matches!(key.code, KeyCode::BackTab) {
+                    crate::views::session_tree::FoldDirection::Up
+                } else {
+                    crate::views::session_tree::FoldDirection::Down
+                };
+                let _ = state.fold_or_navigate(dir);
                 InputOutcome::Changed
             }
             KeyCode::Enter => {
-                let summarize = shift;
                 if let Some(entry_id) = state.selected_id() {
-                    InputOutcome::Action(Action::NavigateSessionTree {
-                        entry_id,
-                        summarize,
-                        custom_instructions: None,
-                    })
+                    if Some(entry_id.as_str()) == state.leaf_id.as_deref() {
+                        self.show_toast("Already at this point");
+                        InputOutcome::Changed
+                    } else if skip_summary_prompt {
+                        InputOutcome::Action(Action::NavigateSessionTree {
+                            entry_id,
+                            summarize: false,
+                            custom_instructions: None,
+                        })
+                    } else {
+                        state.begin_summarize_prompt(entry_id);
+                        InputOutcome::Changed
+                    }
                 } else {
                     InputOutcome::Changed
                 }
@@ -3853,6 +4079,7 @@ mod session_picker_delete_tests {
             branch: None,
             repo_name: "repo".into(),
             worktree_label: None,
+            parent_session_path: None,
             card_detail: None,
         }
     }
@@ -3873,6 +4100,8 @@ mod session_picker_delete_tests {
             pending_delete: None,
             preview_scroll: 0,
             search_mode: false,
+            preview_mode: false,
+            preview_messages: None,
         });
     }
 

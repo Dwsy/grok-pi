@@ -357,6 +357,7 @@ impl PiAgent {
                     "totalTokens": session.total_tokens,
                     "totalCost": session.total_cost,
                     "messageCount": session.message_count,
+                    "parentSessionPath": session.parent_session_path,
                 })).collect::<Vec<_>>(),
             }),
         )

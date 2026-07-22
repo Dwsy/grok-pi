@@ -334,6 +334,10 @@ pub enum ActiveModal {
         preview_scroll: u16,
         /// Whether the dedicated full-text search page is active (Ctrl+F).
         search_mode: bool,
+        /// Whether session content preview mode is active (Right arrow when PSM open).
+        preview_mode: bool,
+        /// Loaded session messages for preview mode.
+        preview_messages: Option<Vec<String>>,
     },
     /// How-to documentation list modal (wider picker style).
     DocPicker {

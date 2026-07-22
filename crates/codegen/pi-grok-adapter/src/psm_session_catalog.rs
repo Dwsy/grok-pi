@@ -50,7 +50,8 @@ fn load_catalog_from_db(
                 COALESCE(s.first_message, ''), COALESCE(d.models_json, '[]'),
                 COALESCE(d.input_tokens, 0), COALESCE(d.output_tokens, 0),
                 COALESCE(d.cache_read_tokens, 0), COALESCE(d.cache_write_tokens, 0),
-                d.input_cost + d.output_cost + d.cache_read_cost + d.cache_write_cost
+                d.input_cost + d.output_cost + d.cache_read_cost + d.cache_write_cost,
+                s.parent_session_path
            FROM sessions s LEFT JOIN session_details_cache d ON d.path = s.path
           ORDER BY s.modified DESC"
     } else {
@@ -58,7 +59,8 @@ fn load_catalog_from_db(
                 COALESCE(s.first_message, ''), COALESCE(d.models_json, '[]'),
                 COALESCE(d.input_tokens, 0), COALESCE(d.output_tokens, 0),
                 COALESCE(d.cache_read_tokens, 0), COALESCE(d.cache_write_tokens, 0),
-                d.input_cost + d.output_cost + d.cache_read_cost + d.cache_write_cost
+                d.input_cost + d.output_cost + d.cache_read_cost + d.cache_write_cost,
+                s.parent_session_path
            FROM sessions s LEFT JOIN session_details_cache d ON d.path = s.path
           WHERE s.cwd = ?1 ORDER BY s.modified DESC"
     };
@@ -115,15 +117,35 @@ fn full_text_search_db(
     connection.busy_timeout(BUSY_TIMEOUT)?;
     connection.execute_batch("PRAGMA query_only = ON;")?;
 
-    // Build FTS5 match expression: quote each token for safety.
-    let fts_query = build_fts_query(query);
-    if fts_query.is_empty() {
-        return Ok(Vec::new());
-    }
-
     // Use nullable cwd parameter: (?2 IS NULL OR s.cwd = ?2)
     let cwd_val: Option<String> = cwd.map(|c| c.to_string_lossy().to_string());
 
+    // Try the strict AND query first; if it finds nothing, fall back to an
+    // OR query so multi-word searches still surface partial matches
+    // (mirrors codex's resume-picker AND→OR fallback).
+    let and_query = build_fts_query(query);
+    if and_query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let hits = run_fts_search(&connection, &and_query, cwd_val.as_deref(), limit)?;
+    if !hits.is_empty() {
+        return Ok(hits);
+    }
+    let or_query = build_fts_query_or(query);
+    if or_query == and_query {
+        return Ok(hits);
+    }
+    run_fts_search(&connection, &or_query, cwd_val.as_deref(), limit)
+}
+
+/// Execute one FTS5 MATCH pass across `sessions_fts` (title + content) and,
+/// if needed to fill `limit`, `message_fts` (deeper message bodies).
+fn run_fts_search(
+    connection: &Connection,
+    fts_query: &str,
+    cwd_val: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<PsmSearchHit>> {
     // Search sessions_fts first (title + content level).
     let mut hits: Vec<PsmSearchHit> = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
@@ -221,18 +243,33 @@ fn full_text_search_db(
 }
 
 /// Build a safe FTS5 match expression from user input.
-/// Quotes each token to avoid syntax errors from special characters.
-fn build_fts_query(input: &str) -> String {
+///
+/// Each token is quoted and given a `*` prefix-match suffix so partial
+/// words match (e.g. `resum` → `"resum"*` matches "resume", "resumed").
+/// Tokens are joined with the given operator (`AND` or `OR`).
+fn build_fts_query_with(input: &str, op: &str) -> String {
     input
         .split_whitespace()
         .filter(|t| !t.is_empty())
         .map(|token| {
-            // Escape double quotes inside the token, then wrap in quotes.
+            // Escape double quotes inside the token, then wrap in quotes
+            // with a trailing `*` for prefix matching.
             let escaped = token.replace('"', "\"\"");
-            format!("\"{escaped}\"")
+            format!("\"{escaped}\" *")
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(&format!(" {op} "))
+}
+
+/// Build the primary (AND-joined) FTS5 match expression.
+fn build_fts_query(input: &str) -> String {
+    build_fts_query_with(input, "AND")
+}
+
+/// Build the fallback (OR-joined) FTS5 match expression.
+/// Used when the AND query returns zero results.
+fn build_fts_query_or(input: &str) -> String {
+    build_fts_query_with(input, "OR")
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PiSessionInfo> {
@@ -260,5 +297,6 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PiSessionInfo> 
         model_id,
         total_tokens: Some(token_total),
         total_cost: row.get(13)?,
+        parent_session_path: row.get(14)?,
     })
 }
