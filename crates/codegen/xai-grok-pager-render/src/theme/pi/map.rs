@@ -102,7 +102,13 @@ pub fn map_pi_theme(doc: &PiThemeJson) -> Result<Theme, MapError> {
     let bg_hover = blend(bg_highlight, bg_base, 0.35);
     let bg_visual = blend(selected_bg, border, 0.25);
 
-    let md_code_bg = or_fallback(tool_pending_bg, bg_dark);
+    // In transparent themes (bg_base == Reset) code blocks should not paint
+    // an opaque surface — keep them transparent like the page canvas.
+    let md_code_bg = if bg_base == Color::Reset {
+        Color::Reset
+    } else {
+        or_fallback(tool_pending_bg, bg_dark)
+    };
     let paste_bg = bg_dark;
     let paste_fg = or_fallback(user_message_text, text_secondary);
     let paste_dim = gray_dim;
@@ -278,11 +284,10 @@ mod tests {
     fn assert_transparent_canvas(theme: Theme) {
         assert_eq!(theme.bg_base, Color::Reset);
         assert_eq!(theme.bg_dark, Color::Reset);
-        // bg_light is derived from userMessageBg — transparent themes now
-        // provide a subtle surface color so user messages remain distinguishable.
-        assert_ne!(theme.bg_light, Color::Reset);
+        assert_eq!(theme.bg_light, Color::Reset);
         assert_ne!(theme.bg_highlight, Color::Reset);
-        assert_ne!(theme.md_code_bg, Color::Reset);
+        // Code blocks are also transparent in transparent themes.
+        assert_eq!(theme.md_code_bg, Color::Reset);
         assert_ne!(theme.diff_insert_bg, Color::Reset);
     }
 

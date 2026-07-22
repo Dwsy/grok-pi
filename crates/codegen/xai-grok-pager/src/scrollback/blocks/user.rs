@@ -476,7 +476,15 @@ impl BlockContent for UserPromptBlock {
     }
 
     fn accent(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        None
+        // In transparent themes (bg_base == Reset) user messages have no
+        // background fill, so we draw a left accent bar to keep them
+        // visually distinguishable from the page canvas.
+        let theme = Theme::current();
+        if theme.bg_base == ratatui::style::Color::Reset {
+            Some(AccentStyle::static_color(theme.accent_user))
+        } else {
+            None
+        }
     }
 
     fn accent_background(&self, _ctx: &BlockContext) -> bool {
