@@ -20,6 +20,14 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
+  // Avoid requiring eslint as a hard build dependency in CI.
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  // Client components need the prefix for plain <a href> (Link handles it alone).
+  env: {
+    NEXT_PUBLIC_BASE_PATH: basePath,
+  },
 };
 
 export default nextConfig;

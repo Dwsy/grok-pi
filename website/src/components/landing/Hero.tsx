@@ -3,6 +3,7 @@
 import { useI18n } from "@/i18n/provider";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { cn } from "@/lib/utils";
+import { withBase } from "@/lib/paths";
 
 export default function Hero() {
   const { t } = useI18n();
@@ -56,7 +57,7 @@ export default function Hero() {
             </span>
           </button>
           <a
-            href="/docs"
+            href={withBase("/docs/")}
             className="px-5 py-3 rounded-md border border-border text-sm text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors duration-150"
           >
             {t.hero.ctaSecondary}

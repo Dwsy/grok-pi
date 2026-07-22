@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useI18n } from "@/i18n/provider";
 import { locales, type Locale } from "@/i18n/config";
 import { cn } from "@/lib/utils";
+import { withBase } from "@/lib/paths";
 
 const links = [
   { href: "#features", key: "features" },
@@ -51,7 +52,7 @@ export default function Navbar() {
             </a>
           ))}
           <a
-            href="/docs"
+            href={withBase("/docs/")}
             className="px-3 py-1.5 text-[13px] text-text-secondary hover:text-text-primary rounded-md hover:bg-surface-hover transition-colors duration-150"
           >
             {t.nav.docs}
@@ -129,7 +130,7 @@ export default function Navbar() {
             </a>
           ))}
           <a
-            href="/docs"
+            href={withBase("/docs/")}
             onClick={() => setMobileOpen(false)}
             className="block px-3 py-2 text-sm text-text-secondary hover:text-text-primary rounded-md hover:bg-surface-hover transition-colors duration-150"
           >
