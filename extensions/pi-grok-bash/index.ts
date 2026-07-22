@@ -39,7 +39,7 @@ type BashParams = {
 	command: string;
 	timeout?: number;
 	is_background?: boolean;
-	description?: string;
+	task_name?: string;
 };
 
 type BackgroundTask = {
@@ -401,7 +401,7 @@ export default function (pi: ExtensionAPI) {
 		command: Type.String({ description: "Bash command to execute" }),
 		timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
 		is_background: Type.Optional(Type.Boolean({ description: "Run as a background task and return its task ID" })),
-		description: Type.Optional(Type.String({ description: "Human-readable purpose for a background task" })),
+		task_name: Type.Optional(Type.String({ description: "Task name in user's language" })),
 	});
 
 	pi.registerTool({
@@ -414,7 +414,7 @@ export default function (pi: ExtensionAPI) {
 				const task = await startTask(pi, {
 					toolCallId,
 					command: params.command,
-					description: params.description,
+					description: params.task_name,
 					cwd: ctx.cwd,
 					timeout: params.timeout,
 					backgrounded: true,
@@ -446,6 +446,7 @@ export default function (pi: ExtensionAPI) {
 							cwd,
 							timeout: options.timeout,
 							backgrounded: false,
+							description: params.task_name,
 							env: options.env ?? process.env,
 							onData: options.onData,
 							stateChanged: control.sync,
@@ -502,6 +503,7 @@ export default function (pi: ExtensionAPI) {
 						command: task.command,
 						cwd: task.cwd,
 						outputFile: task.outputFile,
+						description: task.description,
 					},
 				};
 			} finally {
