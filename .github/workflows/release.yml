@@ -34,6 +34,12 @@ jobs:
       - name: Install Rust 1.92.0
         uses: dtolnay/rust-toolchain@1.92.0
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-release"
+          shared-key: ${{ matrix.name }}
+
       - name: Install protoc on Linux
         if: runner.os == 'Linux'
         shell: bash
