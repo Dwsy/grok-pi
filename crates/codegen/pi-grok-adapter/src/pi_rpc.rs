@@ -33,6 +33,9 @@ pub struct PiRpc {
     writer: mpsc::UnboundedSender<Value>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
     next_id: Arc<AtomicU64>,
+    /// Shared handle to the child process so callers can kill probe processes
+    /// (e.g. during extension bisection) without leaking the OS process.
+    child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
 }
 
 pub struct PiProcess {
@@ -167,12 +170,20 @@ impl PiRpc {
 
         // Exit coordinator: the single owner of fail_pending. Waits for the
         // child to exit and stderr to drain, then assembles the diagnostic.
+        let child_handle = Arc::new(tokio::sync::Mutex::new(Some(child)));
+        let child_for_exit = child_handle.clone();
         let pending_exit = pending.clone();
         let stderr_ring_for_exit = stderr_ring.clone();
         tokio::spawn(async move {
-            let base = match child.wait().await {
-                Ok(status) => format!("Pi RPC process exited with {status}"),
-                Err(error) => format!("failed waiting for Pi RPC process: {error}"),
+            let base = {
+                let mut guard = child_for_exit.lock().await;
+                match guard.as_mut() {
+                    Some(child) => match child.wait().await {
+                        Ok(status) => format!("Pi RPC process exited with {status}"),
+                        Err(error) => format!("failed waiting for Pi RPC process: {error}"),
+                    },
+                    None => "Pi RPC process already reaped".to_string(),
+                }
             };
             // Wait for the stderr reader to finish (bounded so we never hang).
             let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done_rx).await;
@@ -194,6 +205,7 @@ impl PiRpc {
                 writer: writer_tx,
                 pending,
                 next_id: Arc::new(AtomicU64::new(1)),
+                child: child_handle,
             },
             events: event_rx,
         })
@@ -258,6 +270,15 @@ impl PiRpc {
         self.writer
             .send(command)
             .map_err(|_| anyhow!("Pi RPC writer is closed"))
+    }
+
+    /// Kill the Pi child process. Used during extension bisection probes so
+    /// each probe tears down cleanly instead of leaking an OS process.
+    pub async fn kill(&self) {
+        let mut guard = self.child.lock().await;
+        if let Some(child) = guard.as_mut() {
+            let _ = child.kill().await;
+        }
     }
 }
 

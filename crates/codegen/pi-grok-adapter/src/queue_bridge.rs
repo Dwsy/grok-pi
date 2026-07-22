@@ -170,6 +170,15 @@ impl QueueMirror {
     pub(crate) fn clear_running(&mut self) {
         self.running_prompt_id = None;
     }
+
+    /// Clear all mirrored entries and reservations (cancel path).
+    /// Returns a snapshot with empty entries so the pager can update.
+    pub(crate) fn clear(&mut self) -> QueueSnapshot {
+        self.entries.clear();
+        self.reserved.clear();
+        self.running_prompt_id = None;
+        self.snapshot()
+    }
 }
 
 pub(crate) fn string_list(value: Option<&Value>) -> Vec<String> {
@@ -261,5 +270,24 @@ mod tests {
         let snap = mirror.apply_queue_update(&["same".into(), "same".into()], &[]);
         assert_eq!(snap.entries[0]["id"], "first");
         assert_eq!(snap.entries[1]["id"], "second");
+    }
+
+    #[test]
+    fn clear_empties_all_state() {
+        let mut mirror = QueueMirror::default();
+        mirror.reserve("a".into(), "one".into(), QueueLane::FollowUp);
+        mirror.apply_queue_update(&["steer".into()], &["one".into(), "two".into()]);
+        assert!(!mirror.snapshot().entries.is_empty());
+
+        let snap = mirror.clear();
+        assert!(snap.entries.is_empty());
+        assert!(snap.running_prompt_id.is_none());
+        assert_eq!(snap.steering_count, 0);
+        assert_eq!(snap.follow_up_count, 0);
+
+        // After clear, new queue_update starts fresh.
+        let after = mirror.apply_queue_update(&[], &["new".into()]);
+        assert_eq!(after.entries.len(), 1);
+        assert_eq!(after.entries[0]["text"], "new");
     }
 }

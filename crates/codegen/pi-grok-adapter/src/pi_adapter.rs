@@ -8,8 +8,8 @@ use crate::{
         entries_to_messages_value, parse_context_breakdown,
     },
     model::{
-        PiCommand, PiHistoryItem, PiModel, PiSessionSwitch, PiSessionTree, PiState, PiToolContent,
-        extract_delta, json_text, parse_commands, parse_messages, parse_models,
+        PiCommand, PiHistoryItem, PiModel, PiReplayEntry, PiSessionSwitch, PiSessionTree, PiState,
+        PiToolContent, extract_delta, json_text, parse_commands, parse_messages, parse_models,
         parse_session_switch, parse_session_tree, parse_state, scan_local_sessions,
         scan_local_sessions_for_cwd, string, tree_entry_editor_text,
     },
@@ -1168,14 +1168,15 @@ impl PiAgent {
 
     async fn replay_history(&self) -> Result<()> {
         let data = self.rpc.request(json!({ "type": "get_messages" })).await?;
-        for item in parse_messages(&data) {
-            self.replay_history_item(item).await;
+        for entry in parse_messages(&data) {
+            self.replay_history_item(entry).await;
         }
         Ok(())
     }
 
-    async fn replay_history_item(&self, item: PiHistoryItem) {
-        let update = match item {
+    async fn replay_history_item(&self, entry: PiReplayEntry) {
+        let timestamp_ms = entry.timestamp_ms;
+        let update = match entry.item {
             PiHistoryItem::UserText(text) => acp::SessionUpdate::UserMessageChunk(text_chunk(text)),
             PiHistoryItem::UserImage { data, mime_type } => {
                 acp::SessionUpdate::UserMessageChunk(content_chunk(acp::ContentBlock::Image(
@@ -1258,7 +1259,26 @@ impl PiAgent {
                 ))
             }
         };
-        self.send_update(update).await;
+        self.send_replay_update(update, timestamp_ms).await;
+    }
+
+    /// Send a session update during history replay, stamping the original
+    /// message timestamp (`agentTimestampMs`) so the pager can display the real
+    /// creation time instead of the resume wall-clock time.
+    async fn send_replay_update(&self, update: acp::SessionUpdate, timestamp_ms: Option<i64>) {
+        let mut notification = acp::SessionNotification::new(self.session_id(), update);
+        let mut meta = acp::Meta::new();
+        meta.insert("isReplay".into(), Value::Bool(true));
+        if let Some(ms) = timestamp_ms {
+            meta.insert("agentTimestampMs".into(), json!(ms));
+        }
+        if let Some(tokens) = self.state.borrow().last_context_tokens {
+            meta.insert("totalTokens".into(), json!(tokens));
+        }
+        notification = notification.meta(Some(meta));
+        if let Err(error) = acp_send(notification, &self.client_tx).await {
+            tracing::debug!(%error, "Grok pager closed while sending Pi replay update");
+        }
     }
 
     async fn handle_event(&self, event: Value) -> Result<()> {
@@ -1445,8 +1465,8 @@ impl PiAgent {
         let terminal_error = string(message, &["errorMessage", "error_message"])
             .filter(|error| !error.is_empty())
             .map(ToOwned::to_owned);
-        for item in parse_messages(&json!({ "messages": [message] })) {
-            match item {
+        for entry in parse_messages(&json!({ "messages": [message] })) {
+            match entry.item {
                 PiHistoryItem::AgentThought(text) if !seen.thought => {
                     self.send_update(acp::SessionUpdate::AgentThoughtChunk(text_chunk(text)))
                         .await;
@@ -1526,6 +1546,13 @@ impl PiAgent {
                 return;
             };
             if !parse_state(&value).is_streaming {
+                // Backstop: ensure the queue mirror is clean even if the
+                // cancel path's clear_queue RPC was unavailable.
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.queue_mirror.clear();
+                }
+                self.publish_queue_snapshot().await;
                 self.finish_prompts(acp::StopReason::Cancelled);
                 return;
             }
@@ -1535,6 +1562,14 @@ impl PiAgent {
                 tracing::warn!(
                     "Pi still streaming after cancel settle deadline; forcing prompt completion"
                 );
+                // Same backstop as the idle branch: keep the queue mirror
+                // consistent even when the cancel path's clear_queue RPC was
+                // unavailable and Pi never went idle.
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.queue_mirror.clear();
+                }
+                self.publish_queue_snapshot().await;
                 self.finish_prompts(acp::StopReason::Cancelled);
                 return;
             }
@@ -2412,6 +2447,29 @@ impl acp::Agent for PiAgent {
                 "abort"
             }
         };
+
+        // Clear Pi's steering/follow-up queues BEFORE aborting. Without this,
+        // queued messages survive the abort and Pi's post-run continuation
+        // (`_handlePostAgentRun → hasQueuedMessages → agent.continue()`) auto-
+        // delivers them — the user sees the turn "cancelled" but Pi silently
+        // starts processing the queued message. This mirrors Pi TUI's
+        // `restoreQueuedMessagesToEditor({ abort: true })` which calls
+        // `clearAllQueues()` before `agent.abort()`.
+        //
+        // Best-effort: if clear_queue fails (older Pi without the command),
+        // the abort still proceeds; the settle backstop handles the fallout.
+        if let Err(error) = self.rpc.request(json!({ "type": "clear_queue" })).await {
+            tracing::debug!(%error, "clear_queue RPC unavailable; proceeding with abort");
+        }
+
+        // Clear the local queue mirror and publish an empty snapshot so the
+        // pager's QueuePane drains immediately instead of showing stale rows.
+        {
+            let mut state = self.state.borrow_mut();
+            state.queue_mirror.clear();
+        }
+        self.publish_queue_snapshot().await;
+
         if let Err(error) = self.rpc.request(json!({ "type": command })).await {
             self.finish_prompts(acp::StopReason::Cancelled);
             return Err(acp_internal(error));
@@ -2529,6 +2587,48 @@ impl acp::Agent for PiAgent {
                 self.publish_session_catalog(cwd, all, use_psm_index).await;
                 ext_response(json!({})).map_err(acp_internal)
             }
+            // Full-text search across Pi sessions via PSM SQLite FTS5.
+            "pi/session/search" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let query = string(&params, &["query"])
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let cwd = string(&params, &["cwd"]).filter(|c| !c.trim().is_empty());
+                let limit = params
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(20) as usize;
+                if query.is_empty() {
+                    return ext_response(json!({ "results": [], "total": 0 }))
+                        .map_err(acp_internal);
+                }
+                let cwd_path = cwd.map(PathBuf::from);
+                let results = tokio::task::spawn_blocking(move || {
+                    crate::psm_session_catalog::full_text_search(
+                        cwd_path.as_deref(),
+                        &query,
+                        limit,
+                    )
+                })
+                .await
+                .unwrap_or(None)
+                .unwrap_or_default();
+                let total = results.len();
+                ext_response(json!({
+                    "results": results.iter().map(|r| json!({
+                        "sessionId": r.session_id,
+                        "cwd": r.cwd,
+                        "summary": r.summary,
+                        "snippet": r.snippet,
+                        "score": r.score,
+                        "matchedFields": r.matched_fields,
+                    })).collect::<Vec<_>>(),
+                    "total": total,
+                }))
+                .map_err(acp_internal)
+            }
             // Pi session entry tree (read-only projection of get_tree).
             "pi/session/tree" => {
                 let tree = self.fetch_session_tree().await.map_err(acp_internal)?;
@@ -2617,6 +2717,32 @@ impl acp::Agent for PiAgent {
             "pi/session/reload" => {
                 let data = self.reload_session_resources().await?;
                 ext_response(data).map_err(acp_internal)
+            }
+            // Queue delivery mode: set Pi's follow-up / steering drain mode.
+            // "one-at-a-time" (default): deliver one queued message per turn.
+            // "all": deliver all queued messages at once.
+            "pi/queue/mode" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let mode = string(&params, &["mode"])
+                    .map(str::trim)
+                    .filter(|m| *m == "all" || *m == "one-at-a-time")
+                    .ok_or_else(|| {
+                        acp::Error::invalid_params()
+                            .data("mode must be 'all' or 'one-at-a-time'")
+                    })?;
+                if params.get("steering").and_then(Value::as_bool) == Some(true) {
+                    self.rpc
+                        .request(json!({ "type": "set_steering_mode", "mode": mode }))
+                        .await
+                        .map_err(acp_internal)?;
+                } else {
+                    self.rpc
+                        .request(json!({ "type": "set_follow_up_mode", "mode": mode }))
+                        .await
+                        .map_err(acp_internal)?;
+                }
+                ext_response(json!({ "mode": mode })).map_err(acp_internal)
             }
             // Tree file rollback: preview via injected extension command.
             "pi/session/rollback_preview" => {

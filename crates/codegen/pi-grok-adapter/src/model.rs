@@ -837,6 +837,16 @@ pub enum PiHistoryItem {
     },
 }
 
+/// A history item paired with its original message timestamp (epoch ms) from
+/// the Pi session file. During replay the pager uses this to stamp the real
+/// creation time on scrollback entries instead of the resume wall-clock time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PiReplayEntry {
+    pub item: PiHistoryItem,
+    /// Original message timestamp in epoch milliseconds, if available.
+    pub timestamp_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PiToolContent {
     Text(String),
@@ -1061,16 +1071,52 @@ pub fn parse_commands(value: &Value) -> Vec<PiCommand> {
     commands
 }
 
-pub fn parse_messages(value: &Value) -> Vec<PiHistoryItem> {
+pub fn parse_messages(value: &Value) -> Vec<PiReplayEntry> {
     let source = value
         .get("messages")
         .or_else(|| value.get("history"))
         .unwrap_or(value);
     let mut history = Vec::new();
     for (message_index, message) in source.as_array().into_iter().flatten().enumerate() {
-        parse_message(message, message_index, &mut history);
+        let timestamp_ms = extract_message_timestamp(message);
+        let mut items = Vec::new();
+        parse_message(message, message_index, &mut items);
+        for item in items {
+            history.push(PiReplayEntry {
+                item,
+                timestamp_ms,
+            });
+        }
     }
     history
+}
+
+/// Extract the original timestamp (epoch ms) from a Pi session message entry.
+///
+/// Prefers numeric `message.timestamp` (epoch ms); falls back to entry-level
+/// ISO `timestamp` string. Mirrors the logic in `message_activity_time_ms`.
+fn extract_message_timestamp(entry: &Value) -> Option<i64> {
+    let message = entry.get("message").unwrap_or(entry);
+    // Numeric epoch-ms timestamp on the message object.
+    if let Some(ms) = message.get("timestamp").and_then(Value::as_i64) {
+        return Some(ms);
+    }
+    if let Some(ms) = message
+        .get("timestamp")
+        .and_then(Value::as_f64)
+        .map(|v| v as i64)
+    {
+        return Some(ms);
+    }
+    // Entry-level ISO timestamp string.
+    entry
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.timestamp_millis())
+        })
 }
 
 fn parse_message(value: &Value, message_index: usize, output: &mut Vec<PiHistoryItem>) {
@@ -1516,11 +1562,11 @@ mod tests {
                 }
             ]
         }));
-        assert!(matches!(items[0], PiHistoryItem::UserText(ref text) if text == "hello"));
-        assert!(matches!(items[1], PiHistoryItem::AgentThought(ref text) if text == "plan"));
-        assert!(matches!(items[2], PiHistoryItem::ToolStart { ref id, .. } if id == "tool-1"));
-        assert!(matches!(items[3], PiHistoryItem::AgentText(ref text) if text == "done"));
-        assert!(matches!(items[4], PiHistoryItem::ToolEnd { ref id, .. } if id == "tool-1"));
+        assert!(matches!(items[0].item, PiHistoryItem::UserText(ref text) if text == "hello"));
+        assert!(matches!(items[1].item, PiHistoryItem::AgentThought(ref text) if text == "plan"));
+        assert!(matches!(items[2].item, PiHistoryItem::ToolStart { ref id, .. } if id == "tool-1"));
+        assert!(matches!(items[3].item, PiHistoryItem::AgentText(ref text) if text == "done"));
+        assert!(matches!(items[4].item, PiHistoryItem::ToolEnd { ref id, .. } if id == "tool-1"));
     }
 
     #[test]
@@ -1644,7 +1690,7 @@ mod tests {
             "messages": [{ "role": "assistant", "errorMessage": "request failed" }]
         }));
         assert!(
-            matches!(items.as_slice(), [PiHistoryItem::AgentText(text)] if text == "**Pi error:** request failed")
+            matches!(items.as_slice(), [PiReplayEntry { item: PiHistoryItem::AgentText(text), .. }] if text == "**Pi error:** request failed")
         );
     }
 

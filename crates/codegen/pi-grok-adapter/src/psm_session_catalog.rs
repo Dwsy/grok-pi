@@ -71,6 +71,170 @@ fn load_catalog_from_db(
     rows.collect()
 }
 
+/// A single full-text search hit from PSM's FTS5 index.
+#[derive(Debug, Clone)]
+pub struct PsmSearchHit {
+    pub session_id: String,
+    pub cwd: String,
+    pub summary: String,
+    pub updated_at: String,
+    pub score: f32,
+    pub matched_fields: Vec<String>,
+    pub snippet: Option<String>,
+}
+
+/// Full-text search across PSM's FTS5 index (sessions_fts + message_fts).
+/// Returns ranked results with snippets. Falls back to `None` if PSM is
+/// unavailable or the query is empty.
+pub fn full_text_search(
+    cwd: Option<&Path>,
+    query: &str,
+    limit: usize,
+) -> Option<Vec<PsmSearchHit>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Some(Vec::new());
+    }
+    if !psm_server_is_listening(DEFAULT_PSM_WS_PORT) {
+        return None;
+    }
+    let db_path = default_database_path()?;
+    full_text_search_db(&db_path, cwd, query, limit).ok()
+}
+
+fn full_text_search_db(
+    db_path: &Path,
+    cwd: Option<&Path>,
+    query: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<PsmSearchHit>> {
+    let connection = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(BUSY_TIMEOUT)?;
+    connection.execute_batch("PRAGMA query_only = ON;")?;
+
+    // Build FTS5 match expression: quote each token for safety.
+    let fts_query = build_fts_query(query);
+    if fts_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Use nullable cwd parameter: (?2 IS NULL OR s.cwd = ?2)
+    let cwd_val: Option<String> = cwd.map(|c| c.to_string_lossy().to_string());
+
+    // Search sessions_fts first (title + content level).
+    let mut hits: Vec<PsmSearchHit> = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    // Query sessions_fts: matches on name, first_message, user/assistant text.
+    let session_sql =
+        "SELECT s.id, s.cwd, COALESCE(s.name, s.first_message, ''), s.modified,
+                bm25(sessions_fts, 0, 10.0, 5.0, 5.0, 1.0, 1.0) AS rank,
+                snippet(sessions_fts, 4, '[', ']', ' … ', 24) AS snip
+           FROM sessions_fts
+           JOIN sessions s ON s.rowid = sessions_fts.rowid
+          WHERE sessions_fts MATCH ?1 AND (?2 IS NULL OR s.cwd = ?2)
+          ORDER BY rank ASC, s.modified DESC
+          LIMIT ?3";
+
+    let mut stmt = connection.prepare(session_sql)?;
+    let rows = stmt.query_map(params![fts_query, cwd_val, limit as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (id, cwd_str, summary, modified, rank, snip) = row?;
+        seen_ids.insert(id.clone());
+        let mut matched_fields = Vec::new();
+        if let Some(ref s) = snip {
+            if s.contains('[') {
+                matched_fields.push("content".to_string());
+            }
+        }
+        if matched_fields.is_empty() {
+            matched_fields.push("title".to_string());
+        }
+        hits.push(PsmSearchHit {
+            session_id: id,
+            cwd: cwd_str,
+            summary,
+            updated_at: modified,
+            score: -(rank as f32),
+            matched_fields,
+            snippet: snip.filter(|s| !s.is_empty()),
+        });
+    }
+
+    // Supplement with message_fts for deeper content matches.
+    if hits.len() < limit {
+        let remaining = limit - hits.len();
+        let msg_sql =
+            "SELECT s.id, s.cwd, COALESCE(s.name, s.first_message, ''), s.modified,
+                    bm25(message_fts, 0, 0, 0, 1.0) AS rank,
+                    snippet(message_fts, 3, '[', ']', ' … ', 24) AS snip
+               FROM message_fts
+               JOIN sessions s ON s.path = message_fts.session_path
+              WHERE message_fts MATCH ?1 AND (?2 IS NULL OR s.cwd = ?2)
+                AND s.id NOT IN (SELECT value FROM json_each(?4))
+              ORDER BY rank ASC, s.modified DESC
+              LIMIT ?3";
+        let seen_json = serde_json::to_string(&seen_ids.iter().collect::<Vec<_>>())
+            .unwrap_or_else(|_| "[]".to_string());
+        let mut msg_stmt = connection.prepare(msg_sql)?;
+        let msg_rows = msg_stmt.query_map(
+            params![fts_query, cwd_val, remaining as i64, seen_json],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )?;
+        for row in msg_rows {
+            let (id, cwd_str, summary, modified, rank, snip) = row?;
+            hits.push(PsmSearchHit {
+                session_id: id,
+                cwd: cwd_str,
+                summary,
+                updated_at: modified,
+                score: -(rank as f32),
+                matched_fields: vec!["content".to_string()],
+                snippet: snip.filter(|s| !s.is_empty()),
+            });
+        }
+    }
+
+    Ok(hits)
+}
+
+/// Build a safe FTS5 match expression from user input.
+/// Quotes each token to avoid syntax errors from special characters.
+fn build_fts_query(input: &str) -> String {
+    input
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .map(|token| {
+            // Escape double quotes inside the token, then wrap in quotes.
+            let escaped = token.replace('"', "\"\"");
+            format!("\"{escaped}\"")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PiSessionInfo> {
     let models: String = row.get(8)?;
     let model_id = serde_json::from_str::<Value>(&models)
