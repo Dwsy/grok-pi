@@ -327,6 +327,8 @@ pub enum ActiveModal {
         pending_delete: Option<(String, String, String)>,
         /// Vertical scroll offset for the bottom preview pane.
         preview_scroll: u16,
+        /// Whether the dedicated full-text search page is active (Ctrl+F).
+        search_mode: bool,
     },
     /// How-to documentation list modal (wider picker style).
     DocPicker {

@@ -1268,6 +1268,7 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
             },
             pending_delete: None,
             preview_scroll: 0,
+            search_mode: false,
         });
     });
     if external_agent {

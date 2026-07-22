@@ -949,6 +949,7 @@ impl AgentView {
                 source_filter: crate::views::session_picker::SourceFilter::default(),
                 pending_delete: None,
                 preview_scroll: 0,
+                search_mode: false,
             });
             return InputOutcome::Action(Action::FetchSessionList);
         }

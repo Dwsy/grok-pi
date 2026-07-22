@@ -941,6 +941,7 @@ impl AgentView {
                                             crate::views::session_picker::SourceFilter::default(),
                                         pending_delete: None,
                                         preview_scroll: 0,
+                                        search_mode: false,
                                     });
                                     return InputOutcome::Action(Action::FetchSessionList);
                                 }
@@ -1031,6 +1032,7 @@ impl AgentView {
                 source_filter,
                 pending_delete,
                 window,
+                search_mode,
                 ..
             } => {
                 use crate::views::session_picker::{
@@ -1141,6 +1143,115 @@ impl AgentView {
                             *pending_delete = None;
                         }
                     }
+                }
+
+                // Ctrl+F enters the dedicated full-text search page (external
+                // Pi sessions only — native Grok sessions use the built-in
+                // deep-search path). Toggling resets the search state so each
+                // entry starts clean.
+                if *source_filter == crate::views::session_picker::SourceFilter::External
+                    && let crossterm::event::Event::Key(key) = ev
+                    && key.kind == KeyEventKind::Press
+                    && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                    && matches!(key.code, crossterm::event::KeyCode::Char('f'))
+                {
+                    *search_mode = !*search_mode;
+                    if *search_mode {
+                        state.search_active = true;
+                        state.set_query("");
+                        *content_results = None;
+                        *content_loading = false;
+                        state.selected = 0;
+                        state.scroll_offset = None;
+                    }
+                    return InputOutcome::Changed;
+                }
+
+                // ── Search mode input handling ──
+                // When search_mode is active, all keys are consumed by the
+                // full-text search page (query input, Tab scope, nav, Esc).
+                if *search_mode {
+                    if let crossterm::event::Event::Key(key) = ev
+                        && key.kind == KeyEventKind::Press
+                    {
+                        use crossterm::event::KeyCode;
+                        match key.code {
+                            // Esc / Ctrl+F — exit search mode
+                            KeyCode::Esc => {
+                                *search_mode = false;
+                                *content_results = None;
+                                *content_loading = false;
+                                return InputOutcome::Changed;
+                            }
+                            KeyCode::Char('f') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                *search_mode = false;
+                                *content_results = None;
+                                *content_loading = false;
+                                return InputOutcome::Changed;
+                            }
+                            // Tab — toggle cwd/all scope (re-trigger search)
+                            KeyCode::Tab => {
+                                // Cycle source filter to toggle scope
+                                return InputOutcome::Action(Action::CycleSessionSourceFilter);
+                            }
+                            // Enter — resume selected search result
+                            KeyCode::Enter => {
+                                if let Some(hits) = content_results.as_ref()
+                                    && let Some(hit) = hits.get(state.selected)
+                                {
+                                    let session_id = hit.session_id.clone();
+                                    let cwd = hit.cwd.clone();
+                                    return InputOutcome::Action(Action::PickContentSession {
+                                        session_id,
+                                        cwd,
+                                    });
+                                }
+                                return InputOutcome::Changed;
+                            }
+                            // ↑/↓ — navigate results
+                            KeyCode::Up | KeyCode::Char('k') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                if state.selected > 0 {
+                                    state.selected -= 1;
+                                    if let Some(off) = state.scroll_offset.as_mut() {
+                                        if state.selected < *off {
+                                            *off = state.selected;
+                                        }
+                                    }
+                                }
+                                return InputOutcome::Changed;
+                            }
+                            KeyCode::Down | KeyCode::Char('j') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                let max = content_results.as_ref().map_or(0, |r| r.len()).saturating_sub(1);
+                                if state.selected < max {
+                                    state.selected += 1;
+                                }
+                                return InputOutcome::Changed;
+                            }
+                            // Backspace — delete last char from query
+                            KeyCode::Backspace => {
+                                let q = state.query().to_string();
+                                if !q.is_empty() {
+                                    let new_q: String = q.chars().take(q.chars().count() - 1).collect();
+                                    state.set_query(&new_q);
+                                    state.selected = 0;
+                                    state.scroll_offset = None;
+                                    return InputOutcome::Action(Action::TriggerDeepSearch);
+                                }
+                                return InputOutcome::Changed;
+                            }
+                            // Regular char — append to query
+                            KeyCode::Char(c) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                let mut q = state.query().to_string();
+                                q.push(c);
+                                state.set_query(&q);
+                                state.selected = 0;
+                                state.scroll_offset = None;
+                                return InputOutcome::Action(Action::TriggerDeepSearch);
+                            }
+                            _ => {}
+                        }
+                    }
+                    return InputOutcome::Changed;
                 }
 
                 if let crossterm::event::Event::Key(key) = ev
@@ -2218,9 +2329,143 @@ impl AgentView {
                 source_filter,
                 pending_delete,
                 preview_scroll,
+                search_mode,
                 ..
             } = active_modal
             {
+                // ── Search mode: dedicated full-text search page ──
+                if *search_mode {
+                    let compact = self.scrollback.appearance().prompt.compact;
+                    let external = *source_filter == crate::views::session_picker::SourceFilter::External;
+                    let scope_label = if external { "cwd" } else { "all" };
+                    let hits = content_results.as_deref().unwrap_or(&[]);
+                    let result_count = hits.len();
+                    let title = if *content_loading {
+                        format!("Full-text search · {scope_label} · searching…")
+                    } else if result_count > 0 {
+                        format!("Full-text search · {scope_label} · {result_count} results")
+                    } else {
+                        format!("Full-text search · {scope_label}")
+                    };
+                    let search_shortcuts: Vec<Shortcut> = vec![
+                        Shortcut { label: "↑↓ nav", clickable: false, id: 0 },
+                        Shortcut { label: "Tab scope", clickable: false, id: 0 },
+                        Shortcut { label: "Enter resume", clickable: false, id: 0 },
+                        Shortcut { label: "Esc back", clickable: false, id: 0 },
+                    ];
+                    let modal_config = ModalWindowConfig {
+                        title: title.as_str(),
+                        tabs: None,
+                        shortcuts: &search_shortcuts,
+                        sizing: ModalSizing {
+                            width_pct: 0.85,
+                            max_width: 180,
+                            min_width: 48,
+                            v_margin: 3,
+                            h_pad: 1,
+                            v_pad: 0,
+                            footer_lines: 2,
+                        }
+                        .with_compact(compact),
+                        fold_info: None,
+                    };
+                    if let Some(mca) = mw::render_modal_window(buf, area, window, &modal_config, &theme) {
+                        let content_area = mca.content;
+                        // Search input bar
+                        picker::render_picker_search_bar(
+                            buf,
+                            content_area.x,
+                            content_area.y,
+                            content_area.width,
+                            &theme,
+                            state,
+                            true, // always active in search mode
+                            true,
+                            Some(theme.bg_base),
+                        );
+                        let sep_y = content_area.y + 1;
+                        if sep_y < content_area.y + content_area.height {
+                            picker::render_divider(
+                                buf,
+                                mca.inner_x,
+                                sep_y,
+                                mca.inner_width,
+                                &theme,
+                                Some(theme.bg_base),
+                            );
+                        }
+                        let results_area = Rect {
+                            x: content_area.x,
+                            y: sep_y + 1,
+                            width: content_area.width,
+                            height: content_area.height.saturating_sub(sep_y + 1 - content_area.y),
+                        };
+                        // Build result rows from content_results
+                        let hits = content_results.as_deref().unwrap_or(&[]);
+                        if hits.is_empty() && !*content_loading {
+                            let msg = if state.query().trim().is_empty() {
+                                "  Type to search across all session messages…"
+                            } else {
+                                "  No results found"
+                            };
+                            let line = ratatui::text::Line::from(ratatui::text::Span::styled(
+                                msg,
+                                ratatui::style::Style::default().fg(theme.gray_dim),
+                            ));
+                            ratatui::widgets::Paragraph::new(vec![line]).render(results_area, buf);
+                        } else {
+                            // Precompute snippet slices so they outlive the entry refs.
+                            let snippets: Vec<[&str; 1]> = hits
+                                .iter()
+                                .map(|hit| [hit.snippet.as_deref().unwrap_or("")])
+                                .collect();
+                            let result_entries: Vec<picker::PickerEntry> = hits
+                                .iter()
+                                .enumerate()
+                                .map(|(i, hit)| {
+                                    let has_snippet = !snippets[i][0].is_empty();
+                                    picker::PickerEntry::Row(picker::PickerRow {
+                                        label: &hit.summary,
+                                        right_label: &hit.cwd,
+                                        selected: i == state.selected,
+                                        expanded: true,
+                                        fields: &[],
+                                        description_lines: if has_snippet { &snippets[i] } else { &[] },
+                                        summary_lines: &[],
+                                        dimmed: false,
+                                        indent: 0,
+                                        label_color: None,
+                                        badge: if hit.matched_fields.iter().any(|f| f == "content") { "content" } else { "title" },
+                                        badge_color: Some(theme.accent_user),
+                                        collapsible: false,
+                                        underline_last_desc: false,
+                                    })
+                                })
+                                .collect();
+                            let non_sel: Vec<bool> = vec![false; result_entries.len()];
+                            let content_hit = picker::render_picker_content_with_scrollbar_x(
+                                buf,
+                                results_area,
+                                &theme,
+                                state,
+                                &result_entries,
+                                &non_sel,
+                                &[],
+                                Some(theme.bg_base),
+                                *content_loading,
+                                mca.inner_x + mca.inner_width - 1,
+                            );
+                            state.hit_areas = Some(picker::PickerHitAreas {
+                                close_button: Rect::default(),
+                                search_bar: Rect::new(content_area.x, content_area.y, content_area.width, 1),
+                                item_rects: content_hit.item_rects,
+                                entry_indices: content_hit.entry_indices,
+                                tab_rects: vec![],
+                                filter_rect: None,
+                            });
+                        }
+                    }
+                } else {
                 // Session picker: ModalWindow chrome + picker content.
                 use crate::app::app_view::filter_session_entries;
                 use crate::views::picker::PickerField;
@@ -2547,6 +2792,7 @@ impl AgentView {
                         filter_rect: None,
                     });
                 }
+                } // end else (normal picker mode)
             } else if let modal::ActiveModal::DocPicker {
                 entries,
                 state,
@@ -3322,6 +3568,7 @@ mod session_picker_delete_tests {
             source_filter: crate::views::session_picker::SourceFilter::default(),
             pending_delete: None,
             preview_scroll: 0,
+            search_mode: false,
         });
     }
 
