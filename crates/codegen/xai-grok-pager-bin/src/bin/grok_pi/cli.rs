@@ -37,7 +37,8 @@ Examples:
 Notes:
   TUI is Grok Pager; agent core is Pi (always `--mode rpc`).
   Runtime /model and /resume use native Grok surfaces, not Pi's TUI pickers.
-  --resume is intentionally not exposed: use Welcome or /resume.
+  Stock Grok `--resume` is not exposed: use Welcome, /resume, or `--session <uuid>`.
+  On quit, prints: To resume this session: grok-pi --session <uuid>
 
 Update (GitHub releases only):
   grok-pi update            Install latest from Dwsy/grok-pi

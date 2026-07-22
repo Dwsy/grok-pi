@@ -31,10 +31,12 @@ mod tests {
         let source = std::fs::read_to_string(file.path()).expect("read extension");
         assert!(source.contains("name: \"remote-tui\"") || source.contains("\"remote-tui\""));
         assert!(source.contains("PI_GROK_REMOTE_TUI"));
+        assert!(source.contains("shouldInstallRemoteHost"));
         assert!(source.contains("__piGrokEnsureRemoteTuiHost"));
         assert!(source.contains("ensurePiTheme"));
         assert!(source.contains("initTheme"));
-        assert!(source.contains("RemoteTuiProbeList"));
+        assert!(source.contains("createDemoSelector"));
+        assert!(source.contains("SettingsList"));
         assert_eq!(
             file.path().extension().and_then(|value| value.to_str()),
             Some("ts")

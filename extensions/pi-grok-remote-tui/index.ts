@@ -31,11 +31,23 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import {
   CURSOR_MARKER,
   KeybindingsManager,
-  matchesKey,
   setKeybindings,
+  SettingsList,
   TUI_KEYBINDINGS,
   type Component,
+  type SettingItem,
+  type SettingsListTheme,
 } from "@earendil-works/pi-tui";
+
+/** grok-pi RPC needs a custom() host; native Pi TUI already has a real one. */
+function shouldInstallRemoteHost(): boolean {
+  const flag = process.env.PI_GROK_REMOTE_TUI?.toLowerCase();
+  if (flag === "0" || flag === "false" || flag === "off" || flag === "no") {
+    return false;
+  }
+  // grok-pi child always sets PI_GROK=1; native `pi` does not.
+  return process.env.PI_GROK === "1" || flag === "1" || flag === "true" || flag === "on" || flag === "yes";
+}
 
 function hostUrl(relativePath: string): string {
   const hostDistDir = dirname(realpathSync(process.argv[1]!));
@@ -424,6 +436,7 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
 
 /** Other host-injected extensions (auth login/logout) re-bind after RPC ui swaps. */
 function ensureRemoteTuiHost(ui: Parameters<typeof installCustomPatch>[0]): void {
+  if (!shouldInstallRemoteHost()) return;
   installCustomPatch(ui);
 }
 
@@ -480,117 +493,124 @@ export function applyDemoCapabilities(ui: RemoteTuiDemoUi, keys: DemoKey[]): voi
   }
 }
 
-export class RemoteTuiDemoList implements Component {
-  private cursor = 0;
-  private checked = new Set<DemoKey>();
-  private applied = false;
-  private done: (result: string | undefined) => void;
-  private onApply: (keys: DemoKey[]) => void;
+function demoSettingsTheme(theme: {
+  fg: (color: string, text: string) => string;
+  bold?: (text: string) => string;
+}): SettingsListTheme {
+  return {
+    label: (text, selected) => (selected ? theme.fg("accent", text) : text),
+    value: (text, selected) =>
+      selected ? theme.fg("accent", text) : theme.fg("dim", text),
+    description: (text) => theme.fg("dim", text),
+    cursor: theme.fg("accent", "→ "),
+    hint: (text) => theme.fg("dim", text),
+  };
+}
 
-  constructor(
-    done: (result: string | undefined) => void,
-    onApply: (keys: DemoKey[]) => void,
-  ) {
-    this.done = done;
-    this.onApply = onApply;
-  }
+/** Native Pi SettingsList multi-toggle — works under real TUI and remote host. */
+export function createDemoSelector(
+  tui: { requestRender: () => void },
+  theme: {
+    fg: (color: string, text: string) => string;
+    bold?: (text: string) => string;
+  },
+  done: (result: string | undefined) => void,
+  onChange: (keys: DemoKey[]) => void,
+): Component {
+  const enabled = new Set<DemoKey>();
+  const items: SettingItem[] = DEMO_ITEMS.map((item) => ({
+    id: item.key,
+    label: item.label,
+    description: item.description,
+    currentValue: "off",
+    values: ["on", "off"],
+  }));
 
-  invalidate(): void {}
+  const selectedKeys = (): DemoKey[] =>
+    DEMO_ITEMS.map((item) => item.key).filter((key) => enabled.has(key));
 
-  render(_width: number): string[] {
-    const lines = [
-      "\x1b[1mRemote TUI capability lab\x1b[0m",
-      "\x1b[2mSpace toggles a capability · Enter applies · Esc closes\x1b[0m",
-      "",
-    ];
-    for (let i = 0; i < DEMO_ITEMS.length; i++) {
-      const item = DEMO_ITEMS[i]!;
-      const marker = this.checked.has(item.key) ? "\x1b[32m☑\x1b[0m" : "☐";
-      const pointer = i === this.cursor ? "\x1b[36m→\x1b[0m" : " ";
-      lines.push(`${pointer} ${marker} ${item.label}  \x1b[2m${item.description}\x1b[0m`);
-    }
-    lines.push("");
-    lines.push(
-      this.applied
-        ? "\x1b[32mApplied. Inspect the native header/footer/status surfaces.\x1b[0m"
-        : "\x1b[2mNo capability selected yet.\x1b[0m",
-    );
-    return lines;
-  }
+  const list = new SettingsList(
+    items,
+    DEMO_ITEMS.length + 1,
+    demoSettingsTheme(theme),
+    (id, newValue) => {
+      if (newValue === "on") enabled.add(id as DemoKey);
+      else enabled.delete(id as DemoKey);
+      onChange(selectedKeys());
+    },
+    () => {
+      const keys = selectedKeys();
+      done(keys.length > 0 ? keys.join(",") : undefined);
+    },
+  );
 
-  handleInput(data: string): void {
-    if (matchesKey(data, "up") || data === "k") {
-      this.cursor = this.cursor === 0 ? DEMO_ITEMS.length - 1 : this.cursor - 1;
-      return;
-    }
-    if (matchesKey(data, "down") || data === "j") {
-      this.cursor = this.cursor === DEMO_ITEMS.length - 1 ? 0 : this.cursor + 1;
-      return;
-    }
-    if (matchesKey(data, "space") || data === " ") {
-      const key = DEMO_ITEMS[this.cursor]!.key;
-      if (this.checked.has(key)) this.checked.delete(key);
-      else this.checked.add(key);
-      return;
-    }
-    if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-      const keys = DEMO_ITEMS.map((item) => item.key).filter((key) => this.checked.has(key));
-      this.applied = true;
-      this.onApply(keys);
-      // Keep the list open so header/footer/status can be inspected live.
-      return;
-    }
-    if (matchesKey(data, "escape")) {
-      const keys = DEMO_ITEMS.map((item) => item.key).filter((key) => this.checked.has(key));
-      this.done(keys.length > 0 ? keys.join(",") : undefined);
-    }
-  }
+  const bold = theme.bold ?? ((text: string) => text);
+  return {
+    invalidate() {
+      list.invalidate();
+    },
+    render(width: number) {
+      return [
+        theme.fg("accent", bold("Remote TUI capability lab")),
+        theme.fg("dim", "Enter/Space toggle · Esc close"),
+        "",
+        ...list.render(width),
+      ];
+    },
+    handleInput(data: string) {
+      list.handleInput(data);
+      tui.requestRender();
+    },
+  };
 }
 
 export default function (pi: ExtensionAPI) {
-  if (process.env.PI_GROK_REMOTE_TUI !== "1") {
-    return;
-  }
-
   pi.on("session_start", (_event, ctx) => {
     ensureRemoteTuiHost(ctx.ui as Parameters<typeof installCustomPatch>[0]);
   });
 
-  // Also patch immediately if UI already bound (command registration time).
-  // session_start is the reliable hook; command handler double-checks.
-
   pi.registerCommand("remote-tui", {
     description: "[experimental] Remote TUI capability lab with selectable widgets",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
-      // Always re-check: RPC rebinds uiContext after extension load / session_start.
+      // grok-pi RPC only: re-bind host after uiContext swaps. Native TUI: leave custom alone.
       ensureRemoteTuiHost(ctx.ui as Parameters<typeof installCustomPatch>[0]);
 
       const started = Date.now();
       let factoryRan = false;
-      const result = await ctx.ui.custom<string | undefined>((_tui, _theme, _kb, done) => {
-        factoryRan = true;
-        return new RemoteTuiDemoList(done, (keys) => {
-          applyDemoCapabilities(ctx.ui as RemoteTuiDemoUi, keys);
+      const openDemo = () =>
+        ctx.ui.custom<string | undefined>((tui, theme, _kb, done) => {
+          factoryRan = true;
+          return createDemoSelector(
+            tui as { requestRender: () => void },
+            theme as {
+              fg: (color: string, text: string) => string;
+              bold?: (text: string) => string;
+            },
+            done,
+            (keys) => applyDemoCapabilities(ctx.ui as RemoteTuiDemoUi, keys),
+          );
         });
-      });
+
+      const result = await openDemo();
 
       const elapsed = Date.now() - started;
       if (result === undefined && !factoryRan) {
-        // One more attempt in case ui reference changed mid-handler.
-        installCustomPatch(ctx.ui as Parameters<typeof installCustomPatch>[0]);
-        const retry = await ctx.ui.custom<string | undefined>((_tui, _theme, _kb, done) => {
-          factoryRan = true;
-          return new RemoteTuiDemoList(done, (keys) => {
-            applyDemoCapabilities(ctx.ui as RemoteTuiDemoUi, keys);
-          });
-        });
-        if (retry !== undefined || factoryRan) {
-          if (retry === undefined) ctx.ui.notify("Remote TUI demo closed", "info");
-          else ctx.ui.notify(`Remote TUI demo applied: ${retry}`, "info");
+        if (shouldInstallRemoteHost()) {
+          installCustomPatch(ctx.ui as Parameters<typeof installCustomPatch>[0]);
+          const retry = await openDemo();
+          if (retry !== undefined || factoryRan) {
+            if (retry === undefined) ctx.ui.notify("Remote TUI demo closed", "info");
+            else ctx.ui.notify(`Remote TUI demo applied: ${retry}`, "info");
+            return;
+          }
+          ctx.ui.notify(
+            "Remote TUI host patch failed: custom() stub still active (rebuild grok-pi)",
+            "error",
+          );
           return;
         }
         ctx.ui.notify(
-          "Remote TUI host patch failed: custom() stub still active (rebuild grok-pi)",
+          "custom() unavailable (RPC without remote host). Run under grok-pi or native Pi TUI.",
           "error",
         );
       } else if (result === undefined && elapsed < 80) {

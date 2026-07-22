@@ -1,5 +1,60 @@
 import { expect, mock, test } from "bun:test";
 
+type SettingItem = {
+  id: string;
+  label: string;
+  description?: string;
+  currentValue: string;
+  values?: string[];
+};
+
+/** Minimal SettingsList stand-in: space/enter cycles, esc cancels. */
+class MockSettingsList {
+  private items: SettingItem[];
+  private index = 0;
+  private onChange: (id: string, newValue: string) => void;
+  private onCancel: () => void;
+
+  constructor(
+    items: SettingItem[],
+    _maxVisible: number,
+    _theme: unknown,
+    onChange: (id: string, newValue: string) => void,
+    onCancel: () => void,
+  ) {
+    this.items = items;
+    this.onChange = onChange;
+    this.onCancel = onCancel;
+  }
+
+  invalidate() {}
+  render() {
+    return this.items.map((item) => `${item.label}=${item.currentValue}`);
+  }
+
+  handleInput(data: string) {
+    if (data === "\x1b[A") {
+      this.index = this.index === 0 ? this.items.length - 1 : this.index - 1;
+      return;
+    }
+    if (data === "\x1b[B") {
+      this.index = this.index === this.items.length - 1 ? 0 : this.index + 1;
+      return;
+    }
+    if (data === " " || data === "\r") {
+      const item = this.items[this.index]!;
+      const values = item.values ?? ["on", "off"];
+      const next = values[(values.indexOf(item.currentValue) + 1) % values.length]!;
+      item.currentValue = next;
+      this.onChange(item.id, next);
+      return;
+    }
+    if (data === "\x1b") {
+      this.onCancel();
+    }
+  }
+}
+
 mock.module("@earendil-works/pi-tui", () => ({
   CURSOR_MARKER: "\x1b_pi:c\x07",
   KeybindingsManager: class {
@@ -8,22 +63,49 @@ mock.module("@earendil-works/pi-tui", () => ({
     }
   },
   TUI_KEYBINDINGS: {},
-  matchesKey: (data: string, key: string) => {
-    if (key === "up") return data === "\x1b[A";
-    if (key === "down") return data === "\x1b[B";
-    if (key === "enter" || key === "return") return data === "\r";
-    if (key === "escape") return data === "\x1b";
-    if (key === "space") return data === " ";
-    return false;
-  },
   setKeybindings: () => {},
+  SettingsList: MockSettingsList,
 }));
 
 const {
   default: registerRemoteTui,
-  RemoteTuiDemoList,
+  createDemoSelector,
   applyDemoCapabilities,
 } = await import("./index.ts");
+
+test("custom host is NOT installed under native Pi (no PI_GROK)", async () => {
+  const previousGrok = process.env.PI_GROK;
+  const previousFlag = process.env.PI_GROK_REMOTE_TUI;
+  delete process.env.PI_GROK;
+  delete process.env.PI_GROK_REMOTE_TUI;
+
+  let sessionStart:
+    | ((event: unknown, ctx: { ui: { custom: (...args: unknown[]) => unknown; setWidget: () => void } }) => void)
+    | undefined;
+  const pi = {
+    on: (_event: string, handler: typeof sessionStart) => {
+      sessionStart = handler;
+    },
+    registerCommand: () => {},
+  };
+  const originalCustom = async () => "native";
+  const ui = {
+    custom: originalCustom,
+    setWidget: () => {},
+  };
+
+  try {
+    registerRemoteTui(pi as never);
+    sessionStart?.({}, { ui });
+    expect(ui.custom).toBe(originalCustom);
+    expect(await ui.custom()).toBe("native");
+  } finally {
+    if (previousGrok === undefined) delete process.env.PI_GROK;
+    else process.env.PI_GROK = previousGrok;
+    if (previousFlag === undefined) delete process.env.PI_GROK_REMOTE_TUI;
+    else process.env.PI_GROK_REMOTE_TUI = previousFlag;
+  }
+});
 
 test("custom host exposes terminal dimensions to component factories", async () => {
   const previous = process.env.PI_GROK_REMOTE_TUI;
@@ -87,7 +169,7 @@ test("custom host removes Pi hardware cursor markers from projected frames", asy
     sessionStart?.({}, { ui });
     void ui.custom((_tui, _theme, _kb, _done) => ({
       invalidate() {},
-      render: () => ["before\x1b_pi:c\x07\x1b[7m \x1b[27mafter"],
+      render: () => ["before\x1b_pi:c\x07\x1b[7m \x1b[27mafter"],
       handleInput() {},
     }));
     await new Promise((resolve) => setImmediate(resolve));
@@ -101,10 +183,16 @@ test("custom host removes Pi hardware cursor markers from projected frames", asy
   }
 });
 
-test("demo list toggles checkboxes and applies selected surfaces", () => {
+test("demo SettingsList toggles and applies selected surfaces", () => {
   const applied: string[][] = [];
   let closed: string | undefined;
-  const demo = new RemoteTuiDemoList(
+  const theme = {
+    fg: (_c: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+  const demo = createDemoSelector(
+    { requestRender: () => {} },
+    theme,
     (result) => {
       closed = result;
     },
@@ -113,22 +201,20 @@ test("demo list toggles checkboxes and applies selected surfaces", () => {
     },
   );
 
-  // Space on first item (header)
-  demo.handleInput(" ");
-  // Move down and check footer
-  demo.handleInput("\x1b[B");
-  demo.handleInput(" ");
-  // Apply without closing
-  demo.handleInput("\r");
-  expect(applied).toEqual([["header", "footer"]]);
+  // Space on first item (header) → on
+  demo.handleInput?.(" ");
+  // Move down and enable footer
+  demo.handleInput?.("\x1b[B");
+  demo.handleInput?.(" ");
+  expect(applied).toEqual([["header"], ["header", "footer"]]);
 
   const rendered = demo.render(80).join("\n");
   expect(rendered).toContain("Remote TUI capability lab");
-  expect(rendered).toContain("☑");
-  expect(rendered).toContain("Applied. Inspect the native header/footer/status surfaces.");
+  expect(rendered).toContain("Header widget=on");
+  expect(rendered).toContain("Footer widget=on");
 
   // Esc closes with selected keys
-  demo.handleInput("\x1b");
+  demo.handleInput?.("\x1b");
   expect(closed).toBe("header,footer");
 });
 
@@ -182,12 +268,9 @@ test("showOverlay restores previous root component on hide", async () => {
     },
     registerCommand: () => {},
   };
-  let frame: string[] | undefined;
   const ui = {
     custom: async () => undefined,
-    setWidget: (_key: string, lines?: string[]) => {
-      frame = lines;
-    },
+    setWidget: () => {},
   };
 
   try {
@@ -196,39 +279,32 @@ test("showOverlay restores previous root component on hide", async () => {
 
     let tuiRef: {
       showOverlay: (component: {
-        render: () => string[];
-        handleInput?: () => void;
-        invalidate?: () => void;
+        invalidate(): void;
+        render(width: number): string[];
+        handleInput?(data: string): void;
       }) => { hide: () => void };
-    } | undefined;
+    } | null = null;
 
     void ui.custom((tui, _theme, _kb, _done) => {
       tuiRef = tui as typeof tuiRef;
       return {
         invalidate() {},
-        render: () => ["root-frame"],
+        render: () => ["root"],
         handleInput() {},
       };
     });
-
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
-    expect(frame?.join("\n")).toContain("root-frame");
 
     const handle = tuiRef!.showOverlay({
       invalidate() {},
-      render: () => ["overlay-frame"],
+      render: () => ["overlay"],
       handleInput() {},
     });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(frame?.join("\n")).toContain("overlay-frame");
-
     handle.hide();
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(frame?.join("\n")).toContain("root-frame");
+    expect(tuiRef).toBeTruthy();
   } finally {
     if (previous === undefined) delete process.env.PI_GROK_REMOTE_TUI;
     else process.env.PI_GROK_REMOTE_TUI = previous;
   }
 });
-

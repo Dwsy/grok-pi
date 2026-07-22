@@ -6,7 +6,7 @@
  * message (`display: false`) that the adapter projects to Grok SessionRecap.
  *
  * Invoked only via `/__pi_grok_recap` (hidden from slash UI by adapter filter).
- * Args: JSON one-liner `{ auto, model?, thinkingLevel?, language? }`.
+ * Args: JSON one-liner `{ auto, model?, thinkingLevel?, language?, customInstructions? }`.
  */
 import { complete, type Message } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -28,6 +28,8 @@ type RecapArgs = {
 	model?: string;
 	thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	language?: string;
+	/** Free-text focus from `/recap …` / `/summarize …` (appended to base prompt). */
+	customInstructions?: string;
 };
 
 /** Prefer LR when the terminal is wide enough to fit horizontal flowcharts. */
@@ -74,6 +76,7 @@ function recapInstruction(
 	language: string | undefined,
 	recapMermaid: boolean,
 	terminalWidth?: number,
+	customInstructions?: string,
 ): string {
 	const mermaidInstruction = recapMermaid
 		? [
@@ -82,7 +85,8 @@ function recapInstruction(
 			mermaidLayoutInstruction(terminalWidth),
 		]
 		: ["Do not output Markdown, code fences, lists, or Mermaid diagrams."];
-	return [
+	const focus = (customInstructions ?? "").trim();
+	const lines = [
 		"Write a concise recap body for a user returning from idle.",
 		'Output ONLY the body (the UI adds the "Recap —" label).',
 		"",
@@ -100,7 +104,12 @@ function recapInstruction(
 		...mermaidInstruction,
 		"",
 		languageInstruction(language),
-	].join("\n");
+	];
+	if (focus) {
+		// Mirror Pi `/compact` / branch-summary: append, do not replace the base prompt.
+		lines.push("", `Additional focus: ${focus}`);
+	}
+	return lines.join("\n");
 }
 
 function cleanRecapMarkdown(raw: string): string {
@@ -301,12 +310,14 @@ export default function (pi: ExtensionAPI) {
 
 				const conversation = buildRecapContext(branch);
 				if (!conversation) return;
+				const customInstructions =
+					typeof parsed.customInstructions === "string" ? parsed.customInstructions : undefined;
 				const userMessage: Message = {
 					role: "user",
 					content: [
 						{
 							type: "text",
-							text: `${recapInstruction(parsed.language, recapMermaid, terminalWidth)}\n\n<conversation>\n${conversation}\n</conversation>`,
+							text: `${recapInstruction(parsed.language, recapMermaid, terminalWidth, customInstructions)}\n\n<conversation>\n${conversation}\n</conversation>`,
 						},
 					],
 					timestamp: Date.now(),
