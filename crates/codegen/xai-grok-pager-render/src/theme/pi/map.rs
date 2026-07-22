@@ -278,7 +278,9 @@ mod tests {
     fn assert_transparent_canvas(theme: Theme) {
         assert_eq!(theme.bg_base, Color::Reset);
         assert_eq!(theme.bg_dark, Color::Reset);
-        assert_eq!(theme.bg_light, Color::Reset);
+        // bg_light is derived from userMessageBg — transparent themes now
+        // provide a subtle surface color so user messages remain distinguishable.
+        assert_ne!(theme.bg_light, Color::Reset);
         assert_ne!(theme.bg_highlight, Color::Reset);
         assert_ne!(theme.md_code_bg, Color::Reset);
         assert_ne!(theme.diff_insert_bg, Color::Reset);

@@ -31,7 +31,7 @@
     "thinkingText": "gray",
 
     "selectedBg": "selectedBg",
-    "userMessageBg": "",
+    "userMessageBg": "#1e293b",
     "userMessageText": "text",
     "customMessageBg": "customMsgBg",
     "customMessageText": "text",
