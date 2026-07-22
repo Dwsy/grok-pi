@@ -2290,7 +2290,6 @@ pub(crate) fn render_session_picker(
     // Content rows will start after fuzzy rows + 1 header row.
     let content_start = picker_entries.len() + 1;
     let content_entry_data: Vec<SessionEntryData> = if let Some(hits) = ctx.content_results
-        && ctx.source_filter != crate::views::session_picker::SourceFilter::External
         && !filter_query.is_empty()
     {
         build_content_entry_data(
@@ -2306,8 +2305,7 @@ pub(crate) fn render_session_picker(
 
     // Show header only if there are actual deduped content rows to display.
     let has_content_rows = !content_entry_data.is_empty();
-    let content_loading = ctx.content_loading
-        && ctx.source_filter != crate::views::session_picker::SourceFilter::External;
+    let content_loading = ctx.content_loading;
     let spinner_label = build_content_header_label(content_loading, has_content_rows, ctx.tick);
     // Only show the header when content results exist or when content
     // search is in progress with a non-empty query.  This must match the

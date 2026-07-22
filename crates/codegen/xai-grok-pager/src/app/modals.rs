@@ -940,6 +940,7 @@ impl AgentView {
                                         source_filter:
                                             crate::views::session_picker::SourceFilter::default(),
                                         pending_delete: None,
+                                        preview_scroll: 0,
                                     });
                                     return InputOutcome::Action(Action::FetchSessionList);
                                 }
@@ -2216,6 +2217,7 @@ impl AgentView {
                 entries_query,
                 source_filter,
                 pending_delete,
+                preview_scroll,
                 ..
             } = active_modal
             {
@@ -2252,11 +2254,6 @@ impl AgentView {
                         id: 0,
                     }];
                     shortcuts.extend([
-                        Shortcut {
-                            label: "e/Shift+e expand",
-                            clickable: false,
-                            id: 0,
-                        },
                         Shortcut {
                             label: "s sort",
                             clickable: false,
@@ -2399,7 +2396,6 @@ impl AgentView {
                     // Append content search result rows (same pattern as welcome).
                     let content_start = picker_entries.len() + 1;
                     let content_entry_data = if let Some(hits) = content_results.as_deref()
-                        && *source_filter != crate::views::session_picker::SourceFilter::External
                         && !filter_query.is_empty()
                     {
                         build_content_entry_data(
@@ -2413,8 +2409,7 @@ impl AgentView {
                         Vec::new()
                     };
                     let has_content_rows = !content_entry_data.is_empty();
-                    let effective_content_loading = *content_loading
-                        && *source_filter != crate::views::session_picker::SourceFilter::External;
+                    let effective_content_loading = *content_loading;
                     let spinner_label = build_content_header_label(
                         effective_content_loading,
                         has_content_rows,
@@ -2471,13 +2466,49 @@ impl AgentView {
                         non_sel_flags.push(false);
                     }
 
+                    // Split content into list (top ~75%) + preview (bottom ~25%).
+                    let total_list_height = content_area
+                        .height
+                        .saturating_sub(entries_start_y.saturating_sub(content_area.y));
+                    let preview_height = if total_list_height >= 8 {
+                        (total_list_height / 4).max(3).min(12)
+                    } else {
+                        0
+                    };
+                    let list_height = total_list_height.saturating_sub(preview_height);
                     let entries_area = Rect {
                         x: content_area.x,
                         y: entries_start_y,
                         width: content_area.width,
-                        height: content_area
-                            .height
-                            .saturating_sub(entries_start_y.saturating_sub(content_area.y)),
+                        height: list_height,
+                    };
+                    // Resolve the selected row through the same entry map the
+                    // input handler uses, so group headers / content rows map
+                    // to the correct backing session entry. Computed before the
+                    // mutable render call to avoid a borrow conflict on `state`.
+                    let selected_entry_owned = if preview_height >= 3 {
+                        let entry_map = crate::views::session_picker::build_entry_map(
+                            entries.as_deref(),
+                            content_results.as_deref(),
+                            filter_query,
+                            true,
+                            effective_content_loading,
+                            *source_filter,
+                            Some(current_repo.as_str()),
+                        );
+                        entry_map
+                            .get(state.selected)
+                            .and_then(|item| item.as_ref())
+                            .and_then(|item| match item {
+                                crate::views::session_picker::PickerItem::Fuzzy {
+                                    original_index,
+                                } => entries_data.get(*original_index).cloned(),
+                                crate::views::session_picker::PickerItem::Content {
+                                    ..
+                                } => None,
+                            })
+                    } else {
+                        None
                     };
                     let content_hit = picker::render_picker_content_with_scrollbar_x(
                         buf,
@@ -2491,6 +2522,22 @@ impl AgentView {
                         entries.is_none() && (*loading || lanes.foreign_loading),
                         mca.inner_x + mca.inner_width - 1,
                     );
+                    // Render bottom preview pane for the selected session.
+                    if preview_height >= 3 {
+                        let preview_area = Rect {
+                            x: content_area.x,
+                            y: entries_start_y + list_height,
+                            width: content_area.width,
+                            height: preview_height,
+                        };
+                        render_session_preview_pane(
+                            buf,
+                            preview_area,
+                            selected_entry_owned.as_ref(),
+                            *preview_scroll,
+                            &theme,
+                        );
+                    }
                     state.hit_areas = Some(picker::PickerHitAreas {
                         close_button: Rect::default(),
                         search_bar: search_bar_rect,
@@ -3062,6 +3109,138 @@ fn selected_model_detail_lines(
     model_picker_detail_lines(info)
 }
 
+/// Render the bottom preview pane for the selected session in the resume picker.
+/// Shows session metadata and first message as a quick glance (like the model
+/// picker's detail pane but richer).
+fn render_session_preview_pane(
+    buf: &mut Buffer,
+    area: Rect,
+    entry: Option<&crate::app::app_view::SessionPickerEntry>,
+    scroll: u16,
+    theme: &Theme,
+) {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line as TuiLine, Span};
+    use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(theme.selection_border));
+    let inner = block.inner(area);
+    block.render(area, buf);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let Some(entry) = entry else {
+        let placeholder = TuiLine::from(Span::styled(
+            "  No session selected",
+            Style::default().fg(theme.gray_dim),
+        ));
+        Paragraph::new(vec![placeholder]).render(inner, buf);
+        return;
+    };
+
+    let mut tui_lines: Vec<TuiLine> = Vec::new();
+
+    // Title line: session name or summary
+    let title = entry
+        .name
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&entry.summary);
+    tui_lines.push(TuiLine::from(Span::styled(
+        format!("  {title}"),
+        Style::default()
+            .fg(theme.accent_user)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    // Metadata line: model · messages · tokens
+    let mut meta_parts: Vec<String> = Vec::new();
+    if let Some(model) = &entry.model_id {
+        meta_parts.push(model.clone());
+    }
+    if entry.num_messages > 0 {
+        meta_parts.push(format!("{} msgs", entry.num_messages));
+    }
+    if let Some(tokens) = entry.total_tokens {
+        if tokens > 0 {
+            meta_parts.push(format!("{} tok", tokens));
+        }
+    }
+    if let Some(cost) = entry.total_cost {
+        if cost > 0.0 {
+            meta_parts.push(format!("${cost:.2}"));
+        }
+    }
+    if !meta_parts.is_empty() {
+        tui_lines.push(TuiLine::from(Span::styled(
+            format!("  {}", meta_parts.join(" · ")),
+            Style::default().fg(theme.text_secondary),
+        )));
+    }
+
+    // Time line: created · updated
+    let created_str = entry.created_at.format("%Y-%m-%d %H:%M").to_string();
+    let updated_str = entry
+        .last_active_at
+        .unwrap_or(entry.updated_at)
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+    tui_lines.push(TuiLine::from(vec![
+        Span::styled("  created ", Style::default().fg(theme.gray_dim)),
+        Span::styled(&created_str, Style::default().fg(theme.text_secondary)),
+        Span::styled("  ·  updated ", Style::default().fg(theme.gray_dim)),
+        Span::styled(&updated_str, Style::default().fg(theme.text_secondary)),
+    ]));
+
+    // CWD + branch line
+    if !entry.cwd.is_empty() {
+        let mut cwd_line = vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(&entry.cwd, Style::default().fg(theme.gray_dim)),
+        ];
+        if let Some(branch) = &entry.branch {
+            cwd_line.push(Span::styled(format!("  ({branch})"), Style::default().fg(theme.gray_dim)));
+        }
+        tui_lines.push(TuiLine::from(cwd_line));
+    }
+
+    // First message preview
+    if let Some(first_msg) = &entry.first_message {
+        let msg = first_msg.trim();
+        if !msg.is_empty() {
+            tui_lines.push(TuiLine::from(Span::raw("")));
+            // Truncate to fit remaining lines (char-safe for CJK/emoji)
+            let max_chars = (inner.width as usize).saturating_sub(2) * 2;
+            let truncated: String = if msg.chars().count() > max_chars {
+                msg.chars().take(max_chars).collect::<String>() + "…"
+            } else {
+                msg.to_string()
+            };
+            tui_lines.push(TuiLine::from(Span::styled(
+                format!("  {truncated}"),
+                Style::default().fg(theme.text_primary),
+            )));
+        }
+    }
+
+    // Apply scroll offset
+    let visible: Vec<TuiLine> = tui_lines
+        .into_iter()
+        .skip(scroll as usize)
+        .take(inner.height as usize)
+        .collect();
+
+    Paragraph::new(visible)
+        .wrap(Wrap { trim: false })
+        .render(inner, buf);
+}
+
 fn render_model_picker_detail(buf: &mut Buffer, area: Rect, lines: &[String], theme: &Theme) {
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line as TuiLine, Span};
@@ -3142,6 +3321,7 @@ mod session_picker_delete_tests {
             entries_query: None,
             source_filter: crate::views::session_picker::SourceFilter::default(),
             pending_delete: None,
+            preview_scroll: 0,
         });
     }
 

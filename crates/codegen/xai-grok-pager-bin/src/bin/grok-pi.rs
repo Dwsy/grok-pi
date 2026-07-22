@@ -493,13 +493,16 @@ async fn run(mut args: Args) -> Result<()> {
     // Fail fast with OS-aware install hints before spawning the RPC host.
     let _pi_version =
         ensure_compatible_pi_host(&args.pi_bin).context("Pi host version check failed")?;
-    let process = PiRpc::spawn(SpawnConfig {
-        program: args.pi_bin,
-        prefix_args: args.pi_prefix_args,
-        cwd: cwd.clone(),
+
+    // ── Extension self-heal: spawn Pi, and if an extension crashes the RPC
+    // child during bootstrap, binary-search the culprit (VSCode-style),
+    // print a diagnostic, and relaunch without it. ──────────────────────────
+    let (process, bootstrap, pi_args) = spawn_with_extension_self_heal(
+        &args,
+        &cwd,
         pi_args,
-        env,
-    })
+        &env,
+    )
     .await?;
     let bash_control_meta = bash_extension
         .as_ref()
@@ -523,9 +526,6 @@ async fn run(mut args: Args) -> Result<()> {
     let _plan_mode_extension = plan_mode_extension;
     let _tools_extension = tools_extension;
     let _rollback_extension = rollback_ext;
-    let bootstrap = PiBootstrap::load(&process.rpc)
-        .await
-        .context("failed to bootstrap Pi RPC state")?;
 
     let initial_models = bootstrap.acp_models();
     let initial_commands = bootstrap.acp_commands();
@@ -659,6 +659,257 @@ fn env_flag_default_off(name: &str) -> bool {
         ),
         Err(_) => false,
     }
+}
+
+// ── Extension self-heal (VSCode-style binary search) ─────────────────────────
+//
+// When an extension crashes the Pi RPC child during bootstrap, grok-pi used to
+// exit with an opaque error. Now we:
+//
+// 1. Confirm Pi boots with zero extensions (sanity check).
+// 2. Binary-search the ordered `--extension` list to isolate the culprit.
+// 3. Print a diagnostic naming the bad extension.
+// 4. Relaunch without it (self-heal) so the user is never stuck.
+//
+// The user can also run `grok-pi -ne` to skip all extensions manually.
+
+/// Spawn Pi with the full extension set. If bootstrap fails, run the
+/// self-heal bisection and return a working process.
+async fn spawn_with_extension_self_heal(
+    args: &Args,
+    cwd: &std::path::Path,
+    pi_args: Vec<String>,
+    env: &[(String, String)],
+) -> Result<(pi_grok_adapter::PiProcess, PiBootstrap, Vec<String>)> {
+    let config = SpawnConfig {
+        program: args.pi_bin.clone(),
+        prefix_args: args.pi_prefix_args.clone(),
+        cwd: cwd.to_path_buf(),
+        pi_args: pi_args.clone(),
+        env: env.to_vec(),
+    };
+
+    let process = PiRpc::spawn(config).await?;
+    match PiBootstrap::load(&process.rpc).await {
+        Ok(bootstrap) => return Ok((process, bootstrap, pi_args)),
+        Err(error) => {
+            process.rpc.kill().await;
+            tracing::warn!(%error, "Pi bootstrap failed; starting extension self-heal");
+        }
+    }
+
+    // Extract extension paths from pi_args (pairs: "--extension" <path>).
+    let ext_paths = extract_extension_paths(&pi_args);
+    if ext_paths.is_empty() {
+        // No extensions to bisect — the failure is not extension-related.
+        anyhow::bail!(
+            "Pi RPC bootstrap failed and no extensions are loaded.\n\
+             Try: grok-pi -ne  (disable all extensions)"
+        );
+    }
+
+    // Step 1: Confirm Pi boots with zero extensions.
+    let no_ext_args = strip_extension_args(&pi_args);
+    let probe_config = SpawnConfig {
+        program: args.pi_bin.clone(),
+        prefix_args: args.pi_prefix_args.clone(),
+        cwd: cwd.to_path_buf(),
+        pi_args: no_ext_args.clone(),
+        env: env.to_vec(),
+    };
+    let probe = PiRpc::spawn(probe_config).await?;
+    match PiBootstrap::load(&probe.rpc).await {
+        Ok(_) => {
+            probe.rpc.kill().await;
+        }
+        Err(e) => {
+            probe.rpc.kill().await;
+            anyhow::bail!(
+                "Pi RPC bootstrap fails even with zero extensions.\n\
+                 This is not an extension problem.\n\
+                 Error: {e}"
+            );
+        }
+    }
+
+    // Step 2: Binary search for the culprit extension.
+    let culprit = bisect_extension_culprit(args, cwd, &no_ext_args, env, &ext_paths).await;
+
+    match culprit {
+        Some(bad_path) => {
+            let display = std::path::Path::new(&bad_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| bad_path.clone());
+
+            eprintln!();
+            eprintln!("\x1b[1;31m✗ Extension crash detected\x1b[0m");
+            eprintln!("  Culprit: \x1b[1m{display}\x1b[0m");
+            eprintln!("  Path:    {bad_path}");
+            eprintln!();
+            eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching without this extension.");
+            eprintln!();
+            eprintln!("  To disable all extensions:  \x1b[1mgrok-pi -ne\x1b[0m");
+            eprintln!("  To permanently block it, add to ~/.grok/config.toml:");
+            eprintln!("    [pi.resources]");
+            eprintln!("    block = [\"{bad_path}\"]");
+            eprintln!();
+
+            // Step 3: Relaunch without the culprit.
+            let healed_args = remove_extension_path(&pi_args, &bad_path);
+            let heal_config = SpawnConfig {
+                program: args.pi_bin.clone(),
+                prefix_args: args.pi_prefix_args.clone(),
+                cwd: cwd.to_path_buf(),
+                pi_args: healed_args.clone(),
+                env: env.to_vec(),
+            };
+            let process = PiRpc::spawn(heal_config).await?;
+            let bootstrap = PiBootstrap::load(&process.rpc)
+                .await
+                .context("self-heal relaunch still failed")?;
+            Ok((process, bootstrap, healed_args))
+        }
+        None => {
+            // Bisection couldn't isolate a single culprit (e.g. combination
+            // conflict). Fall back to disabling all extensions.
+            eprintln!();
+            eprintln!("\x1b[1;31m✗ Extension conflict detected\x1b[0m");
+            eprintln!("  Could not isolate a single culprit (possible combination conflict).");
+            eprintln!();
+            eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching with all extensions disabled.");
+            eprintln!("  To do this manually:  \x1b[1mgrok-pi -ne\x1b[0m");
+            eprintln!();
+
+            let process = PiRpc::spawn(SpawnConfig {
+                program: args.pi_bin.clone(),
+                prefix_args: args.pi_prefix_args.clone(),
+                cwd: cwd.to_path_buf(),
+                pi_args: no_ext_args.clone(),
+                env: env.to_vec(),
+            })
+            .await?;
+            let bootstrap = PiBootstrap::load(&process.rpc)
+                .await
+                .context("fallback no-extension launch failed")?;
+            Ok((process, bootstrap, no_ext_args))
+        }
+    }
+}
+
+/// Extract all `--extension <path>` values from pi_args.
+fn extract_extension_paths(pi_args: &[String]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut i = 0;
+    while i < pi_args.len() {
+        if pi_args[i] == "--extension" && i + 1 < pi_args.len() {
+            paths.push(pi_args[i + 1].clone());
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    paths
+}
+
+/// Remove all `--extension <path>` pairs from pi_args.
+fn strip_extension_args(pi_args: &[String]) -> Vec<String> {
+    let mut result = Vec::with_capacity(pi_args.len());
+    let mut i = 0;
+    while i < pi_args.len() {
+        if pi_args[i] == "--extension" && i + 1 < pi_args.len() {
+            i += 2;
+        } else {
+            result.push(pi_args[i].clone());
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Remove a specific `--extension <path>` pair from pi_args.
+fn remove_extension_path(pi_args: &[String], path: &str) -> Vec<String> {
+    let mut result = Vec::with_capacity(pi_args.len());
+    let mut i = 0;
+    while i < pi_args.len() {
+        if pi_args[i] == "--extension" && i + 1 < pi_args.len() && pi_args[i + 1] == path {
+            i += 2;
+        } else {
+            result.push(pi_args[i].clone());
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Binary search the extension list to find the one that crashes Pi.
+/// Returns the path of the culprit, or None if isolation fails.
+async fn bisect_extension_culprit(
+    args: &Args,
+    cwd: &std::path::Path,
+    base_args: &[String],
+    env: &[(String, String)],
+    ext_paths: &[String],
+) -> Option<String> {
+    // If the full set passes, there's no culprit (shouldn't happen).
+    if probe_extensions_ok(args, cwd, base_args, env, ext_paths).await {
+        return None;
+    }
+
+    // Binary search: find the minimal prefix that fails.
+    let mut lo = 0usize;
+    let mut hi = ext_paths.len();
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if probe_extensions_ok(args, cwd, base_args, env, &ext_paths[..mid]).await {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    // Verify the single extension at index `lo` is the culprit.
+    let suspect = &ext_paths[lo];
+    if !probe_extensions_ok(args, cwd, base_args, env, std::slice::from_ref(suspect)).await {
+        return Some(suspect.clone());
+    }
+
+    // The suspect passes alone — it's a combination conflict.
+    // Try each extension individually to find one that fails alone.
+    for path in ext_paths {
+        if !probe_extensions_ok(args, cwd, base_args, env, std::slice::from_ref(path)).await {
+            return Some(path.clone());
+        }
+    }
+
+    None
+}
+
+/// Probe whether Pi boots successfully with the given subset of extensions.
+async fn probe_extensions_ok(
+    args: &Args,
+    cwd: &std::path::Path,
+    base_args: &[String],
+    env: &[(String, String)],
+    subset: &[String],
+) -> bool {
+    let mut probe_args = base_args.to_vec();
+    for path in subset {
+        probe_args.extend(["--extension".to_string(), path.clone()]);
+    }
+    let config = SpawnConfig {
+        program: args.pi_bin.clone(),
+        prefix_args: args.pi_prefix_args.clone(),
+        cwd: cwd.to_path_buf(),
+        pi_args: probe_args,
+        env: env.to_vec(),
+    };
+    let Ok(process) = PiRpc::spawn(config).await else {
+        return false;
+    };
+    let ok = PiBootstrap::load(&process.rpc).await.is_ok();
+    process.rpc.kill().await;
+    ok
 }
 
 #[cfg(test)]

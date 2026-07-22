@@ -325,6 +325,8 @@ pub enum ActiveModal {
         /// the picker lists change underneath it. `Some` only while the
         /// focused row is armed; cleared on cancel / completion.
         pending_delete: Option<(String, String, String)>,
+        /// Vertical scroll offset for the bottom preview pane.
+        preview_scroll: u16,
     },
     /// How-to documentation list modal (wider picker style).
     DocPicker {

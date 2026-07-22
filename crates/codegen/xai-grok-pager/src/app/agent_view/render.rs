@@ -719,11 +719,6 @@ impl AgentView {
                 let _ = std::io::Write::write_all(stderr, esc.as_bytes());
             });
         }
-        // Live turn: suppress sticky headers so non-compact paint matches the
-        // compact-on path (sticky is already off when compact). Sticky re-paint
-        // on every spinner/stream frame is the compact-off lag source.
-        self.scrollback
-            .set_suppress_sticky_headers(!self.session.state.is_idle());
         let appearance = self.scrollback.appearance().clone();
         let layout_cfg = &appearance.scrollback.layout;
         let scrollbar_cfg = &appearance.scrollback.scrollbar;
@@ -1425,8 +1420,10 @@ impl AgentView {
             self.scrollback.set_cwd(Some(self.session.cwd.clone()));
             let inline_edit_dim_from =
                 self.sync_inline_edit_layout(layout.scrollback_content.width);
-            self.scrollback
-                .prepare_layout(layout.scrollback.width, layout.scrollback.height);
+            self.scrollback.prepare_layout(
+                layout.scrollback_content.width,
+                layout.scrollback_content.height,
+            );
             let rewind_dim_from = self.rewind_dim_from_entry().or(inline_edit_dim_from);
             let sb_focused = self.active_pane == ActivePane::Scrollback && !overlay_focused;
             let search_highlight = if search_active {

@@ -398,8 +398,7 @@ pub(crate) fn build_virtual_list(
         .into_iter()
         .map(|i| PickerItem::Fuzzy { original_index: i })
         .collect();
-    if source_filter != SourceFilter::External
-        && let Some(hits) = content_results
+    if let Some(hits) = content_results
     {
         for (hit_idx, hit) in hits.iter().enumerate() {
             if !fuzzy_ids.contains(hit.session_id.as_str()) {
@@ -470,8 +469,7 @@ pub(crate) fn build_entry_map(
                     .map(|entry| entry.id.as_str())
             })
             .collect();
-        let content_items: Vec<usize> = if source_filter != SourceFilter::External
-            && let Some(hits) = content_results
+        let content_items: Vec<usize> = if let Some(hits) = content_results
             && !query.is_empty()
         {
             hits.iter()
@@ -483,8 +481,7 @@ pub(crate) fn build_entry_map(
             Vec::new()
         };
         let show_content_header = !content_items.is_empty()
-            || (source_filter != SourceFilter::External
-                && content_loading
+            || (content_loading
                 && !query.trim().is_empty());
         if show_content_header {
             map.push(None); // content header
@@ -494,7 +491,7 @@ pub(crate) fn build_entry_map(
         }
         map
     } else {
-        let content_for_flat = if query.is_empty() || source_filter == SourceFilter::External {
+        let content_for_flat = if query.is_empty() {
             None
         } else {
             content_results
@@ -506,8 +503,7 @@ pub(crate) fn build_entry_map(
             .count();
         let content_count = virtual_list.len() - fuzzy_count;
         let has_header = content_count > 0
-            || (source_filter != SourceFilter::External
-                && content_loading
+            || (content_loading
                 && !query.trim().is_empty());
         let mut map = Vec::with_capacity(virtual_list.len() + usize::from(has_header));
         for (i, item) in virtual_list.into_iter().enumerate() {

@@ -4362,6 +4362,92 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::PiSessionSearch { query, cwd, seq } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    let params = serde_json::json!({
+                        "query": query,
+                        "cwd": cwd.map(|c| c.to_string_lossy().to_string()),
+                        "limit": 20,
+                    });
+                    let request = acp::ExtRequest::new(
+                        "pi/session/search",
+                        serde_json::value::to_raw_value(&params)
+                            .expect("serialize pi search params")
+                            .into(),
+                    );
+                    let mut results = Vec::new();
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        acp_send(request, &tx),
+                    )
+                    .await
+                    {
+                        Ok(Ok(resp)) => {
+                            let wrapper: serde_json::Value =
+                                serde_json::from_str(resp.0.get()).unwrap_or_default();
+                            let payload = wrapper.get("result").unwrap_or(&wrapper);
+                            if let Some(hits) = payload.get("results") {
+                                // Parse PSM search hits into SearchSessionHit.
+                                if let Some(arr) = hits.as_array() {
+                                    for hit in arr {
+                                        let session_id = hit
+                                            .get("sessionId")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        if session_id.is_empty() {
+                                            continue;
+                                        }
+                                        results.push(
+                                            xai_grok_shell::extensions::session_search::SearchSessionHit {
+                                                session_id,
+                                                cwd: hit
+                                                    .get("cwd")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                                summary: hit
+                                                    .get("summary")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                                updated_at: String::new(),
+                                                score: hit
+                                                    .get("score")
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0)
+                                                    as f32,
+                                                matched_fields: hit
+                                                    .get("matchedFields")
+                                                    .and_then(|v| v.as_array())
+                                                    .map(|arr| {
+                                                        arr.iter()
+                                                            .filter_map(|f| f.as_str().map(String::from))
+                                                            .collect()
+                                                    })
+                                                    .unwrap_or_default(),
+                                                snippet: hit
+                                                    .get("snippet")
+                                                    .and_then(|v| v.as_str())
+                                                    .map(String::from),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!("pi session search failed: {e}");
+                        }
+                        Err(_) => {
+                            tracing::warn!("pi session search timed out");
+                        }
+                    }
+                    TaskResult::DeepSearchResults { results, seq }
+                });
+        }
         Effect::ForkSession {
             agent_id,
             parent_session_id,

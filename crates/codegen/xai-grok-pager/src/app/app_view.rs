@@ -619,7 +619,9 @@ impl PendingAction {
 /// exactly this value.
 pub const ESC_DOUBLE_PRESS_TEST_MS: u64 = 60_000;
 /// Pi interactive mode uses a fixed 500ms interval for double Escape.
-const PI_DOUBLE_ESC_TTL: Duration = Duration::from_millis(500);
+/// Raised to 800ms to match the Grok ESC_DOUBLE_PRESS_TTL — 500ms is too
+/// tight for human double-press with no visual feedback on the first press.
+const PI_DOUBLE_ESC_TTL: Duration = Duration::from_millis(800);
 /// Idle-Esc double-press confirm window, `GROK_ESC_DOUBLE_PRESS_MS`-overridable
 /// (read once, bounded). Test seam: a loaded pty_e2e shard's render round-trip
 /// between the two presses can outlast the 800ms default and expire the arm.
@@ -3045,7 +3047,7 @@ impl AppView {
                     outcome = InputOutcome::ArmPending {
                         action: Action::ShowSessionTree,
                         shortcut: KeyShortcut::from(*key),
-                        label: None,
+                        label: Some("tree"),
                         ttl: PI_DOUBLE_ESC_TTL,
                     };
                 }
@@ -5368,15 +5370,7 @@ impl AppView {
         if let ActiveView::Agent(id) = self.active_view
             && let Some(agent) = self.agents.get_mut(&id)
         {
-            // Expanded Edit/Write diffs are paint-heavy. Drop pure scrollback
-            // wave redraws while one fills the viewport so tool-accent animation
-            // does not full-repaint the diff every frame. Status spinner still
-            // advances (Pi-aligned cadence) so the braille glyph never freezes.
-            let heavy_expanded_edit = agent.scrollback.has_expanded_edit_in_viewport();
-            let scrollback_anim_redraw = agent.scrollback.tick();
-            if !heavy_expanded_edit {
-                needs_redraw |= scrollback_anim_redraw;
-            }
+            needs_redraw |= agent.scrollback.tick();
             needs_redraw |= agent.todo.list_state.tick();
             needs_redraw |= agent.todo.badge_tick();
             needs_redraw |= agent.tasks.tick();
@@ -5672,13 +5666,7 @@ impl AppView {
                 let Some(agent) = self.agents.get(&id) else {
                     return TickDemand::None;
                 };
-                // While an expanded edit fills the viewport, skip pure scrollback
-                // wave demand — but keep turn-status Fast so the spinner advances
-                // at Pi-aligned cadence and never freezes on a single braille frame.
-                let heavy_expanded_edit = agent.scrollback.has_expanded_edit_in_viewport();
-                let scrollback_anim =
-                    agent.scrollback.needs_animation() && !heavy_expanded_edit;
-                let fast = scrollback_anim
+                let fast = agent.scrollback.needs_animation()
                     || agent.todo.list_state.needs_tick()
                     || agent.todo.badge_needs_tick()
                     || agent.tasks.needs_tick()
@@ -8695,7 +8683,7 @@ pub(crate) mod tests {
         let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(outcome, InputOutcome::Changed));
         let pending = app.pending_action.as_ref().expect("arm session tree");
-        assert!(pending.label.is_none());
+        assert_eq!(pending.label, Some("tree"), "Pi double-Esc must show tree hint");
         assert!(matches!(pending.action, Action::ShowSessionTree));
 
         let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));

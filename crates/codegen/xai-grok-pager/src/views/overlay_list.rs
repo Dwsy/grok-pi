@@ -20,16 +20,34 @@ pub struct RowCtx {
     pub content_width: u16,
 }
 
+/// Optional search/filter line rendered between the title and the list rows.
+pub struct SearchLine<'a> {
+    /// The current query text (empty = placeholder shown).
+    pub query: &'a str,
+    /// Placeholder shown when query is empty.
+    pub placeholder: &'a str,
+    /// Whether the search input is focused (cursor visible).
+    pub focused: bool,
+}
+
 impl ListOverlay {
     pub fn height(&self, screen_h: u16) -> u16 {
+        self.height_with_search(screen_h, false)
+    }
+
+    /// Height accounting for an optional search line.
+    pub fn height_with_search(&self, screen_h: u16, has_search: bool) -> u16 {
         let rows = self.len.min(MAX_ROWS) as u16;
-        let height = 2 + rows;
+        let search_extra: u16 = if has_search { 1 } else { 0 };
+        let height = 2 + search_extra + rows;
         let cap = (screen_h as u32 * 60 / 100).max(6) as u16;
         height.min(cap) + 1
     }
 
-    fn visible_rows(area: Rect) -> usize {
-        area.height.saturating_sub(3) as usize
+    fn visible_rows(area: Rect, has_search: bool) -> usize {
+        let base: u16 = 3;
+        let search_extra: u16 = if has_search { 1 } else { 0 };
+        area.height.saturating_sub(base + search_extra) as usize
     }
 
     fn scroll_offset(&self, visible_rows: usize) -> usize {
@@ -41,6 +59,11 @@ impl ListOverlay {
     }
 
     pub fn row_at(&self, area: Rect, col: u16, row: u16) -> Option<usize> {
+        self.row_at_with_search(area, col, row, false)
+    }
+
+    /// Row hit-testing accounting for an optional search line.
+    pub fn row_at_with_search(&self, area: Rect, col: u16, row: u16, has_search: bool) -> Option<usize> {
         if area.height == 0 || area.width < 10 {
             return None;
         }
@@ -50,11 +73,12 @@ impl ListOverlay {
         if row < area.y || row >= area.y + area.height {
             return None;
         }
-        let first = area.y + 2;
+        let search_extra: u16 = if has_search { 1 } else { 0 };
+        let first = area.y + 2 + search_extra;
         if row < first {
             return None;
         }
-        let visible_rows = Self::visible_rows(area);
+        let visible_rows = Self::visible_rows(area, has_search);
         let relative = (row - first) as usize;
         if relative >= visible_rows {
             return None;
@@ -69,6 +93,19 @@ impl ListOverlay {
         area: Rect,
         title: &str,
         focused: bool,
+        row_line: impl FnMut(usize, &RowCtx) -> Line<'static>,
+    ) {
+        self.render_with_search(buf, area, title, focused, None, row_line);
+    }
+
+    /// Render with an optional search/filter line between title and rows.
+    pub fn render_with_search(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        title: &str,
+        focused: bool,
+        search: Option<SearchLine<'_>>,
         mut row_line: impl FnMut(usize, &RowCtx) -> Line<'static>,
     ) {
         if area.height == 0 || area.width < 10 {
@@ -101,7 +138,32 @@ impl ListOverlay {
         );
         row += 1;
 
-        let visible_rows = Self::visible_rows(area);
+        // Render search line if present.
+        let has_search = search.is_some();
+        if let Some(ref search) = search {
+            let search_style = if search.query.is_empty() {
+                Style::default().fg(theme.gray_dim)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+            let display = if search.query.is_empty() {
+                search.placeholder.to_string()
+            } else {
+                let cursor = if search.focused { "█" } else { "" };
+                format!("{}{}", search.query, cursor)
+            };
+            let prefix = Span::styled("/ ", Style::default().fg(theme.accent_user));
+            let text = Span::styled(display, search_style);
+            buf.set_line(
+                content_x,
+                row,
+                &Line::from(vec![prefix, text]),
+                content_width,
+            );
+            row += 1;
+        }
+
+        let visible_rows = Self::visible_rows(area, has_search);
         let scroll_offset = self.scroll_offset(visible_rows);
         for index in (scroll_offset..self.len).take(visible_rows) {
             if row >= area.y + area.height {

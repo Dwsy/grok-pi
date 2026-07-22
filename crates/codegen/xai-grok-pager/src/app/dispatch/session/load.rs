@@ -578,11 +578,21 @@ pub(in crate::app::dispatch) fn dispatch_trigger_deep_search(
         }) = agent.active_modal.as_mut()
     {
         if *source_filter == crate::views::session_picker::SourceFilter::External {
+            let query = state.query().trim().to_string();
             *deep_search_seq += 1;
-            *content_results = None;
-            *content_loading = false;
-            state.expanded.clear();
-            return vec![];
+            let seq = *deep_search_seq;
+            if query.len() < 2 {
+                *content_results = None;
+                *content_loading = false;
+                state.expanded.clear();
+                return vec![];
+            }
+            *content_loading = true;
+            let cwd = Some(agent.session.cwd.clone());
+            if force {
+                return vec![Effect::PiSessionSearch { query, cwd, seq }];
+            }
+            return vec![Effect::DebounceSessionSearch { query, seq }];
         }
         let query = state.query().trim().to_string();
         *deep_search_seq += 1;
@@ -599,11 +609,21 @@ pub(in crate::app::dispatch) fn dispatch_trigger_deep_search(
         return vec![Effect::DebounceSessionSearch { query, seq }];
     }
     if app.session_picker_source_filter == crate::views::session_picker::SourceFilter::External {
+        let query = app.session_picker_state.query().trim().to_string();
         app.session_picker_deep_search_seq += 1;
-        app.session_picker_content_results = None;
-        app.session_picker_content_loading = false;
-        app.session_picker_state.expanded.clear();
-        return vec![];
+        let seq = app.session_picker_deep_search_seq;
+        if query.len() < 2 {
+            app.session_picker_content_results = None;
+            app.session_picker_content_loading = false;
+            app.session_picker_state.expanded.clear();
+            return vec![];
+        }
+        app.session_picker_content_loading = true;
+        let cwd = Some(app.cwd.clone());
+        if force {
+            return vec![Effect::PiSessionSearch { query, cwd, seq }];
+        }
+        return vec![Effect::DebounceSessionSearch { query, seq }];
     }
     let query = app.session_picker_state.query().trim().to_string();
     app.session_picker_deep_search_seq += 1;
@@ -1051,7 +1071,33 @@ pub(in crate::app::dispatch) fn handle_session_search_debounce_expired(
     if live_deep_search_seq(app) != Some(seq) {
         return vec![];
     }
+    // Route External (Pi) sources to the PSM full-text search path.
+    if session_picker_is_external(app) {
+        let cwd = active_picker_cwd(app);
+        return vec![Effect::PiSessionSearch { query, cwd, seq }];
+    }
     vec![Effect::DeepSearchSessions { query, seq }]
+}
+/// Whether the live session-picker surface is filtered to External (Pi) sources.
+fn session_picker_is_external(app: &AppView) -> bool {
+    use crate::views::modal::ActiveModal;
+    if let Some(agent) = get_active_agent(app)
+        && let Some(ActiveModal::SessionPicker { source_filter, .. }) =
+            agent.active_modal.as_ref()
+    {
+        return *source_filter == crate::views::session_picker::SourceFilter::External;
+    }
+    app.session_picker_source_filter == crate::views::session_picker::SourceFilter::External
+}
+/// The cwd to scope a Pi session search to, taken from the live picker surface.
+fn active_picker_cwd(app: &AppView) -> Option<std::path::PathBuf> {
+    use crate::views::modal::ActiveModal;
+    if let Some(agent) = get_active_agent(app)
+        && let Some(ActiveModal::SessionPicker { .. }) = agent.active_modal.as_ref()
+    {
+        return Some(agent.session.cwd.clone());
+    }
+    Some(app.cwd.clone())
 }
 /// The deep-search seq of the surface that can still consume results: an
 /// open modal SessionPicker (its own counter), else the welcome-screen
@@ -1174,21 +1220,16 @@ pub(in crate::app::dispatch) fn handle_deep_search_results(
             content_results,
             content_loading,
             deep_search_seq,
-            source_filter,
             ..
         }) = agent.active_modal.as_mut()
     {
-        if seq == *deep_search_seq
-            && *source_filter != crate::views::session_picker::SourceFilter::External
-        {
+        if seq == *deep_search_seq {
             *content_results = Some(results);
             *content_loading = false;
         }
         return vec![];
     }
-    if seq == app.session_picker_deep_search_seq
-        && app.session_picker_source_filter != crate::views::session_picker::SourceFilter::External
-    {
+    if seq == app.session_picker_deep_search_seq {
         app.session_picker_content_results = Some(results);
         app.session_picker_content_loading = false;
     }
@@ -1210,7 +1251,7 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
     let mut effects = discard_welcome_prewarm(app);
     with_active_agent(app, |agent| {
         agent.active_modal = Some(ActiveModal::SessionPicker {
-            state: crate::views::picker::PickerState::default(),
+            state: crate::views::picker::PickerState::input_active(),
             entries: None,
             loading: external_agent,
             lanes: Default::default(),
@@ -1226,6 +1267,7 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
                 crate::views::session_picker::SourceFilter::default()
             },
             pending_delete: None,
+            preview_scroll: 0,
         });
     });
     if external_agent {

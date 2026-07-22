@@ -46,7 +46,7 @@ impl AgentView {
         let Some(prompt_id) = self
             .jump_state
             .as_ref()
-            .and_then(|state| state.entries.get(state.selected))
+            .and_then(|state| state.current_entry())
             .map(|entry| entry.prompt_entry_id)
         else {
             return;
@@ -75,6 +75,26 @@ impl AgentView {
                 }
                 InputOutcome::Changed
             }
+            JumpInput::SearchChar(c) => {
+                if let Some(state) = self.jump_state.as_mut() {
+                    state.query.push(c);
+                    state.apply_filter();
+                    self.sync_jump_preview();
+                }
+                InputOutcome::Changed
+            }
+            JumpInput::SearchBackspace => {
+                if let Some(state) = self.jump_state.as_mut() {
+                    state.query.pop();
+                    state.apply_filter();
+                    self.sync_jump_preview();
+                }
+                InputOutcome::Changed
+            }
+            JumpInput::CopySelected(text) => {
+                self.copy_to_clipboard(&text);
+                InputOutcome::Changed
+            }
             input => Self::jump_input_to_outcome(input),
         }
     }
@@ -83,7 +103,12 @@ impl AgentView {
         match input {
             JumpInput::Select(id) => InputOutcome::Action(Action::JumpPickerSelect(id)),
             JumpInput::Dismissed => InputOutcome::Action(Action::JumpDismiss),
-            JumpInput::MoveUp | JumpInput::MoveDown | JumpInput::Consumed => InputOutcome::Changed,
+            JumpInput::MoveUp
+            | JumpInput::MoveDown
+            | JumpInput::SearchChar(_)
+            | JumpInput::SearchBackspace
+            | JumpInput::CopySelected(_)
+            | JumpInput::Consumed => InputOutcome::Changed,
         }
     }
 

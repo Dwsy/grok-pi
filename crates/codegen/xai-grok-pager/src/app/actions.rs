@@ -2181,6 +2181,12 @@ pub enum Effect {
     },
     /// Deep-search sessions by content (FTS via ACP).
     DeepSearchSessions { query: String, seq: u64 },
+    /// Full-text search for external (Pi) sessions via PSM SQLite FTS5.
+    PiSessionSearch {
+        query: String,
+        cwd: Option<std::path::PathBuf>,
+        seq: u64,
+    },
     /// Call `x.ai/session/fork` to create a peer session that resumes
     /// from `parent_session_id` in the same cwd (no worktree). Mirror of
     /// the worktree branch of [`Effect::CreateWorktreeSession`]; the

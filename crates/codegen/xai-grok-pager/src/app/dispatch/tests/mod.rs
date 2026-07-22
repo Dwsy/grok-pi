@@ -770,6 +770,7 @@ fn open_session_picker_with(
         entries_query: None,
         source_filter: crate::views::session_picker::SourceFilter::default(),
         pending_delete: None,
+        preview_scroll: 0,
     });
 }
 /// Toast strings match the expected format and contain on/off

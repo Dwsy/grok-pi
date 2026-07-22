@@ -34,11 +34,7 @@ pub(super) fn dispatch_jump_show_picker(app: &mut AppView) -> Vec<Effect> {
         .min(entries.len() - 1);
 
     let preview_id = entries[selected].prompt_entry_id;
-    agent.jump_state = Some(JumpState {
-        entries,
-        selected,
-        restore,
-    });
+    agent.jump_state = Some(JumpState::new(entries, selected, restore));
     if let Some(index) = agent.scrollback.index_of_id(preview_id) {
         agent.scrollback.scroll_to_entry_top(index);
     }
