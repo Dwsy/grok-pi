@@ -33,6 +33,94 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [a5727c5] — 2026-07-23
+
+> **Status:** Pending — not yet merged into grok-pi. Main-line direct merge aborted (48 conflicts); next step is isolated worktree only.
+
+- **Sync range:** `3af4d5d..a5727c5` (`3af4d5d39897855bdcc74f23e690024a5dc05573` → `a5727c5960452e7527a154b25cb5bf00cda0545e`)
+- **Upstream commits:** 1 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `30192d2eef5d91a8fff0e53957de5bd05b43398c` (was `0f4d7c91b8b2b408333f6de1e8a76cb8eaa71899`)
+- **Diff size:** 482 files changed, +37627 / −13402
+
+### Summary
+
+Medium-large monorepo sync focused on **Doctor remediation consolidation**, **auto-mode classifier / permission gate behavior**, **marketplace reliability**, **working-directory relocation recovery**, and broad **Pager UX** (Esc cancel, queue edit newlines, permission auto-focus, dashboard hit targets). Shell/runtime and workspace permission crates dominate the +/−; Pager `app/` and `dispatch/` remain high-risk seam surfaces for grok-pi.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Shell (agent runtime) | 136 | +13903/−6593 | 3/0 | relocation recovery, doctor, toolOverrides, workflows default-on |
+| Pager (TUI) | 234 | +11313/−3749 | 1/0 | Esc cancel, queue edit, dashboard, session-info, doctor UI |
+| Workspace / Permission | 28 | +4083/−1405 | 1/0 | auto-mode classifier, Bash(git:*) chain match, folder trust |
+| Test support | 9 | +3227/−341 | 1/0 | shared process lifecycle + sandbox |
+| Tools | 25 | +2075/−362 | 2/0 | bang timeout, scheduler expiry, toolOverrides wire |
+| Voice | 13 | +1022/−350 | 3/1 | out-of-process macOS mic capture |
+| Common / models / agent | 16 | +1623/−376 | 1/0 | sampling types, agent lifecycle, file-utils |
+| Config / hooks / chat / meta | 21 | +240/−133 | 0/0 | feedback.user docs, marketplace, SOURCE_REV |
+| **Total** | **482** | **+37627/−13402** | **12/1** | |
+
+### Added
+
+- Non-blocking coding-data sharing upsell banner
+- `toolOverrides` wire types and session/agent wiring
+- Out-of-process macOS mic capture
+- Shared test process lifecycle and shared test sandbox
+- Relocation transaction state machine
+- Privacy notice rollout flag
+- One-shot occurrence journal persistence
+- Durable scheduler expiry persistence
+- Document `[feedback.user]` author identity config
+
+### Changed
+
+- Consolidate remediation in Doctor; apply doctor fixes in the TUI; route startup warnings to doctor
+- Auto mode defers fail-closed gate asks to the classifier; classifier honors recorded approvals; timeouts prompt instead of silent deny
+- Marketplace: coalesce list fetches; remove source by name; contain hung git sources (timeouts, non-blocking refresh, unbrick modal)
+- Report real exit codes for completed background shells
+- Narrow the date-rollover reminder to date-bearing templates
+- Split prompt-trigger telemetry and record classifier provenance
+- Raise connectors-manager timeout to 60s
+- Scope subagent completion drains to the owning session
+- Set `client_identifier=grok-agent-sdk`
+- Accept both spellings of the workspace-teleport kill switch
+- Stop turns that poll the exact same tool call 16× in a row
+- Copy compaction checkpoint files when forking sessions
+- Auto-focus permission prompt from scrollback
+- Esc cancels the running turn in non-vim and minimal modes
+- List Ctrl+Z undo and redo in keyboard shortcuts
+- Show active auth mode on session-info
+- Install the npm binary under `$GROK_HOME`
+- Shift/Alt+Enter inserts newline when editing a queued prompt
+- Gate project Claude permissions on folder trust
+- Echo `response.create.event_id` on `response.created`
+- Toast when session creation fails from disk full
+- Enable dynamic workflows by default
+- Integrate relocation recovery
+- Confirm before removing extensions-modal items
+- Re-run compact and prompt after login when compact hit expired auth
+- Recap sends hosted tools under backend search
+- Extend bang command timeout
+- Label failed workspace RPCs with `error_kind`
+- Drop redundant explicit tonic/prost deps from `xai-grok-shell`
+
+### Fixed
+
+- Security: Bash(`git:*`) allowlist matches whole command chain by prefix
+- Close combine-queued edit-hold race
+- Break harness discovery ref cycle so connections can idle-evict
+- Remove hover/click dead zones between dashboard items
+- Surface auth failures on model-switch compact
+
+### Merge risk for grok-pi
+
+- **Do not merge on `main`.** A trial `git merge upstream/main` produced **48 unmerged paths** and was aborted; use an isolated worktree/branch.
+- High seam overlap: `xai-grok-pager/src/app/` (69 files, +5675/−1761), `dispatch/` (+2208/−481), `acp/tracker`, `event_loop`, `slash/`, `pager-bin/src/main.rs`.
+- Permission/auto-mode and queue-edit changes may interact with Pi queue mirror + External profile intercepts — reapply narrow Pi-Grok seams after taking upstream core logic.
+- `SOURCE_REV` / `AGENTS.md` base / source-identity baselines update only after verified merge (not during changelog).
+- Pi-Grok-only crates (`pi-grok-adapter`, `extensions/`) are not in this upstream range.
+
+
 ## [3af4d5d] — 2026-07-22
 
 > **Status:** Merged into grok-pi (branch `sync/upstream-3af4d5d` @ `a5ffbcb`, pending merge back to `main`).
