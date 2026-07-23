@@ -333,7 +333,7 @@ Run `/hooks` to open the Extensions modal on the Hooks tab (or `/plugins` for th
 |-----|--------|
 | `r` | Reload all hooks from disk |
 | `a` | Add a custom hook by path |
-| `x` | Remove the selected hook |
+| `x` | Remove the selected hook source (asks for confirmation; press lowercase `y` to confirm) |
 | `Space` | Enable or disable the selected hook |
 | `f` | Cycle the status filter (All / Enabled / Disabled) |
 

@@ -518,6 +518,7 @@ pub(crate) fn default_palette_entries(
     screen_mode: crate::app::ScreenMode,
 ) -> Vec<PaletteEntry> {
     let mut entries = vec![
+        // ── Session ──
         PaletteEntry {
             label: "Session".into(),
             shortcut: String::new(),
@@ -568,6 +569,7 @@ pub(crate) fn default_palette_entries(
             shortcut: "/feedback".into(),
             command: PaletteCommand::SlashCommand("/feedback ".into()),
         },
+        // ── Context ──
         PaletteEntry {
             label: "Context".into(),
             shortcut: String::new(),
@@ -593,6 +595,7 @@ pub(crate) fn default_palette_entries(
             shortcut: "/memory".into(),
             command: PaletteCommand::Memory,
         },
+        // ── Model & Input ──
         PaletteEntry {
             label: "Model & Input".into(),
             shortcut: String::new(),
@@ -618,6 +621,7 @@ pub(crate) fn default_palette_entries(
             shortcut: "Ctrl+G".into(),
             command: PaletteCommand::EditPromptExternal,
         },
+        // ── Tools ──
         PaletteEntry {
             label: "Tools".into(),
             shortcut: String::new(),
@@ -663,6 +667,7 @@ pub(crate) fn default_palette_entries(
             shortcut: "/config-agents".into(),
             command: PaletteCommand::OpenAgentsModal,
         },
+        // ── Other ──
         PaletteEntry {
             label: "Other".into(),
             shortcut: String::new(),
@@ -700,10 +705,7 @@ pub(crate) fn default_palette_entries(
     ];
     entries.retain(|entry| {
         if !sharing_enabled
-            && matches!(
-                & entry.command, PaletteCommand::SlashCommand(s) if s.trim() ==
-                "/share"
-            )
+            && matches!(&entry.command, PaletteCommand::SlashCommand(s) if s.trim() == "/share")
         {
             return false;
         }
@@ -1529,11 +1531,9 @@ mod doc_viewer_scroll_tests {
 mod palette_sharing_tests {
     use super::*;
     fn has_share(entries: &[PaletteEntry]) -> bool {
-        entries.iter().any(|e| {
-            matches!(
-                & e.command, PaletteCommand::SlashCommand(s) if s.trim() == "/share"
-            )
-        })
+        entries
+            .iter()
+            .any(|e| matches!(&e.command, PaletteCommand::SlashCommand(s) if s.trim() == "/share"))
     }
     #[test]
     fn default_palette_includes_share_when_enabled() {
@@ -1546,12 +1546,9 @@ mod palette_sharing_tests {
     #[test]
     fn default_palette_includes_dashboard() {
         let entries = default_palette_entries(true, crate::app::ScreenMode::Fullscreen);
-        let has_dashboard = entries.iter().any(|e| {
-            matches!(
-                & e.command, PaletteCommand::SlashCommand(s) if s.trim() ==
-                "/dashboard"
-            )
-        });
+        let has_dashboard = entries.iter().any(
+            |e| matches!(&e.command, PaletteCommand::SlashCommand(s) if s.trim() == "/dashboard"),
+        );
         assert!(
             has_dashboard,
             "/dashboard entry must be present in the palette so users can switch between agents"
@@ -1622,8 +1619,10 @@ mod palette_sharing_tests {
                 .find(|e| e.label == label)
                 .unwrap_or_else(|| panic!("Tools entry {label:?} missing from palette"));
             assert!(
-                matches!(& entry.command, PaletteCommand::OpenExtensionsTab(t) if * t ==
-                expected,),
+                matches!(
+                    &entry.command,
+                    PaletteCommand::OpenExtensionsTab(t) if *t == expected,
+                ),
                 "Tools entry {label:?} dispatches to the wrong tab",
             );
         }

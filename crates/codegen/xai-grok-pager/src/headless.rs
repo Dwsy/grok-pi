@@ -2045,10 +2045,9 @@ mod tests {
             }),
         );
         assert!(matches!(
-                    handle_ext_notification(&notif, OutputFormat::Plain),
-                    ExtEvent::TaskBackgrounded { task_id, is_monitor: false }
-        if task_id == "task-abc"
-                ));
+            handle_ext_notification(&notif, OutputFormat::Plain),
+            ExtEvent::TaskBackgrounded { task_id, is_monitor: false } if task_id == "task-abc"
+        ));
     }
 
     #[test]
@@ -2062,10 +2061,9 @@ mod tests {
             }),
         );
         assert!(matches!(
-                    handle_ext_notification(&notif, OutputFormat::Plain),
-                    ExtEvent::TaskBackgrounded { task_id, is_monitor: true }
-        if task_id == "mon-1"
-                ));
+            handle_ext_notification(&notif, OutputFormat::Plain),
+            ExtEvent::TaskBackgrounded { task_id, is_monitor: true } if task_id == "mon-1"
+        ));
     }
 
     #[test]
@@ -2083,10 +2081,9 @@ mod tests {
             }),
         );
         assert!(matches!(
-                    handle_ext_notification(&notif, OutputFormat::Plain),
-                    ExtEvent::TaskCompleted { task_id }
-        if task_id == "task-abc"
-                ));
+            handle_ext_notification(&notif, OutputFormat::Plain),
+            ExtEvent::TaskCompleted { task_id } if task_id == "task-abc"
+        ));
     }
 
     #[test]
@@ -2103,10 +2100,9 @@ mod tests {
             }),
         );
         assert!(matches!(
-                    handle_ext_notification(&spawned, OutputFormat::Plain),
-                    ExtEvent::SubagentSpawned { subagent_id }
-        if subagent_id == "sub-1"
-                ));
+            handle_ext_notification(&spawned, OutputFormat::Plain),
+            ExtEvent::SubagentSpawned { subagent_id } if subagent_id == "sub-1"
+        ));
         let finished = make_ext_notif(
             "x.ai/session_notification",
             serde_json::json!({
@@ -2120,10 +2116,9 @@ mod tests {
             }),
         );
         assert!(matches!(
-                    handle_ext_notification(&finished, OutputFormat::Plain),
-                    ExtEvent::SubagentFinished { subagent_id }
-        if subagent_id == "sub-1"
-                ));
+            handle_ext_notification(&finished, OutputFormat::Plain),
+            ExtEvent::SubagentFinished { subagent_id } if subagent_id == "sub-1"
+        ));
     }
 
     #[test]

@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -27,37 +26,6 @@ fn make_state() -> SettingsModalState {
     )
 }
 
-fn set_voice_mode_enabled_for_test(enabled: bool) {
-    crate::app::VOICE_MODE_ENABLED.store(enabled, Ordering::Release);
-}
-
-#[test]
-fn pi_config_row_opens_native_resource_modal() {
-    let mut state = make_state();
-    state.selected = state
-        .rows
-        .iter()
-        .position(|row| {
-            matches!(
-                row,
-                RowEntry::Setting {
-                    key: "pi_config",
-                    ..
-                }
-            )
-        })
-        .expect("Pi config setting row must be registered");
-
-    let outcome = handle_settings_key(
-        &mut state,
-        &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-    );
-    assert!(matches!(
-        outcome,
-        SettingsKeyOutcome::Action(Action::OpenPiConfig)
-    ));
-}
-
 /// The contextual-hints group renders as a single top-level row (children
 /// hidden); Enter opens the sub-sheet, Space there toggles the focused
 /// child via the typed action, and Esc returns to Browse.
@@ -72,10 +40,9 @@ fn contextual_hints_group_sub_sheet_flow() {
         .expect("group row present");
     assert!(
         !s.rows.iter().any(|r| matches!(
-                    r,
-                    RowEntry::Setting { key, .. }
-        if key.starts_with("contextual_hints.")
-                )),
+            r,
+            RowEntry::Setting { key, .. } if key.starts_with("contextual_hints.")
+        )),
         "child rows must be hidden from the top-level list",
     );
 
@@ -216,9 +183,9 @@ fn setting_row_visible_gates_voice_capture_on_key_releases() {
     let voice = meta_for(&reg, "voice_capture_mode");
     let vim = meta_for(&reg, "vim_mode");
     // voice_mode = true; kitty_releases varies.
-    assert!(!setting_row_visible(voice, false, false, true, true));
-    assert!(setting_row_visible(voice, true, false, true, true));
-    assert!(setting_row_visible(vim, false, false, true, true));
+    assert!(!setting_row_visible(voice, false, false, true));
+    assert!(setting_row_visible(voice, true, false, true));
+    assert!(setting_row_visible(vim, false, false, true));
 }
 
 #[test]
@@ -228,19 +195,19 @@ fn setting_row_visible_hides_voice_rows_when_voice_mode_off() {
     let language = meta_for(&reg, "voice_stt_language");
     let vim = meta_for(&reg, "vim_mode");
     // Gate off: both voice rows gone even with kitty releases + full TUI.
-    assert!(!setting_row_visible(capture, true, false, false, true));
-    assert!(!setting_row_visible(language, true, false, false, true));
+    assert!(!setting_row_visible(capture, true, false, false));
+    assert!(!setting_row_visible(language, true, false, false));
     // Non-voice rows unaffected.
-    assert!(setting_row_visible(vim, true, false, false, true));
+    assert!(setting_row_visible(vim, true, false, false));
     // Gate on: both visible (kitty releases for capture).
-    assert!(setting_row_visible(capture, true, false, true, true));
-    assert!(setting_row_visible(language, true, false, true, true));
+    assert!(setting_row_visible(capture, true, false, true));
+    assert!(setting_row_visible(language, true, false, true));
 }
 
 #[test]
 fn rebuild_rows_drops_voice_settings_when_gate_turns_off() {
     let prev = crate::app::voice_mode_enabled();
-    set_voice_mode_enabled_for_test(true);
+    crate::app::set_voice_mode_enabled_for_test(true);
     let mut state = make_state();
     let has_voice_lang = |s: &SettingsModalState| {
         s.rows.iter().any(|r| {
@@ -258,13 +225,13 @@ fn rebuild_rows_drops_voice_settings_when_gate_turns_off() {
         "voice_stt_language should be listed with gate on"
     );
 
-    set_voice_mode_enabled_for_test(false);
+    crate::app::set_voice_mode_enabled_for_test(false);
     state.rebuild_rows();
     assert!(
         !has_voice_lang(&state),
         "rebuild after gate off must hide voice_stt_language"
     );
-    set_voice_mode_enabled_for_test(prev);
+    crate::app::set_voice_mode_enabled_for_test(prev);
 }
 
 #[test]
@@ -279,11 +246,11 @@ fn setting_row_visible_hides_theme_rows_in_minimal() {
         let meta = meta_for(&reg, key);
         assert!(meta.hidden_in_minimal, "{key} must declare the flag");
         assert!(
-            !setting_row_visible(meta, true, true, true, true),
+            !setting_row_visible(meta, true, true, true),
             "{key} in minimal"
         );
         assert!(
-            setting_row_visible(meta, true, false, true, true),
+            setting_row_visible(meta, true, false, true),
             "{key} in full TUI"
         );
     }
@@ -291,57 +258,8 @@ fn setting_row_visible_hides_theme_rows_in_minimal() {
         meta_for(&reg, "vim_mode"),
         true,
         true,
-        true,
         true
     ));
-}
-
-#[test]
-fn setting_row_visible_hides_external_only_in_normal_profile() {
-    let reg = SettingsRegistry::defaults();
-    let pi_tools = meta_for(&reg, "pi_builtin_tools");
-    assert!(
-        pi_tools.external_only,
-        "pi_builtin_tools must be external_only"
-    );
-    // Normal Grok profile (external_agent = false): hidden.
-    assert!(!setting_row_visible(pi_tools, true, false, true, false));
-    // External/grok-pi profile: visible.
-    assert!(setting_row_visible(pi_tools, true, false, true, true));
-    // Children too.
-    for key in [
-        "pi_builtin_tools.read",
-        "pi_builtin_tools.bash",
-        "pi_builtin_tools.edit",
-        "pi_builtin_tools.write",
-        "pi_builtin_tools.grep",
-        "pi_builtin_tools.find",
-        "pi_builtin_tools.ls",
-        "pi_tree_file_rollback",
-        "pi_workflows",
-        "pi_goal",
-        "pi_btw",
-        "pi_loop",
-        "pi_ask_user_question",
-        "pi_cache_graph",
-        "review_file_tree",
-        "review_include_reads",
-    ] {
-        let child = meta_for(&reg, key);
-        assert!(child.external_only, "{key} must be external_only");
-        assert!(
-            !setting_row_visible(child, true, false, true, false),
-            "{key} hidden in normal"
-        );
-        assert!(
-            setting_row_visible(child, true, false, true, true),
-            "{key} visible in external"
-        );
-    }
-    // Non-external settings unaffected.
-    let vim = meta_for(&reg, "vim_mode");
-    assert!(!vim.external_only);
-    assert!(setting_row_visible(vim, true, false, true, false));
 }
 
 /// `action_for_bool` mirrors `current_value_for`: every registered
@@ -518,21 +436,6 @@ fn every_dynamic_enum_setting_has_action_for_string_arm() {
                      SetForkSecondaryModel(_), got {nonempty_action:?}",
                 );
             }
-            "recap_model_2" | "recap_model_3" | "btw_model" | "btw_model_2" | "btw_model_3" => {
-                // string slot actions; empty clears
-                let _ = empty_action;
-                let _ = nonempty_action;
-            }
-            "recap_model" => {
-                assert!(
-                    matches!(empty_action, Some(Action::ClearRecapModel)),
-                    "recap_model empty canonical must produce ClearRecapModel, got {empty_action:?}",
-                );
-                assert!(
-                    matches!(nonempty_action, Some(Action::SetRecapModel(_))),
-                    "recap_model non-empty canonical must produce SetRecapModel(_), got {nonempty_action:?}",
-                );
-            }
             other => panic!(
                 "Unknown DynamicEnum key `{other}` — add a discriminating arm in \
                  every_dynamic_enum_setting_has_action_for_string_arm so future \
@@ -615,7 +518,6 @@ fn render_setting_row_shows_full_label_when_one_line_fits() {
         kind: SettingKind::Bool { default: false },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let area = Rect {
         x: 0,
@@ -663,7 +565,7 @@ fn render_setting_row_shows_full_label_when_one_line_fits() {
 #[test]
 fn rows_contain_categories_and_settings_through_pr_14() {
     let prev_voice = crate::app::voice_mode_enabled();
-    set_voice_mode_enabled_for_test(false);
+    crate::app::set_voice_mode_enabled_for_test(false);
     let s = make_state();
     let headers: Vec<&SettingCategory> = s
         .rows
@@ -704,29 +606,94 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             }
         })
         .collect();
-    // Full ordered catalog drifts often as features land; pin critical rows only.
-    for key in [
-        "compact_mode",
-        "default_model",
-        "fork_secondary_model",
-        "recap_models",
-        "session_recap",
-        "contextual_hints",
-    ] {
-        assert!(
-            settings.contains(&key),
-            "expected top-level setting `{key}` in rows, got {settings:?}"
-        );
-    }
-    assert!(
-        !settings.contains(&"recap_model"),
-        "recap_model is a group child and must not appear top-level"
+    assert_eq!(
+        settings,
+        vec![
+            // Booleans.
+            "compact_mode",
+            "screen_mode",
+            "show_timestamps",
+            "show_timeline",
+            // PAGER-owned page_flip_on_send (Appearance).
+            "page_flip_on_send",
+            "simple_mode",
+            // PAGER-owned vim_mode (Appearance,
+            // paired with simple_mode).
+            "vim_mode",
+            // Theme enums.
+            "theme",
+            "auto_dark_theme",
+            "auto_light_theme",
+            // SHELL-owned render_mermaid (Appearance,
+            // declared after the theme enums).
+            "render_mermaid",
+            // Int in Appearance category.
+            "max_thoughts_width",
+            // SHELL-owned show_thinking_blocks (Appearance; live cache).
+            "show_thinking_blocks",
+            // PAGER-owned respect_manual_folds (Appearance,
+            // persisted to pager.toml).
+            "respect_manual_folds",
+            // SHELL-owned group_tool_verbs (Appearance; live cache).
+            "group_tool_verbs",
+            // SHELL-owned collapsed_edit_blocks (Appearance; live cache,
+            // default OFF rollout flag).
+            "collapsed_edit_blocks",
+            // SHELL-owned display_refresh_auto_cadence (Appearance).
+            "display_refresh_auto_cadence",
+            // Mouse — scroll + drag selection. The scroll
+            // classification/lines/direction knobs follow scroll_speed.
+            "scroll_speed",
+            "scroll_mode",
+            "scroll_lines",
+            "invert_scroll",
+            "keep_text_selection",
+            // SHARED-owned combine_queued_prompts (Editor category; read by
+            // both the pager drain and the shell promote. Registered before
+            // multiline_mode, so it renders first).
+            "combine_queued_prompts",
+            // PAGER-owned multiline (Editor category).
+            "multiline_mode",
+            // SHELL-owned prompt_suggestions (Editor; tab autocomplete
+            // ghost text, live cache).
+            "prompt_suggestions",
+            // voice_capture_mode + voice_stt_language hidden when gate is off.
+            // SHELL-owned permission_mode (Agent category).
+            "permission_mode",
+            // SHELL-owned remember_tool_approvals (Agent category,
+            // registered right after permission_mode).
+            "remember_tool_approvals",
+            // SHELL-owned default_selected_permission (Agent category,
+            // colocated with permission_mode / plan_mode).
+            "default_selected_permission",
+            // SHELL-owned ask_user_question timeout (Agent category,
+            // registered directly above plan_mode).
+            "toolset.ask_user_question.timeout_enabled",
+            // PAGER-owned plan_mode (Agent category).
+            "plan_mode",
+            // SHELL-owned coding_data_sharing (Privacy category).
+            "coding_data_sharing",
+            // SHELL-owned default_model (Models category).
+            "default_model",
+            // Models category. `default_reasoning_effort`,
+            // `web_search_model`, and `session_summary_model` are
+            // not exposed in the modal.
+            "fork_secondary_model",
+            // `auto_compact_threshold_percent` (Session category) is
+            // not exposed in the modal.
+            // Advanced category.
+            "show_tips",
+            // Per-tip contextual-hints GROUP row, repositioned right after
+            // `show_tips`. Its 3 child toggles
+            // (`contextual_hints.{undo,plan_mode,image_input}`) are hidden
+            // from the top-level list and reached via the sub-sheet.
+            "contextual_hints",
+            "auto_update",
+            // SHELL-owned hunk_tracker_mode (Advanced; `off` disables it).
+            "hunk_tracker_mode",
+        ]
     );
-    assert!(
-        !settings.contains(&"btw_model"),
-        "btw_model is a group child and must not appear top-level"
-    );
-    set_voice_mode_enabled_for_test(prev_voice);
+    crate::app::set_voice_mode_enabled_for_test(prev_voice);
 }
 
 #[test]
@@ -1440,7 +1407,6 @@ fn render_setting_row_emits_restart_pill_when_required() {
         kind: SettingKind::Bool { default: false },
         restart_required: true,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let area = Rect {
         x: 0,
@@ -1514,7 +1480,6 @@ fn render_setting_row_hides_restart_pill_when_at_default_and_collapsed() {
         kind: SettingKind::Bool { default: false },
         restart_required: true,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let area = Rect {
         x: 0,
@@ -1583,7 +1548,6 @@ fn editor_render_fixture(buffer: &str, cursor_byte: usize) -> SettingsModalState
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let registry = SettingsRegistry::from_entries(vec![synthetic_meta]);
     let snapshot = PagerLocalSnapshot {
@@ -2417,7 +2381,6 @@ fn synthetic_enum_meta() -> SettingMeta {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }
 }
 
@@ -2950,7 +2913,6 @@ fn render_picker_drops_description_when_wrap_block_exceeds_height() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let registry = SettingsRegistry::from_entries(vec![synthetic_meta]);
     let mut s = SettingsModalState::new(
@@ -3020,7 +2982,6 @@ fn render_picker_long_description_wraps_no_ellipsis() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3113,7 +3074,6 @@ fn picker_visual_smoke_debug() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3171,7 +3131,6 @@ fn picker_long_description_wraps_to_multiple_lines() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3303,7 +3262,6 @@ fn picker_short_description_stays_one_line() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3373,7 +3331,6 @@ fn picker_no_description_renders_symbol_and_display_only() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3444,7 +3401,6 @@ fn picker_multi_line_choice_hit_rect_spans_all_lines() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3563,7 +3519,6 @@ fn picker_scroll_offset_accounts_for_variable_height() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let registry = Arc::new(SettingsRegistry::from_entries(entries));
     // Focus the LAST choice (c4) — the scroll math must keep it
@@ -3634,7 +3589,6 @@ fn render_picker_truncates_long_display_with_ellipsis() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3685,7 +3639,6 @@ fn render_picker_truncates_long_title_with_ellipsis() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -3766,7 +3719,6 @@ fn render_picker_shows_more_indicator_when_choices_overflow() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }];
     let mut s = SettingsModalState::new(
         Arc::new(SettingsRegistry::from_entries(entries)),
@@ -4480,7 +4432,6 @@ fn synthetic_long_label_meta() -> SettingMeta {
         kind: SettingKind::Bool { default: false },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }
 }
 
@@ -4499,7 +4450,6 @@ fn synthetic_enum_chevron_meta() -> SettingMeta {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     }
 }
 
@@ -5362,7 +5312,6 @@ fn bool_off_value_renders_in_dim_color() {
         kind: SettingKind::Bool { default: false },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let area = Rect {
         x: 0,
@@ -5466,7 +5415,6 @@ fn chevron_column_is_at_constant_right_offset() {
         kind: SettingKind::Bool { default: false },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let enum_meta = synthetic_enum_chevron_meta();
     let area = Rect {
@@ -5877,7 +5825,6 @@ fn picker_description_word_wraps_no_ellipsis() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let registry = SettingsRegistry::from_entries(vec![synthetic_meta]);
     let mut s = SettingsModalState::new(
@@ -7127,7 +7074,6 @@ fn max_thoughts_width_preview_only_renders_for_max_thoughts_width_key() {
         },
         restart_required: false,
         hidden_in_minimal: false,
-        external_only: false,
     };
     let registry = SettingsRegistry::from_entries(vec![synthetic_meta]);
     let mut s = SettingsModalState::new(

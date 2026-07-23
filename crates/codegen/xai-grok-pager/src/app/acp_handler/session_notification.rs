@@ -263,7 +263,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             ..
         } => {
             tracing::info!(
-                child_session_id = % child_session_id, subagent_type = % subagent_type,
+                child_session_id = %child_session_id,
+                subagent_type = %subagent_type,
                 "Subagent spawned"
             );
             let is_background = agent
@@ -358,6 +359,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 user_model_preference: None,
                 deferred_model_switch: None,
                 in_flight_prompt: None,
+                compact_held_prompt: None,
                 current_prompt_id: None,
                 created_via_new: false,
             };
@@ -508,8 +510,12 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             ..
         } => {
             tracing::info!(
-                child_session_id = % child_session_id, status = % status, tool_calls =
-                tool_calls, turns = turns, duration_ms = duration_ms, "Subagent finished"
+                child_session_id = %child_session_id,
+                status = %status,
+                tool_calls = tool_calls,
+                turns = turns,
+                duration_ms = duration_ms,
+                "Subagent finished"
             );
             let elapsed_dur = std::time::Duration::from_millis(duration_ms);
             let info_ref = agent.subagent_sessions.get(&child_session_id);
@@ -789,19 +795,22 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 .map(|m| m.0.as_ref())
                 .collect();
             tracing::warn!(
-                session_id = session_notif.session_id.0.as_ref(), previous = %
-                previous_model_id, new = % new_model_id, available_count, available_keys
-                = ? available_keys,
+                session_id = session_notif.session_id.0.as_ref(),
+                previous = %previous_model_id,
+                new = %new_model_id,
+                available_count,
+                available_keys = ?available_keys,
                 "Model auto-switched: previous model no longer available"
             );
             crate::unified_log::warn(
                 "model auto-switched: previous model unavailable",
                 Some(session_notif.session_id.0.as_ref()),
-                Some(serde_json::json!(
-                    { "previous_model" : previous_model_id.as_str(), "new_model" :
-                    new_model_id.as_str(), "available_count" : available_count,
-                    "available_keys" : available_keys, }
-                )),
+                Some(serde_json::json!({
+                    "previous_model": previous_model_id.as_str(),
+                    "new_model": new_model_id.as_str(),
+                    "available_count": available_count,
+                    "available_keys": available_keys,
+                })),
             );
             agent.scrollback.push_block(RenderBlock::session_event(
                 SessionEvent::ModelUnavailable {
@@ -818,8 +827,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
         } => {
             if agent.session.model_switch_pending {
                 tracing::debug!(
-                    session_id = session_notif.session_id.0.as_ref(), model_id = %
-                    model_id,
+                    session_id = session_notif.session_id.0.as_ref(),
+                    model_id = %model_id,
                     "ignoring ModelChanged broadcast — local switch is in flight"
                 );
                 return false;
@@ -834,8 +843,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                     );
                 } else {
                     tracing::warn!(
-                        session_id = session_notif.session_id.0.as_ref(), model_id = %
-                        model_id,
+                        session_id = session_notif.session_id.0.as_ref(),
+                        model_id = %model_id,
                         "ignoring ModelChanged broadcast — model not in local catalog"
                     );
                     return false;
@@ -856,8 +865,9 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 prev_model.as_ref() != Some(&new_model_id) || prev_effort != resolved_effort;
             if actually_changed {
                 tracing::info!(
-                    session_id = session_notif.session_id.0.as_ref(), model_id = %
-                    model_id, effort = ? resolved_effort,
+                    session_id = session_notif.session_id.0.as_ref(),
+                    model_id = %model_id,
+                    effort = ?resolved_effort,
                     "ModelChanged broadcast applied (remote switch)"
                 );
             }
@@ -1110,6 +1120,9 @@ pub(super) fn apply_session_event(
     match update {
         XaiSessionUpdate::AutoCompactStarted { percentage, .. } => {
             tracing::info!("Auto-compact started: {percentage}% context used");
+            if session.compact_held_prompt.is_none() {
+                session.compact_held_prompt = session.in_flight_prompt.clone();
+            }
             session.in_flight_prompt = None;
             session.set_compaction_activity(Some(TurnActivity::AutoCompacting));
             scrollback.push_block(RenderBlock::session_event(
@@ -1127,6 +1140,7 @@ pub(super) fn apply_session_event(
         } => {
             tracing::info!("Auto-compact completed: {tokens_after} tokens after");
             session.set_compaction_activity(None);
+            session.compact_held_prompt = None;
             if session.loading_replay {
                 scrollback.push_block(RenderBlock::session_event(
                     SessionEvent::CompactionCompleted {
@@ -1141,7 +1155,7 @@ pub(super) fn apply_session_event(
             true
         }
         XaiSessionUpdate::AutoCompactFailed { error } => {
-            tracing::error!(error = % error, "Auto-compaction failed");
+            tracing::error!(error = %error, "Auto-compaction failed");
             session.set_compaction_activity(None);
             scrollback.push_block(RenderBlock::session_event(SessionEvent::CompactionFailed {
                 error: error.clone(),
@@ -1151,6 +1165,7 @@ pub(super) fn apply_session_event(
         XaiSessionUpdate::AutoCompactCancelled { .. } => {
             tracing::info!("Auto-compact cancelled");
             session.set_compaction_activity(None);
+            session.compact_held_prompt = None;
             scrollback.push_block(RenderBlock::session_event(
                 SessionEvent::CompactionCancelled,
             ));
@@ -1344,7 +1359,8 @@ pub(super) fn detect_plan_mode_change(update: &acp::SessionUpdate, agent: &mut A
     agent.plan_mode_pending = None;
     if was_active != now_active {
         tracing::info!(
-            mode_id = % cmu.current_mode_id.0, plan_active = now_active,
+            mode_id = %cmu.current_mode_id.0,
+            plan_active = now_active,
             "Plan mode state updated (from CurrentModeUpdate)"
         );
     }
