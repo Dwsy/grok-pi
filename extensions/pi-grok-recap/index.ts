@@ -26,6 +26,8 @@ type RecapArgs = {
 	/** Terminal columns at request time; used to pick Mermaid LR vs TD. */
 	terminalWidth?: number;
 	model?: string;
+	/** Ordered fallback models (slot 1..3). Empty → session model only. */
+	models?: string[];
 	thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	language?: string;
 	/** Free-text focus from `/recap …` / `/summarize …` (appended to base prompt). */
@@ -252,8 +254,7 @@ function resolveModel(ctx: ExtensionCommandContext, modelRef: string | undefined
 		const found = ctx.modelRegistry.find(provider, id);
 		if (found) return found;
 	}
-	// Last resort: scan all models by id. Never fall back to the active session
-	// model: recap uses only the model explicitly configured in F2.
+	// Last resort: scan all models by id.
 	const all = ctx.modelRegistry.getAll();
 	return all.find(
 		(m) =>
@@ -261,6 +262,28 @@ function resolveModel(ctx: ExtensionCommandContext, modelRef: string | undefined
 			`${m.provider}/${m.id}` === raw ||
 			`${m.provider}::${m.id}` === raw,
 	);
+}
+
+/** Ordered model refs: configured slots, then session model as final fallback. */
+function modelChain(
+	parsed: RecapArgs,
+	sessionModel: { provider?: string; id?: string } | undefined,
+): string[] {
+	const out: string[] = [];
+	const push = (ref: string | undefined) => {
+		const t = (ref ?? "").trim();
+		if (!t || out.includes(t)) return;
+		out.push(t);
+	};
+	if (Array.isArray(parsed.models)) {
+		for (const m of parsed.models) push(typeof m === "string" ? m : undefined);
+	}
+	push(parsed.model);
+	if (out.length === 0 && sessionModel?.id) {
+		const p = sessionModel.provider;
+		push(p ? `${p}::${sessionModel.id}` : sessionModel.id);
+	}
+	return out;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -302,12 +325,6 @@ export default function (pi: ExtensionAPI) {
 				const recappedTurns = lastSuccessfulRecapTurnCount(branch);
 				if (auto && recappedTurns !== undefined && mainTurns <= recappedTurns) return;
 
-				const model = resolveModel(ctx, parsed.model);
-				if (!model) return;
-
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-				if (!auth.ok || !auth.apiKey) return;
-
 				const conversation = buildRecapContext(branch);
 				if (!conversation) return;
 				const customInstructions =
@@ -323,37 +340,59 @@ export default function (pi: ExtensionAPI) {
 					timestamp: Date.now(),
 				};
 
-				const response = await complete(
-					model,
-					{ messages: [userMessage] },
-					{
-						apiKey: auth.apiKey,
-						headers: auth.headers,
-						env: auth.env,
-						reasoning:
-							model.reasoning && parsed.thinkingLevel && parsed.thinkingLevel !== "max"
-								? parsed.thinkingLevel
-								: model.reasoning && parsed.thinkingLevel === "max"
-									? "xhigh"
-									: undefined,
-					},
+				const chain = modelChain(
+					parsed,
+					ctx.model as { provider?: string; id?: string } | undefined,
 				);
+				if (chain.length === 0) return;
 
-				if (response.stopReason === "aborted" || response.stopReason === "error") return;
+				for (const modelRef of chain) {
+					const model = resolveModel(ctx, modelRef);
+					if (!model) continue;
+					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+					if (!auth.ok || !auth.apiKey) continue;
+					try {
+						const response = await complete(
+							model,
+							{ messages: [userMessage] },
+							{
+								apiKey: auth.apiKey,
+								headers: auth.headers,
+								env: auth.env,
+								reasoning:
+									model.reasoning && parsed.thinkingLevel && parsed.thinkingLevel !== "max"
+										? parsed.thinkingLevel
+										: model.reasoning && parsed.thinkingLevel === "max"
+											? "xhigh"
+											: undefined,
+							},
+						);
 
-				const raw = (response.content ?? [])
-					.filter((c): c is { type: "text"; text: string } => c.type === "text")
-					.map((c) => c.text)
-					.join("\n");
-				const summary = recapMermaid ? cleanRecapMarkdown(raw) : cleanRecapText(raw);
-				if (!summary) return;
+						if (response.stopReason === "aborted" || response.stopReason === "error") {
+							continue;
+						}
 
-				// Auto long-tail: suppress display (mirror shell behavior).
-				// When Mermaid is enabled the diagram block legitimately inflates
-				// the raw length, so only apply the guard to the plain-text path.
-				if (auto && !recapMermaid && (raw.length > 800 || summary.length > 600)) return;
+						const raw = (response.content ?? [])
+							.filter((c): c is { type: "text"; text: string } => c.type === "text")
+							.map((c) => c.text)
+							.join("\n");
+						const summary = recapMermaid ? cleanRecapMarkdown(raw) : cleanRecapText(raw);
+						if (!summary) continue;
 
-				emitSummary(summary, auto);
+						// Auto long-tail: suppress display (mirror shell behavior).
+						// When Mermaid is enabled the diagram block legitimately inflates
+						// the raw length, so only apply the guard to the plain-text path.
+						if (auto && !recapMermaid && (raw.length > 800 || summary.length > 600)) {
+							return;
+						}
+
+						emitSummary(summary, auto);
+						return;
+					} catch {
+						// try next model in the chain
+					}
+				}
+				// All models failed — silent for auto; manual path relies on pager timeout/toast.
 			} catch {
 				return;
 			}

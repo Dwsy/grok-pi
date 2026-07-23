@@ -155,8 +155,10 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         const c = readControl();
         if (!c || (c.status !== "user_paused" && c.status !== "blocked")) {
           if (c?.status === "active") {
+            // Mid-turn resume: queue, don't crash on active stream (upstream GoalSet replaces).
             pi.sendUserMessage(
               `${rulesReminder(c.objective)}\nContinue the active goal.`,
+              { deliverAs: "followUp" },
             );
             return;
           }
@@ -171,6 +173,7 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         emitBridge(pi, c, "goal_resumed");
         pi.sendUserMessage(
           `${rulesReminder(c.objective)}\nResume the goal now.`,
+          { deliverAs: "followUp" },
         );
         return;
       }
@@ -196,6 +199,9 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         return;
       }
 
+      // Upstream create_goal replaces any existing orchestration; re-/goal is set, not error.
+      const prev = readControl();
+      const replacing = !!(prev && prev.status !== "cleared");
       const control: GoalControl = {
         goalId: randomUUID(),
         objective,
@@ -205,11 +211,16 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         tokenBaseline: 0,
         tokensUsed: 0,
         createdAt: new Date().toISOString(),
-        lastEvent: "goal_created",
+        lastEvent: replacing ? "goal_replaced" : "goal_created",
       };
       writeControl(control);
-      emitBridge(pi, control, "goal_created");
-      pi.sendUserMessage(rulesReminder(objective));
+      emitBridge(pi, control, replacing ? "goal_replaced" : "goal_created");
+      ctx.ui.notify(
+        replacing ? `Goal updated: ${objective}` : `Goal set: ${objective}`,
+        "info",
+      );
+      // deliverAs followUp: mid-turn /goal must queue, never throw "already processing".
+      pi.sendUserMessage(rulesReminder(objective), { deliverAs: "followUp" });
     },
   });
 

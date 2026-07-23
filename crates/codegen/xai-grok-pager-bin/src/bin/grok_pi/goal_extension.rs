@@ -63,5 +63,8 @@ mod tests {
         assert!(source.contains("registerCommand(\"goal\""));
         assert!(source.contains("PI_GROK_GOAL_CONTROL"));
         assert!(source.contains("pi-grok-goal/v1"));
+        // Mid-turn /goal must queue; bare sendUserMessage throws "already processing".
+        assert!(source.contains("deliverAs: \"followUp\""));
+        assert!(source.contains("goal_replaced"));
     }
 }

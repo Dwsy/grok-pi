@@ -36,6 +36,8 @@ mod tests {
         assert!(source.contains("MAX_RECAP_CONTEXT_CHARS = 12_000"));
         assert!(source.contains("lastSuccessfulRecapTurnCount"));
         assert!(source.contains("if (!modelRef || !modelRef.trim()) return undefined"));
+        assert!(source.contains("function modelChain"));
+        assert!(source.contains("for (const modelRef of chain)"));
         assert!(source.contains("const canonicalSeparator = raw.indexOf(\"::\")"));
         assert!(source.contains("`${m.provider}::${m.id}` === raw"));
         assert!(source.contains("{ messages: [userMessage] }"));
