@@ -35,7 +35,7 @@ Each entry records:
 
 ## [a5727c5] — 2026-07-23
 
-> **Status:** Pending — not yet merged into grok-pi. Main-line direct merge aborted (48 conflicts); next step is isolated worktree only.
+> **Status:** Merged into grok-pi `main` via `sync/upstream-a5727c5` @ `4d19f00` (ff-only).
 
 - **Sync range:** `3af4d5d..a5727c5` (`3af4d5d39897855bdcc74f23e690024a5dc05573` → `a5727c5960452e7527a154b25cb5bf00cda0545e`)
 - **Upstream commits:** 1 (`Synced from monorepo`)
@@ -117,7 +117,7 @@ Medium-large monorepo sync focused on **Doctor remediation consolidation**, **au
 - **Do not merge on `main`.** A trial `git merge upstream/main` produced **48 unmerged paths** and was aborted; use an isolated worktree/branch.
 - High seam overlap: `xai-grok-pager/src/app/` (69 files, +5675/−1761), `dispatch/` (+2208/−481), `acp/tracker`, `event_loop`, `slash/`, `pager-bin/src/main.rs`.
 - Permission/auto-mode and queue-edit changes may interact with Pi queue mirror + External profile intercepts — reapply narrow Pi-Grok seams after taking upstream core logic.
-- `SOURCE_REV` / `AGENTS.md` base / source-identity baselines update only after verified merge (not during changelog).
+- `SOURCE_REV` / `AGENTS.md` base updated on merge-back (`30192d2e…` / `a5727c5`). Source-identity baselines may still need a deliberate regen if verifiers fail.
 - Pi-Grok-only crates (`pi-grok-adapter`, `extensions/`) are not in this upstream range.
 
 
