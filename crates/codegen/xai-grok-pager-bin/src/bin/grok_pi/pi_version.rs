@@ -4,12 +4,20 @@
 //! - cheap when version is fine (one short-lived process, small stdout)
 //! - fail closed only when missing / unreadable / below min
 //! - OS-aware install hints (curl | sh vs PowerShell)
+//! - Windows: resolve `pi` → absolute `pi.cmd` (CreateProcess cannot run bare shims)
 
 use anyhow::{Result, bail};
 use semver::Version;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
+
+#[cfg(windows)]
+use std::env;
+#[cfg(windows)]
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 /// Minimum supported Pi CLI version (system package / pi.dev installer).
 pub(super) const MIN_PI_VERSION: &str = "0.80.10";
@@ -26,37 +34,62 @@ pub(super) enum PiHostCheck {
     Unparseable { program: String, raw: String },
 }
 
+/// Resolve a user/default Pi host string into something `CreateProcess` can run.
+///
+/// Windows: bare `pi` is not a PE binary (installer ships `pi` + `pi.cmd` + `pi.ps1`).
+/// Shell finds `pi.ps1`/`pi.cmd` via PATHEXT; Rust `Command::new("pi")` only appends
+/// `.exe` and fails with "program not found". Prefer absolute `pi.cmd` / known installs.
+pub(super) fn resolve_pi_host(program: &str) -> String {
+    let trimmed = program.trim();
+    if trimmed.is_empty() {
+        return program.to_string();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = trimmed;
+        return program.to_string();
+    }
+
+    #[cfg(windows)]
+    {
+        resolve_pi_host_windows(trimmed)
+    }
+}
+
 /// Probe `program --version` with a short timeout. Does not spawn Pi RPC.
 pub(super) fn check_pi_host(program: &str) -> PiHostCheck {
     let min = Version::parse(MIN_PI_VERSION).expect("MIN_PI_VERSION is valid semver");
-    match run_pi_version(program) {
+    let resolved = resolve_pi_host(program);
+    match run_pi_version(&resolved) {
         Ok(raw) => match parse_pi_version(&raw) {
             Some(version) if version >= min => PiHostCheck::Ok {
                 version,
-                program: program.to_string(),
+                program: resolved,
             },
             Some(version) => PiHostCheck::TooOld {
                 version,
-                program: program.to_string(),
+                program: resolved,
             },
             None => PiHostCheck::Unparseable {
-                program: program.to_string(),
+                program: resolved,
                 raw: raw.trim().to_string(),
             },
         },
         Err(detail) => PiHostCheck::Missing {
-            program: program.to_string(),
+            program: resolved,
             detail,
         },
     }
 }
 
 /// Hard-require a compatible host. Prints install guidance to stderr on failure.
-pub(super) fn ensure_compatible_pi_host(program: &str) -> Result<Version> {
+/// Returns the resolved host program path that should be used for subsequent spawns.
+pub(super) fn ensure_compatible_pi_host(program: &str) -> Result<(Version, String)> {
     match check_pi_host(program) {
         PiHostCheck::Ok { version, program } => {
             eprintln!("Pi host: {program} {version} (min {MIN_PI_VERSION})");
-            Ok(version)
+            Ok((version, program))
         }
         PiHostCheck::TooOld { version, program } => {
             print_upgrade_help(
@@ -85,21 +118,13 @@ pub(super) fn ensure_compatible_pi_host(program: &str) -> Result<Version> {
 fn run_pi_version(program: &str) -> Result<String, String> {
     // Prefer invoking the path/command as given. For node scripts this still works
     // because the shebang/node wrapper handles --version.
-    let mut cmd = if looks_like_js_cli(program) {
-        let mut c = Command::new("node");
-        c.arg(program).arg("--version");
-        c
-    } else {
-        let mut c = Command::new(program);
-        c.arg("--version");
-        c
-    };
+    let mut cmd = host_command(program, &["--version"]);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
     // Keep this off the async runtime: one-shot, short, fail-fast.
-    // No shell, no network.
+    // No network. Windows batch hosts go through cmd.exe (see host_command).
     let output = cmd.output().map_err(|e| format!("spawn failed: {e}"))?;
 
     if !output.status.success() {
@@ -118,12 +143,178 @@ fn run_pi_version(program: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Build a process command that can launch Pi on Windows batch shims and Node CLIs.
+pub(super) fn host_command(program: &str, args: &[&str]) -> Command {
+    if looks_like_js_cli(program) {
+        let mut c = Command::new(node_program());
+        c.arg(program);
+        c.args(args);
+        return c;
+    }
+
+    if is_windows_batch_shim(program) {
+        // CreateProcess cannot start .cmd/.bat as the application image; route via cmd.
+        let mut c = Command::new("cmd.exe");
+        c.arg("/D");
+        c.arg("/C");
+        c.arg(program);
+        c.args(args);
+        return c;
+    }
+
+    let mut c = Command::new(program);
+    c.args(args);
+    c
+}
+
 fn looks_like_js_cli(program: &str) -> bool {
     let path = Path::new(program);
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("js" | "mjs" | "cjs")
     )
+}
+
+fn is_windows_batch_shim(program: &str) -> bool {
+    matches!(
+        Path::new(program)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat")),
+        Some(true)
+    )
+}
+
+fn node_program() -> &'static str {
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
+#[cfg(windows)]
+fn resolve_pi_host_windows(program: &str) -> String {
+    let path = Path::new(program);
+
+    // Explicit path (absolute or relative with separators).
+    if path_has_directory_component(path) {
+        if path.is_file() {
+            return prefer_windows_shim(path);
+        }
+        // User passed ...\pi without extension — try sibling shims.
+        if path.extension().is_none() {
+            for ext in ["cmd", "exe", "bat"] {
+                let candidate = path.with_extension(ext);
+                if candidate.is_file() {
+                    return path_to_string(&candidate);
+                }
+            }
+        }
+        return program.to_string();
+    }
+
+    // Bare command name: search PATH with Windows PATHEXT-like order, then known installs.
+    if let Some(found) = find_on_path_windows(program) {
+        return found;
+    }
+    if program.eq_ignore_ascii_case("pi") {
+        if let Some(found) = find_known_pi_installs() {
+            return found;
+        }
+    }
+    program.to_string()
+}
+
+#[cfg(windows)]
+fn path_has_directory_component(path: &Path) -> bool {
+    path.components().count() > 1 || path.is_absolute() || program_looks_like_path(path.as_os_str())
+}
+
+#[cfg(windows)]
+fn program_looks_like_path(program: &OsStr) -> bool {
+    let s = program.to_string_lossy();
+    s.contains('\\') || s.contains('/') || s.contains(':')
+}
+
+#[cfg(windows)]
+fn prefer_windows_shim(path: &Path) -> String {
+    // Extensionless npm/pi-node launcher is a Unix shell script — prefer .cmd sibling.
+    if path.extension().is_none() {
+        for ext in ["cmd", "exe", "bat"] {
+            let candidate = path.with_extension(ext);
+            if candidate.is_file() {
+                return path_to_string(&candidate);
+            }
+        }
+    }
+    path_to_string(path)
+}
+
+#[cfg(windows)]
+fn find_on_path_windows(name: &str) -> Option<String> {
+    let path_var = env::var_os("PATH")?;
+    // Prefer batch/exe shims over extensionless (often a non-PE unix script).
+    let mut names: Vec<PathBuf> = Vec::new();
+    if !name.contains('.') {
+        for ext in ["cmd", "exe", "bat"] {
+            names.push(PathBuf::from(format!("{name}.{ext}")));
+        }
+    }
+    names.push(PathBuf::from(name));
+
+    for dir in env::split_paths(&path_var) {
+        for file_name in &names {
+            let candidate = dir.join(file_name);
+            if candidate.is_file() {
+                // Skip extensionless if a .cmd sibling exists in the same dir.
+                if candidate.extension().is_none() {
+                    let cmd = candidate.with_extension("cmd");
+                    if cmd.is_file() {
+                        return Some(path_to_string(&cmd));
+                    }
+                }
+                return Some(path_to_string(&candidate));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_known_pi_installs() -> Option<String> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(local) = env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("pi-node").join("current"));
+    }
+    if let Some(roaming) = env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(roaming).join("npm"));
+    }
+    if let Some(home) = env::var_os("USERPROFILE") {
+        let home = PathBuf::from(home);
+        dirs.push(
+            home.join("AppData")
+                .join("Local")
+                .join("pi-node")
+                .join("current"),
+        );
+        dirs.push(home.join("AppData").join("Roaming").join("npm"));
+    }
+
+    for dir in dirs {
+        for file in ["pi.cmd", "pi.exe", "pi.bat"] {
+            let candidate = dir.join(file);
+            if candidate.is_file() {
+                return Some(path_to_string(&candidate));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 /// Extract the first semver-looking token from version output.
@@ -249,5 +440,28 @@ mod tests {
         } else {
             assert!(hint.contains("curl") && hint.contains("pi.dev/install.sh"));
         }
+    }
+
+    #[test]
+    fn batch_shim_detection() {
+        assert!(is_windows_batch_shim(r"C:\Users\x\pi.cmd"));
+        assert!(is_windows_batch_shim(r"C:\Users\x\pi.CMD"));
+        assert!(is_windows_batch_shim("pi.bat"));
+        assert!(!is_windows_batch_shim("pi"));
+        assert!(!is_windows_batch_shim("pi.exe"));
+        assert!(!is_windows_batch_shim("cli.js"));
+    }
+
+    #[test]
+    fn js_cli_detection() {
+        assert!(looks_like_js_cli("cli.js"));
+        assert!(looks_like_js_cli(r"C:\tools\rpc-entry.mjs"));
+        assert!(!looks_like_js_cli("pi.cmd"));
+    }
+
+    #[test]
+    fn resolve_keeps_non_empty_default() {
+        let resolved = resolve_pi_host("pi");
+        assert!(!resolved.trim().is_empty());
     }
 }

@@ -22,19 +22,42 @@ curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh |
 irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex
 ```
 
-安装脚本会自动选择对应平台的二进制文件。Unix 系统默认安装到 `~/.local/bin`，可通过 `GROK_PI_INSTALL_DIR` 指定其他目录。
+安装脚本会按平台选择 release asset：
 
-在 Linux 和 macOS 上，安装脚本还会创建 `pi-grok` 别名（符号链接），两个名称均可使用：
+| 平台 | Asset |
+|---|---|
+| macOS Apple Silicon | `grok-pi-macos-aarch64.tar.gz` |
+| macOS Intel | `grok-pi-macos-x86_64.tar.gz` |
+| Linux x86_64 | `grok-pi-linux-x86_64.tar.gz` |
+| Linux ARM64 | `grok-pi-linux-aarch64.tar.gz` |
+| Windows x64 | `grok-pi-windows-x86_64.zip` |
+| Windows ARM64 | `grok-pi-windows-aarch64.zip` |
+
+默认路径：Unix → `~/.local/bin`；Windows → `%LOCALAPPDATA%\grok-pi\bin`。可用 `GROK_PI_INSTALL_DIR` 覆盖，用 `GROK_PI_VERSION=vX.Y.Z` 钉版本。
+
+Unix 会创建 `pi-grok` 符号链接（Windows 为 `pi-grok.exe` 硬链/副本）：
 
 ```bash
 grok-pi --help   # 原始名称
 pi-grok --help   # 别名
 ```
 
-`grok-pi` 需要 [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) **0.80.10 或更高版本**：
+`grok-pi` 需要 [Pi](https://pi.dev) **0.80.10 或更高版本**（系统 `pi` / pi.dev 安装器）：
 
 ```bash
+# 推荐
+curl -fsSL https://pi.dev/install.sh | sh
+# Windows:
+# powershell -c "irm https://pi.dev/install.ps1 | iex"
+# 或 npm:
 npm install --global @earendil-works/pi-coding-agent
+```
+
+Windows 上若旧版 `grok-pi.exe` 找不到裸名 `pi`，可显式指定 shim：
+
+```powershell
+$env:PI_BIN = "$env:LOCALAPPDATA\pi-node\current\pi.cmd"
+grok-pi --pi-bin $env:PI_BIN
 ```
 
 ## 启动

@@ -597,8 +597,10 @@ async fn run(mut args: Args) -> Result<()> {
         }
     }
     // Fail fast with OS-aware install hints before spawning the RPC host.
-    let _pi_version =
+    // On Windows this also rewrites bare `pi` → absolute `pi.cmd` for CreateProcess.
+    let (_pi_version, resolved_pi_bin) =
         ensure_compatible_pi_host(&args.pi_bin).context("Pi host version check failed")?;
+    args.pi_bin = resolved_pi_bin;
 
     // ── Extension self-heal: spawn Pi, and if an extension crashes the RPC
     // child during bootstrap, binary-search the culprit (VSCode-style),

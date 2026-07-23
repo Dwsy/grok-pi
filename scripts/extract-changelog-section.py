@@ -94,9 +94,16 @@ def install_footer(repo: str, tag: str) -> str:
     return (
         "\n### Install\n\n"
         f"```bash\n"
+        f"# macOS / Linux\n"
         f"curl -fsSL https://github.com/{repo}/releases/download/{tag}/install.sh | "
         f"GROK_PI_VERSION={tag} sh\n"
-        f"```\n"
+        f"```\n\n"
+        f"```powershell\n"
+        f"# Windows\n"
+        f"$env:GROK_PI_VERSION='{tag}'; "
+        f"irm https://github.com/{repo}/releases/download/{tag}/install.ps1 | iex\n"
+        f"```\n\n"
+        "Release assets: macOS aarch64/x86_64, Linux x86_64/aarch64, Windows x86_64/aarch64.\n"
     )
 
 

@@ -22,19 +22,42 @@ curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh |
 irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex
 ```
 
-The installer selects the platform binary and installs `grok-pi` to `~/.local/bin` by default on Unix systems. Set `GROK_PI_INSTALL_DIR` to use another directory.
+The installer picks the matching release asset and installs `grok-pi`:
 
-On Linux and macOS, the installer also creates a `pi-grok` alias (symlink) so you can use either name:
+| Platform | Asset |
+|---|---|
+| macOS Apple Silicon | `grok-pi-macos-aarch64.tar.gz` |
+| macOS Intel | `grok-pi-macos-x86_64.tar.gz` |
+| Linux x86_64 | `grok-pi-linux-x86_64.tar.gz` |
+| Linux ARM64 | `grok-pi-linux-aarch64.tar.gz` |
+| Windows x64 | `grok-pi-windows-x86_64.zip` |
+| Windows ARM64 | `grok-pi-windows-aarch64.zip` |
+
+Defaults: Unix → `~/.local/bin`; Windows → `%LOCALAPPDATA%\grok-pi\bin`. Override with `GROK_PI_INSTALL_DIR`. Pin with `GROK_PI_VERSION=vX.Y.Z`.
+
+Unix also creates a `pi-grok` symlink (Windows: `pi-grok.exe` hardlink/copy):
 
 ```bash
 grok-pi --help   # original name
 pi-grok --help   # alias
 ```
 
-`grok-pi` requires [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) **0.80.10 or newer**:
+`grok-pi` requires [Pi](https://pi.dev) **0.80.10 or newer** (system `pi` / pi.dev installer):
 
 ```bash
+# recommended
+curl -fsSL https://pi.dev/install.sh | sh
+# Windows:
+# powershell -c "irm https://pi.dev/install.ps1 | iex"
+# or npm:
 npm install --global @earendil-works/pi-coding-agent
+```
+
+On Windows, if an older `grok-pi.exe` cannot find bare `pi`, point it at the shim:
+
+```powershell
+$env:PI_BIN = "$env:LOCALAPPDATA\pi-node\current\pi.cmd"
+grok-pi --pi-bin $env:PI_BIN
 ```
 
 ## Start

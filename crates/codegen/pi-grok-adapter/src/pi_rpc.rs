@@ -46,8 +46,16 @@ pub struct PiProcess {
 impl PiRpc {
     pub async fn spawn(config: SpawnConfig) -> Result<PiProcess> {
         let rpc_entry = rpc_entry_for_cli(&config.program, &config.prefix_args);
-        let program = rpc_entry.as_deref().unwrap_or_else(|| Path::new(&config.program));
-        let mut command = Command::new(program);
+        let program = rpc_entry
+            .as_deref()
+            .unwrap_or_else(|| Path::new(&config.program));
+
+        // Windows: CreateProcess cannot launch .cmd/.bat as the image; route via cmd.exe.
+        // Node CLIs (.js/.mjs/.cjs) need an explicit node host (shebang is not honored).
+        let mut command = spawn_command_for_program(program);
+        if looks_like_js_cli(program) {
+            command.arg(program);
+        }
         command.args(&config.prefix_args);
         if rpc_entry.is_none() {
             tracing::debug!(program = %config.program, "Pi RPC entrypoint unavailable; passing --mode rpc to CLI");
@@ -162,7 +170,10 @@ impl PiRpc {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                stderr_ring_for_reader.lock().expect("stderr ring poisoned").push(line.clone());
+                stderr_ring_for_reader
+                    .lock()
+                    .expect("stderr ring poisoned")
+                    .push(line.clone());
                 tracing::warn!(target: "pi_rpc", "{line}");
             }
             let _ = stderr_done_tx.send(());
@@ -187,11 +198,17 @@ impl PiRpc {
             };
             // Wait for the stderr reader to finish (bounded so we never hang).
             let _ = tokio::time::timeout(Duration::from_secs(2), stderr_done_rx).await;
-            let stderr_context = stderr_ring_for_exit.lock().expect("stderr ring poisoned").snapshot();
+            let stderr_context = stderr_ring_for_exit
+                .lock()
+                .expect("stderr ring poisoned")
+                .snapshot();
             let message = if stderr_context.is_empty() {
                 base
             } else {
-                format!("{base}\n\nPi stderr (last {} lines):\n{stderr_context}", stderr_context.lines().count())
+                format!(
+                    "{base}\n\nPi stderr (last {} lines):\n{stderr_context}",
+                    stderr_context.lines().count()
+                )
             };
             fail_pending(&pending_exit, &message);
             let _ = event_tx.send(serde_json::json!({
@@ -366,6 +383,42 @@ impl StderrRingBuffer {
     fn snapshot(&self) -> String {
         self.lines.join("\n")
     }
+}
+
+/// Build the OS process host for a Pi program path.
+///
+/// - `.js`/`.mjs`/`.cjs` → `node` / `node.exe` (shebang is not honored by CreateProcess)
+/// - `.cmd`/`.bat` → `cmd.exe /D /C <path>` (CreateProcess cannot run batch as image)
+/// - otherwise → direct executable path / name
+fn spawn_command_for_program(program: &Path) -> Command {
+    if looks_like_js_cli(program) {
+        return Command::new(if cfg!(windows) { "node.exe" } else { "node" });
+    }
+    if uses_cmd_wrapper(program) {
+        let mut c = Command::new("cmd.exe");
+        c.arg("/D");
+        c.arg("/C");
+        c.arg(program);
+        return c;
+    }
+    Command::new(program)
+}
+
+fn uses_cmd_wrapper(program: &Path) -> bool {
+    matches!(
+        program
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat")),
+        Some(true)
+    )
+}
+
+fn looks_like_js_cli(program: &Path) -> bool {
+    matches!(
+        program.extension().and_then(|e| e.to_str()),
+        Some("js" | "mjs" | "cjs")
+    )
 }
 
 /// Locate the official npm Pi RPC entrypoint next to a canonical `dist/cli.js`.
