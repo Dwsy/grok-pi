@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 ///
 /// This thin Pi-side bridge executes component factories and sends pre-rendered
 /// frames to the Rust Pager via RPC notifications, replacing the TS remote-tui's
-/// keyfile-based transport.
+/// temp-file key transport.
 pub(super) fn write_rust_tui_bridge_extension() -> Result<NamedTempFile> {
     let mut file = tempfile::Builder::new()
         .prefix("pi-grok-rust-tui-bridge-")
@@ -38,7 +38,7 @@ mod tests {
         assert!(source.contains("handleInput"));
         assert!(source.contains("overlay_push"));
         assert!(source.contains("overlay_pop"));
-        // Must NOT use keyfile transport
+        // Must NOT use temp-file key transport (literal path helpers / fs.watch).
         assert!(!source.contains("keyfile"));
         assert!(!source.contains("watch("));
     }

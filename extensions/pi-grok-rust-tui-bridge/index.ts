@@ -3,7 +3,7 @@
  *
  * Thin Pi-side bridge that executes component factories and sends pre-rendered
  * frames to the Rust Pager via RPC notifications. Replaces the TS remote-tui's
- * keyfile-based transport with direct RPC messaging.
+ * temp-file key transport with direct RPC messaging.
  *
  * Flow:
  *   1. Pi extension calls ctx.ui.custom(factory)
