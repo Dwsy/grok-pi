@@ -595,6 +595,11 @@ impl MvpAgent {
     pub(crate) fn is_data_collection_disabled(&self) -> bool {
         self.auth_manager.is_data_collection_disabled()
     }
+    /// Telemetry enabled and not ZDR. Same gate as session `telemetry_enabled`.
+    pub(crate) fn product_analytics_enabled(&self) -> bool {
+        self.cfg.borrow().is_telemetry_enabled()
+            && !self.auth_manager.current_or_expired().is_some_and(|a| a.is_zdr_team())
+    }
     /// Re-sync the `Send` mirror of `cfg.is_trace_upload_enabled()` that the
     /// per-session collection gates read (`cfg` is `!Send`; the gates run on
     /// the tokio pool). Must be called after any mid-session config change
@@ -3166,8 +3171,7 @@ impl MvpAgent {
         tool_ctx.subagent_depth = 0;
         tool_ctx.auto_wake_enabled = self.cfg.borrow().auto_wake_enabled;
         let support_permission = self.cfg.borrow().features.support_permission;
-        let telemetry_enabled = self.cfg.borrow().is_telemetry_enabled()
-            && !self.auth_manager.current_or_expired().is_some_and(|a| a.is_zdr_team());
+        let telemetry_enabled = self.product_analytics_enabled();
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());

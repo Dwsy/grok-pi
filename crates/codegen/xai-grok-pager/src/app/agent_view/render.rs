@@ -3743,7 +3743,7 @@ impl AgentView {
                     &self.scrollback,
                 );
             }
-            let hints = self.current_shortcut_hints(registry);
+            let hints = self.current_shortcut_hints(registry, esc_owned_before_agent);
             ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
             self.pane_areas = layout.pane_areas();
             return (None, prompt_post_flush);

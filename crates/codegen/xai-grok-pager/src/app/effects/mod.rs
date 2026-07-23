@@ -1659,7 +1659,7 @@ pub(crate) fn execute(
                         Some(&session_id.0),
                         Some(
                             serde_json::json!({
-                        "kind": if send_now { "send_now" } else { "blocks" },
+                        "kind": "blocks",
                         "block_count": blocks.len(),
                         "prompt_id": prompt_id,
                     }),
@@ -1676,7 +1676,7 @@ pub(crate) fn execute(
                         Some(&session_id.0),
                         Some(
                             serde_json::json!({
-                        "kind": if send_now { "send_now" } else { "blocks" },
+                        "kind": "blocks",
                         "elapsed_ms": send_elapsed_ms,
                         "ok": result.is_ok(),
                         "prompt_id": prompt_id,
