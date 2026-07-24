@@ -612,6 +612,8 @@ pub enum Action {
     SetCollapsedEditBlocks(bool),
     /// Set the grok-pi Ctrl+O tool expansion scope (`write_edit` or `all_tools`).
     SetCtrlOToolExpansion(String),
+    /// Set which fields grok-pi Bash/run headers render.
+    SetPiBashRunDisplay(crate::appearance::ExecuteHeaderContent),
     /// Set whether the predicted-next-prompt ghost text (tab autocomplete)
     /// is offered after each turn. SHELL-owned: updates the process-wide
     /// cache mirror and persists to `[ui].prompt_suggestions` via
@@ -1203,6 +1205,9 @@ pub enum Action {
     ReviewOpenForTurn(EntryId),
     /// Close the code-review modal.
     ReviewDismiss,
+    /// Submit a QA question from the review modal's Right Ask bar.
+    /// Fires a /btw side question scoped to the reviewed files.
+    ReviewAsk(String),
     /// Close the Pi `/fork` prompt-area message list overlay.
     PiForkDismiss,
     /// Pi `/clone`: duplicate current session at the current leaf.

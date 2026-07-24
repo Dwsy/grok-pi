@@ -573,6 +573,13 @@ impl AgentView {
                             viewer.handle_scroll(lines);
                         }
                     }
+                    ReviewFocus::Ask => {
+                        let max = review.ask.max_response_scroll(
+                            review.ask_area.width.saturating_sub(2) as usize,
+                            review.ask_area.height.saturating_sub(2) as usize,
+                        );
+                        review.ask.scroll_response(lines, max);
+                    }
                 }
             }
             return;

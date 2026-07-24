@@ -364,7 +364,7 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
 }
 
 /// Build ordered non-empty model refs; if all slots empty, use session model.
-fn side_model_chain(slots: &[&str], session_model: Option<&str>) -> Vec<String> {
+pub(super) fn side_model_chain(slots: &[&str], session_model: Option<&str>) -> Vec<String> {
     let mut out = Vec::new();
     for slot in slots {
         let t = slot.trim();
@@ -567,6 +567,13 @@ pub(super) fn handle_btw_response(
         use crate::views::btw_overlay::BtwOverlayState;
         if let Some(request_id) = minimal_request_id {
             crate::minimal_api::finish_minimal_btw(agent, request_id, result);
+            return vec![];
+        }
+        // Route to the review modal's Right Ask panel when its QA is in-flight.
+        if let Some(review) = agent.review_state.as_mut()
+            && review.ask.is_loading()
+        {
+            review.ask.set_response(result);
             return vec![];
         }
         let question = match &agent.btw_state {

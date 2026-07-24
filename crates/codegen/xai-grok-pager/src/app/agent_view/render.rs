@@ -150,6 +150,7 @@ impl AgentView {
                     HintItem::new(key!(Esc), "close"),
                     HintItem::paired(key!(Up), key!(Down), "files"),
                     HintItem::new(key!('/'), "filter"),
+                    HintItem::new(key!('a'), "ask"),
                     HintItem::new(key!('t'), "tree"),
                     HintItem::new(key!('r'), "reads"),
                     HintItem::new(key!(Enter), "preview"),
@@ -160,12 +161,19 @@ impl AgentView {
                         let mut hints = viewer.shortcuts_hints();
                         // Replace viewer Esc=close with review shell meaning.
                         hints.insert(1, HintItem::paired(key!('n'), key!('p'), "file"));
+                        hints.push(HintItem::new(key!('a'), "ask"));
                         hints.push(HintItem::new(key!(Left), "files"));
                         hints
                     } else {
                         vec![HintItem::new(key!(Esc), "close")]
                     }
                 }
+                ReviewFocus::Ask => vec![
+                    HintItem::new(key!(Enter), "send"),
+                    HintItem::paired(key!(Up), key!(Down), "scroll"),
+                    HintItem::new(key!(Tab), "files"),
+                    HintItem::new(key!(Esc), "back"),
+                ],
             }
         } else if !self.permission_queue.is_empty() {
             use crate::views::permission_view::PermissionFocus;

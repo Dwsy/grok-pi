@@ -143,3 +143,75 @@ pub(super) fn dispatch_review_dismiss(app: &mut AppView) -> Vec<Effect> {
     agent.review_state = None;
     vec![]
 }
+
+/// Fire a /btw side question from the review modal's Right Ask bar.
+/// Reuses the same model chain as `/btw` (F2 → btw_model slots).
+pub(super) fn dispatch_review_ask(app: &mut AppView, question: String) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let Some(session_id) = agent.session.session_id.clone() else {
+        agent.show_toast("No active session for review ask");
+        if let Some(state) = agent.review_state.as_mut() {
+            state.ask.response = Some(crate::views::review::ReviewAskResponse::Error {
+                error: "No active session".into(),
+            });
+        }
+        return vec![];
+    };
+
+    // Build context: list the files being reviewed so the model knows what's relevant.
+    let file_context = agent
+        .review_state
+        .as_ref()
+        .map(|s| {
+            let paths: Vec<&str> = s.files.iter().map(|f| f.path.as_str()).collect();
+            if paths.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\n\n[Context: reviewing {} file(s): {}]",
+                    paths.len(),
+                    paths.join(", ")
+                )
+            }
+        })
+        .unwrap_or_default();
+
+    let enriched_question = format!("{question}{file_context}");
+
+    let models = super::notes::side_model_chain(
+        &[
+            app.current_ui.btw_model.as_str(),
+            app.current_ui.btw_model_2.as_str(),
+            app.current_ui.btw_model_3.as_str(),
+        ],
+        agent.session.models.current_model_id_str(),
+    );
+
+    if app.external_agent && models.is_empty() {
+        agent.show_toast("No model configured for review ask");
+        if let Some(state) = agent.review_state.as_mut() {
+            state.ask.response = Some(crate::views::review::ReviewAskResponse::Error {
+                error: "No model configured (F2 → btw_model)".into(),
+            });
+        }
+        return vec![];
+    }
+
+    // Mark the review ask as pending so handle_btw_response routes here.
+    if let Some(state) = agent.review_state.as_mut() {
+        state.ask.response = Some(crate::views::review::ReviewAskResponse::Loading);
+    }
+
+    vec![Effect::SendBtw {
+        agent_id: id,
+        session_id,
+        question: enriched_question,
+        models,
+        minimal_request_id: None,
+    }]
+}

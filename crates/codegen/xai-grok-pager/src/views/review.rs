@@ -77,6 +77,8 @@ pub enum ReviewFocus {
     List,
     /// Right BlockViewerPane (full edit-viewer TUI).
     Preview,
+    /// Bottom QA input bar (`?` to activate; Enter submits via /btw model).
+    Ask,
 }
 
 /// One visible row in the left pane (flat or tree).
@@ -91,6 +93,108 @@ pub struct ReviewTreeRow {
     pub kind: Option<ReviewFileKind>,
     pub is_error: bool,
     pub is_dir: bool,
+}
+
+/// QA response state inside the review modal.
+#[derive(Debug, Clone)]
+pub enum ReviewAskResponse {
+    /// Waiting for the btw model to respond.
+    Loading,
+    /// Response received — scrollable markdown.
+    Done {
+        content: Box<crate::scrollback::blocks::markdown_content::MarkdownContent>,
+        scroll_offset: usize,
+    },
+    /// Request failed.
+    Error { error: String },
+}
+
+/// State for the inline "Right Ask" QA panel in the review modal.
+#[derive(Debug, Clone)]
+pub struct ReviewAskState {
+    /// Current input text (empty when not actively typing).
+    pub input: String,
+    /// Cursor position within `input`.
+    pub cursor: usize,
+    /// Last submitted question (shown as context while loading/done).
+    pub last_question: String,
+    /// Response state.
+    pub response: Option<ReviewAskResponse>,
+    /// Whether the response panel is expanded (takes more vertical space).
+    pub expanded: bool,
+}
+
+impl Default for ReviewAskState {
+    fn default() -> Self {
+        Self {
+            input: String::new(),
+            cursor: 0,
+            last_question: String::new(),
+            response: None,
+            expanded: false,
+        }
+    }
+}
+
+impl ReviewAskState {
+    /// True when a request is in-flight.
+    pub fn is_loading(&self) -> bool {
+        matches!(self.response, Some(ReviewAskResponse::Loading))
+    }
+
+    /// True when there is a completed response to display.
+    pub fn has_response(&self) -> bool {
+        matches!(
+            self.response,
+            Some(ReviewAskResponse::Done { .. }) | Some(ReviewAskResponse::Error { .. })
+        )
+    }
+
+    /// Set the response from a btw result.
+    pub fn set_response(&mut self, result: Result<String, String>) {
+        match result {
+            Ok(text) => {
+                self.response = Some(ReviewAskResponse::Done {
+                    content: Box::new(
+                        crate::scrollback::blocks::markdown_content::MarkdownContent::new(text),
+                    ),
+                    scroll_offset: 0,
+                });
+                self.expanded = true;
+            }
+            Err(error) => {
+                self.response = Some(ReviewAskResponse::Error { error });
+            }
+        }
+    }
+
+    /// Scroll the Done response.
+    pub fn scroll_response(&mut self, delta: i32, max_offset: usize) {
+        if let Some(ReviewAskResponse::Done { scroll_offset, .. }) = self.response.as_mut() {
+            if delta < 0 {
+                *scroll_offset = scroll_offset.saturating_sub((-delta) as usize);
+            } else {
+                *scroll_offset = (*scroll_offset + delta as usize).min(max_offset);
+            }
+        }
+    }
+
+    /// Max scroll offset for the response at given content width and visible lines.
+    pub fn max_response_scroll(&self, content_width: usize, visible_lines: usize) -> usize {
+        match &self.response {
+            Some(ReviewAskResponse::Done { content, .. }) if content_width > 0 => {
+                let total = content.with_wrapped_lines(content_width, |w| w.lines.len());
+                total.saturating_sub(visible_lines)
+            }
+            _ => 0,
+        }
+    }
+
+    /// Clear the response panel (Esc when not typing).
+    pub fn dismiss_response(&mut self) {
+        self.response = None;
+        self.expanded = false;
+    }
 }
 
 pub struct ReviewState {
@@ -116,6 +220,8 @@ pub struct ReviewState {
     pub tree_rows: Vec<ReviewTreeRow>,
     /// Right-pane viewer (rebuilt when selection changes).
     pub viewer: Option<BlockViewerPane>,
+    /// Inline QA "Right Ask" state (reuses /btw model chain).
+    pub ask: ReviewAskState,
     /// Hit areas from last render.
     pub list_area: Rect,
     /// Exact rows rect used for file items (inside border/title/filter bar).
@@ -124,6 +230,8 @@ pub struct ReviewState {
     pub list_view_start: usize,
     pub preview_area: Rect,
     pub popup_area: Rect,
+    /// Ask bar area (for mouse hit-testing).
+    pub ask_area: Rect,
 }
 
 impl ReviewState {
@@ -168,11 +276,13 @@ impl ReviewState {
             cwd: cwd.into(),
             tree_rows: Vec::new(),
             viewer: None,
+            ask: ReviewAskState::default(),
             list_area: Rect::default(),
             list_body_area: Rect::default(),
             list_view_start: 0,
             preview_area: Rect::default(),
             popup_area: Rect::default(),
+            ask_area: Rect::default(),
         };
         state.rebuild_tree();
         state
@@ -384,7 +494,7 @@ fn plain_review_fallback(path: &str, text: &str) -> BlockViewerPane {
     BlockViewerPane::for_plain_text(path, &body)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewInput {
     Dismissed,
     /// Selection / focus changed — caller should ensure_viewer.
@@ -395,6 +505,8 @@ pub enum ReviewInput {
     ToggleIncludeReads,
     /// Ctrl+click (or path hit) — open current file in OS default app.
     OpenPath,
+    /// QA question submitted via the Right Ask bar — caller fires /btw.
+    AskSubmit(String),
     Consumed,
 }
 
@@ -482,6 +594,11 @@ pub fn handle_review_list_key(state: &mut ReviewState, key: &KeyEvent) -> Review
             state.move_sel(-1);
             ReviewInput::Changed
         }
+        // a activates the Right Ask QA input bar.
+        KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
+            state.focus = ReviewFocus::Ask;
+            ReviewInput::Changed
+        }
         _ => ReviewInput::Consumed,
     }
 }
@@ -523,11 +640,116 @@ pub fn handle_review_preview_shell_key(
         KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
             Some(ReviewInput::ToggleIncludeReads)
         }
+        // a activates the Right Ask QA bar.
+        KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
+            state.focus = ReviewFocus::Ask;
+            Some(ReviewInput::Changed)
+        }
         KeyCode::Tab => {
             state.focus = ReviewFocus::List;
             Some(ReviewInput::Changed)
         }
         _ => None,
+    }
+}
+
+/// Key handling when the Right Ask QA bar is focused.
+pub fn handle_review_ask_key(state: &mut ReviewState, key: &KeyEvent) -> ReviewInput {
+    if key.kind == crossterm::event::KeyEventKind::Release {
+        return ReviewInput::Consumed;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return ReviewInput::Dismissed;
+    }
+
+    let ask = &mut state.ask;
+
+    match key.code {
+        KeyCode::Esc => {
+            if ask.is_loading() {
+                // Can't dismiss while loading.
+                ReviewInput::Consumed
+            } else if ask.has_response() {
+                ask.dismiss_response();
+                ReviewInput::Changed
+            } else {
+                // Return to list focus.
+                state.focus = ReviewFocus::List;
+                ReviewInput::Changed
+            }
+        }
+        KeyCode::Enter => {
+            let q = ask.input.trim().to_string();
+            if q.is_empty() || ask.is_loading() {
+                return ReviewInput::Consumed;
+            }
+            ask.last_question = q.clone();
+            ask.input.clear();
+            ask.cursor = 0;
+            ask.response = Some(ReviewAskResponse::Loading);
+            ReviewInput::AskSubmit(q)
+        }
+        KeyCode::Backspace => {
+            if ask.cursor > 0 {
+                ask.input.remove(ask.cursor - 1);
+                ask.cursor -= 1;
+            }
+            ReviewInput::Changed
+        }
+        KeyCode::Delete => {
+            if ask.cursor < ask.input.len() {
+                ask.input.remove(ask.cursor);
+            }
+            ReviewInput::Changed
+        }
+        KeyCode::Left => {
+            ask.cursor = ask.cursor.saturating_sub(1);
+            ReviewInput::Changed
+        }
+        KeyCode::Right => {
+            ask.cursor = (ask.cursor + 1).min(ask.input.len());
+            ReviewInput::Changed
+        }
+        KeyCode::Home => {
+            ask.cursor = 0;
+            ReviewInput::Changed
+        }
+        KeyCode::End => {
+            ask.cursor = ask.input.len();
+            ReviewInput::Changed
+        }
+        KeyCode::Up => {
+            // Scroll response up.
+            if let Some(ReviewAskResponse::Done { .. }) = &ask.response {
+                let max = ask.max_response_scroll(
+                    state.ask_area.width.saturating_sub(2) as usize,
+                    state.ask_area.height.saturating_sub(2) as usize,
+                );
+                ask.scroll_response(-3, max);
+            }
+            ReviewInput::Changed
+        }
+        KeyCode::Down => {
+            // Scroll response down.
+            if let Some(ReviewAskResponse::Done { .. }) = &ask.response {
+                let max = ask.max_response_scroll(
+                    state.ask_area.width.saturating_sub(2) as usize,
+                    state.ask_area.height.saturating_sub(2) as usize,
+                );
+                ask.scroll_response(3, max);
+            }
+            ReviewInput::Changed
+        }
+        KeyCode::Tab => {
+            state.focus = ReviewFocus::List;
+            ReviewInput::Changed
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            ask.input.insert(ask.cursor, c);
+            ask.cursor += 1;
+            ReviewInput::Changed
+        }
+        _ => ReviewInput::Consumed,
     }
 }
 
@@ -733,11 +955,14 @@ pub fn render_review_modal(
                 "reads:off"
             };
             format!(
-                " j/k  /=filter  t={layout}  r={reads}  Enter→preview  ^click=open  n/p  Esc "
+                " j/k  /=filter  a=ask  t={layout}  r={reads}  Enter→preview  ^click=open  Esc "
             )
         }
         ReviewFocus::Preview => {
-            " j/k scroll  /=search  f=filter  w=wrap  y=copy  n/p file  ← list  Esc close ".into()
+            " j/k scroll  /=search  f=filter  w=wrap  y=copy  a=ask  n/p file  ← list  Esc ".into()
+        }
+        ReviewFocus::Ask => {
+            " Enter=send  ↑↓ scroll answer  Tab=files  Esc=back ".into()
         }
     };
 
@@ -757,16 +982,46 @@ pub fn render_review_modal(
         return;
     }
 
+    // Reserve bottom rows for the ask bar when it has content or is focused.
+    let ask_visible = state.focus == ReviewFocus::Ask
+        || !state.ask.input.is_empty()
+        || state.ask.has_response()
+        || state.ask.is_loading();
+    let ask_rows: u16 = if ask_visible {
+        if state.ask.expanded || state.focus == ReviewFocus::Ask {
+            // Expanded: up to 40% of inner height, min 3, max 12.
+            let desired = (inner.height * 2 / 5).clamp(3, 12);
+            desired.min(inner.height.saturating_sub(3))
+        } else {
+            // Collapsed: just the input line + border.
+            2.min(inner.height.saturating_sub(3))
+        }
+    } else {
+        0
+    };
+
+    let body_h = inner.height.saturating_sub(ask_rows);
+    let body_area = Rect::new(inner.x, inner.y, inner.width, body_h);
+    let ask_area = if ask_rows > 0 {
+        Rect::new(inner.x, inner.y + body_h, inner.width, ask_rows)
+    } else {
+        Rect::default()
+    };
+    state.ask_area = ask_area;
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
-        .split(inner);
+        .split(body_area);
 
     state.list_area = chunks[0];
     state.preview_area = chunks[1];
 
     render_file_list(buf, chunks[0], state, &theme);
     render_preview_pane(buf, chunks[1], state, scrollback, &theme);
+    if ask_rows > 0 {
+        render_ask_bar(buf, ask_area, state, &theme);
+    }
 }
 
 fn render_file_list(buf: &mut Buffer, area: Rect, state: &mut ReviewState, theme: &Theme) {
@@ -1203,6 +1458,130 @@ fn render_preview_pane(
     viewer.render_content(inner, buf, entry, focused, prepend);
 }
 
+/// Render the bottom "Right Ask" QA bar inside the review modal.
+fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &Theme) {
+    if area.width < 4 || area.height < 1 {
+        return;
+    }
+    let ask = &state.ask;
+    let focused = state.focus == ReviewFocus::Ask;
+
+    // Border with golden accent when focused.
+    let border_color = if focused { theme.warning } else { theme.gray_dim };
+    let border = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            " 💡 Ask ",
+            Style::default().fg(if focused { theme.warning } else { theme.gray }),
+        ));
+    let inner = border.inner(area);
+    border.render(area, buf);
+    if inner.width < 2 || inner.height < 1 {
+        return;
+    }
+
+    // Row 0: input line (or last question when response is showing).
+    let input_y = inner.y;
+    let prompt_str = "❯ ";
+    let display_text = if ask.input.is_empty() && !ask.last_question.is_empty() && ask.has_response()
+    {
+        &ask.last_question
+    } else {
+        &ask.input
+    };
+    let max_input_w = inner.width.saturating_sub(2) as usize;
+    let input_line = Line::from(vec![
+        Span::styled(
+            prompt_str,
+            Style::default().fg(if focused { theme.warning } else { theme.gray }),
+        ),
+        Span::styled(
+            truncate_str(display_text, max_input_w),
+            Style::default().fg(if focused {
+                theme.text_primary
+            } else {
+                theme.gray_bright
+            }),
+        ),
+    ]);
+    buf.set_line(inner.x, input_y, &input_line, inner.width);
+
+    // Cursor indicator when focused and typing.
+    if focused && !ask.input.is_empty() {
+        let cursor_x = inner.x + 2 + ask.cursor.min(max_input_w) as u16;
+        if cursor_x < inner.x + inner.width {
+            if let Some(cell) = buf.cell_mut((cursor_x, input_y)) {
+                cell.set_style(Style::default().fg(theme.bg_base).bg(theme.warning));
+            }
+        }
+    }
+
+    // Response area (rows below input).
+    if inner.height < 2 {
+        return;
+    }
+    let resp_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
+
+    match &ask.response {
+        Some(ReviewAskResponse::Loading) => {
+            let spinner = Line::from(Span::styled(
+                "  ⠿ thinking…",
+                Style::default().fg(theme.gray),
+            ));
+            buf.set_line(resp_area.x, resp_area.y, &spinner, resp_area.width);
+        }
+        Some(ReviewAskResponse::Error { error }) => {
+            let err_line = Line::from(Span::styled(
+                truncate_str(&format!("  ✗ {error}"), resp_area.width as usize),
+                Style::default().fg(theme.accent_error),
+            ));
+            buf.set_line(resp_area.x, resp_area.y, &err_line, resp_area.width);
+        }
+        Some(ReviewAskResponse::Done { content, scroll_offset }) => {
+            let content_w = resp_area.width.saturating_sub(1) as usize;
+            if content_w == 0 {
+                return;
+            }
+            content.with_wrapped_lines(content_w, |wrapped| {
+                let total = wrapped.lines.len();
+                let visible = resp_area.height as usize;
+                let start = (*scroll_offset).min(total.saturating_sub(visible));
+                let end = (start + visible).min(total);
+                for (row, line_idx) in (start..end).enumerate() {
+                    let y = resp_area.y + row as u16;
+                    if y >= resp_area.y + resp_area.height {
+                        break;
+                    }
+                    let line = &wrapped.lines[line_idx];
+                    buf.set_line(resp_area.x + 1, y, line, resp_area.width.saturating_sub(1));
+                }
+                // Scroll indicator.
+                if total > visible {
+                    let pct = if total > visible {
+                        start * 100 / (total - visible)
+                    } else {
+                        0
+                    };
+                    let indicator = format!(" {pct}% ");
+                    let ind_x = resp_area.x + resp_area.width.saturating_sub(indicator.len() as u16 + 1);
+                    buf.set_string(ind_x, resp_area.y, &indicator, Style::default().fg(theme.gray_dim));
+                }
+            });
+        }
+        None => {
+            // Hint when no response yet.
+            if !focused {
+                let hint = Line::from(Span::styled(
+                    "  a to ask about these changes",
+                    Style::default().fg(theme.gray_dim),
+                ));
+                buf.set_line(resp_area.x, resp_area.y, &hint, resp_area.width);
+            }
+        }
+    }
+}
+
 /// Map a mouse position to a filtered file index using last-frame draw geometry.
 pub fn list_row_at(state: &ReviewState, col: u16, row: u16) -> Option<usize> {
     let area = state.list_body_area;
@@ -1226,6 +1605,15 @@ pub fn handle_review_mouse(state: &mut ReviewState, mouse: &MouseEvent) -> Revie
                 3
             };
             let step = delta.signum();
+            // Scroll the ask response when hovering the ask bar.
+            if point_in(state.ask_area, mouse.column, mouse.row) {
+                let max = state.ask.max_response_scroll(
+                    state.ask_area.width.saturating_sub(2) as usize,
+                    state.ask_area.height.saturating_sub(2) as usize,
+                );
+                state.ask.scroll_response(delta, max);
+                return ReviewInput::Changed;
+            }
             // Scroll the pane under the cursor.
             if point_in(state.list_area, mouse.column, mouse.row) {
                 state.move_sel(step);
@@ -1250,9 +1638,15 @@ pub fn handle_review_mouse(state: &mut ReviewState, mouse: &MouseEvent) -> Revie
                     }
                     ReviewInput::Changed
                 }
+                ReviewFocus::Ask => ReviewInput::Consumed,
             }
         }
         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+            // Click on ask bar → focus it.
+            if point_in(state.ask_area, mouse.column, mouse.row) {
+                state.focus = ReviewFocus::Ask;
+                return ReviewInput::Changed;
+            }
             let ctrl = mouse.modifiers.contains(KeyModifiers::CONTROL);
             if let Some(idx) = list_row_at(state, mouse.column, mouse.row) {
                 state.select_filtered(idx);

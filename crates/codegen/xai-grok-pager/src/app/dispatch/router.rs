@@ -79,7 +79,7 @@ use super::session::tree::{
     dispatch_show_session_tree, dispatch_show_tree_map,
 };
 use super::settings::setters::{
-    clear_default_model, clear_fork_secondary_model, clear_recap_model, set_model_slot, preview_auto_dark_theme,
+    clear_default_model, clear_fork_secondary_model, clear_recap_model, preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
     set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_collapsed_edit_blocks,
     set_combine_queued_prompts, set_compact_mode, set_contextual_hint_image_input,
@@ -88,16 +88,15 @@ use super::settings::setters::{
     set_ctrl_o_tool_expansion, set_default_model, set_default_selected_permission,
     set_display_refresh_auto_cadence, set_fork_secondary_model, set_group_tool_verbs,
     set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
-    set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question, set_pi_btw, set_pi_builtin_tool,
-    set_pi_cache_graph, set_pi_goal, set_pi_loop, set_pi_tree_file_rollback,
-    set_show_other_tool_args,
-    set_pi_tree_skip_summary_prompt, set_pi_workflows, set_progress_bar, set_prompt_suggestions,
-    set_psm_resume_index, set_recap_mermaid, set_recap_model, set_remember_tool_approvals,
-    set_remote_tui_footer, set_render_mermaid, set_respect_manual_folds, set_review_file_tree,
-    set_review_include_reads,
-    set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
-    set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_timeline,
-    set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_stt_language,
+    set_model_slot, set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question,
+    set_pi_bash_run_display, set_pi_btw, set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal,
+    set_pi_loop, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt, set_pi_workflows,
+    set_progress_bar, set_prompt_suggestions, set_psm_resume_index, set_recap_mermaid,
+    set_recap_model, set_remember_tool_approvals, set_remote_tui_footer, set_render_mermaid,
+    set_respect_manual_folds, set_review_file_tree, set_review_include_reads, set_screen_mode,
+    set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
+    set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme,
+    set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -1056,6 +1055,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetGroupToolVerbs(v) => set_group_tool_verbs(app, v),
         Action::SetCollapsedEditBlocks(v) => set_collapsed_edit_blocks(app, v),
         Action::SetCtrlOToolExpansion(v) => set_ctrl_o_tool_expansion(app, v),
+        Action::SetPiBashRunDisplay(v) => set_pi_bash_run_display(app, v),
         Action::SetPromptSuggestions(v) => set_prompt_suggestions(app, v),
         Action::SetRespectManualFolds(v) => set_respect_manual_folds(app, v),
         Action::SetDefaultSelectedPermission(s) => set_default_selected_permission(app, s),
@@ -1568,6 +1568,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ReviewShowMessagePicker => super::review::dispatch_review_show_message_picker(app),
         Action::ReviewOpenForTurn(id) => super::review::dispatch_review_open_for_turn(app, id),
         Action::ReviewDismiss => super::review::dispatch_review_dismiss(app),
+        Action::ReviewAsk(question) => super::review::dispatch_review_ask(app, question),
         Action::RewindPickerSelect(prompt_index) => {
             dispatch_rewind_picker_select(app, prompt_index)
         }
