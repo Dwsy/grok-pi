@@ -24,7 +24,7 @@ Grok processes the prompt, runs any necessary tools, and prints the result to st
 | `-m, --model <MODEL>`   | Model to use (e.g., `grok-build`)              |
 | `-s, --session-id <ID>` | Create a **new** session with this **UUID** (errors if invalid UUID or already in use under the target session directory; does not resume — use `-r`/`-c`) |
 | `--fork-session`        | With `-r`/`-c`, fork into a new session ID instead of appending to the original |
-| `-r, --resume <ID>`     | Resume an existing session (errors if not found)      |
+| `-r, --resume <ID_OR_TITLE>` | Resume an existing session by ID, or by title for the current directory, ignoring letter case (a sole manually renamed match wins among duplicates; remaining duplicates error with their IDs; UUID-shaped values always take the ID path; scripts should prefer IDs) |
 | `-c, --continue`        | Continue the most recent session in current directory  |
 | `--cwd <PATH>`          | Set working directory                                 |
 | `--output-format <FMT>` | Output format: `plain`, `json`, `streaming-json`      |
@@ -34,7 +34,7 @@ Grok processes the prompt, runs any necessary tools, and prints the result to st
 | `--disallowed-tools <TOOLS>` | Denylist of built-in tools to remove (comma-separated). Supports `Agent` entries. Headless only. |
 | `--max-turns <N>`       | Maximum number of agentic turns before stopping. Headless only. |
 | `--reasoning-effort` / `--effort <LEVEL>` | Reasoning effort for reasoning models. Canonical levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (each a distinct tier; a model only accepts the levels its menu advertises). Also accepts per-model menu option ids (e.g. `deep` → mapped wire value), same as `/effort`. Works in TUI and headless. |
-| `--permission-mode <MODE>` | Permission mode. `bypassPermissions` enables always-approve via this flag (see [22-permissions-and-safety.md](22-permissions-and-safety.md)); for deny-by-default use `defaultMode` in `.claude/settings.json`. |
+| `--permission-mode <MODE>` | Permission mode. `bypassPermissions` enables always-approve (see [Permissions and safety](22-permissions-and-safety.md#permission-modes)); for deny-by-default use `defaultMode` in `.claude/settings.json`. |
 | `--allow <RULE>`        | Permission allow rule with glob patterns (repeatable). Works in TUI and headless. |
 | `--deny <RULE>`         | Permission deny rule with glob patterns (repeatable). Works in TUI and headless. |
 | `--prompt-json <JSON>`  | Prompt as JSON content blocks                         |
@@ -256,7 +256,7 @@ grok -p "hello" --session-id "$(uuidgen | tr '[:upper:]' '[:lower:]')" --output-
 
 ### Resume (`-r`)
 
-The `-r/--resume` flag resumes a specific session by ID. It errors if the session does not exist:
+The `-r/--resume` flag resumes a specific session by ID, or by title for the current directory when the value is not an ID, ignoring letter case (a sole manually renamed match wins among duplicates; remaining duplicates error with their IDs; UUID-shaped values always take the ID path — scripts should prefer IDs). It errors if the session does not exist:
 
 ```bash
 # Get the session ID from a previous JSON response
@@ -431,20 +431,16 @@ echo "No issues found"
 
 ---
 
-## Fully Automated Runs with --yolo
+## Always-approve for automation
 
-The `--yolo` flag enables always-approve mode (the same mode as `--permission-mode bypassPermissions` and `--always-approve`), auto-approving tool executions (file writes, command execution, etc.) without prompting for confirmation. Explicit `deny` rules and `PreToolUse` hooks still apply, and administrators can disable the mode via `requirements.toml` (see [22-permissions-and-safety.md](22-permissions-and-safety.md)). This is required for unattended automation:
+`--always-approve` (alias `--yolo`, same as `--permission-mode bypassPermissions`) runs tool calls without interactive permission prompts. Deny rules, hooks, and admin locks still apply (see [Permissions and safety](22-permissions-and-safety.md#permission-modes)).
 
 ```bash
-# Format all files without asking
-grok -p "Format all files" --yolo
-
-# Run tests and fix failures
-grok -p "Run the tests and fix any failures" --cwd ~/projects/my-app --yolo
+grok -p "Format all files" --always-approve
+grok -p "Run the tests and fix any failures" --cwd ~/projects/my-app --always-approve
 ```
 
-**Use `--yolo` with care.** It grants the agent full autonomy to modify files and run commands. Only use it in trusted environments or with well-scoped prompts.
-
+For agent servers and SDKs, see [Agent mode](15-agent-mode.md#automation-and-sdks).
 ---
 
 ## Environment Variables for Headless

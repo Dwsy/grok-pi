@@ -6,7 +6,7 @@ Grok connects to custom model endpoints for alternative providers, self-hosted m
 
 ## Default Models
 
-By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-build`. Default models require no configuration. Authenticate with `grok login` or an API key, then start a session.
+By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-4.5`. Default models require no configuration. Authenticate with `grok login` or an API key, then start a session.
 
 List all available models:
 
@@ -48,7 +48,7 @@ Set a persistent default in `~/.grok/config.toml`:
 
 ```toml
 [models]
-default = "grok-build"
+default = "grok-4.5"
 ```
 
 ---
@@ -87,6 +87,8 @@ top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
 context_window = 128000                   # Total context window in tokens
 extra_headers = { "x-api-key" = "sk-..." } # Extra request headers, sent verbatim (optional)
+query_params = { api-version = "2026-07-22" } # Query params appended to every request URL (optional)
+env_http_headers = { "X-Tenant" = "TENANT_TOKEN" }    # Headers from env vars, resolved at client build (optional)
 ```
 
 ### Credential Resolution
@@ -130,6 +132,36 @@ stream_tool_calls           = true
 This is a small, fixed set of environment-wide knobs. Settings that identify a specific model (`model`, `base_url`, `api_key`, `context_window`, ...) cannot be defaulted this way, and a few settings with their own dedicated configuration -- auto-compaction (`[session]`), the system-prompt label (`[agent]`), and reasoning effort (`[models].default_reasoning_effort`) -- keep their existing homes.
 
 > **Note on `stream_tool_calls`:** this one affects request *shape*, not just sampling. A few endpoints (some BYOK providers) expect it left unset; if a global `stream_tool_calls = true` causes problems for such a model, opt that model out with `stream_tool_calls = false` in its `[model.<id>]` block.
+
+### Request Query Parameters
+
+Some gateways route or version on the query string. `query_params` appends percent-encoded query parameters to every request Grok makes for a model. For example, a gateway that selects an API version this way:
+
+```toml
+[model.my-gateway]
+model = "my-model"
+base_url = "https://gateway.example/v1"
+api_backend = "responses"
+env_key = "GATEWAY_API_KEY"
+query_params = { api-version = "2026-07-22" }
+```
+
+A key that also appears in the `base_url` query string is overridden (last value wins) rather than duplicated. Query parameters are saved in the session, so do not put secrets in them: use `env_http_headers` for a secret.
+
+### Environment-Variable Headers
+
+`env_http_headers` maps a request header to the name of an environment variable that supplies its value, so a per-request secret never has to be written into `config.toml`:
+
+```toml
+[model.gateway]
+model = "my-model"
+base_url = "https://gateway.example/v1"
+env_http_headers = { "X-Tenant-Token" = "GATEWAY_TENANT_TOKEN" }
+```
+
+Grok reads each variable when it builds the client for a session and places the value in the request headers only, never on disk. A header is skipped when its variable is unset or blank, and a resolved value overrides an `extra_headers` entry of the same name. Use `extra_headers` for a static value and `env_http_headers` for one that comes from the environment.
+
+Both fields also work on a shared `[model_providers.<id>]` block. A model that points at a provider with `model_provider = "<id>"` inherits the provider's `query_params` and `env_http_headers` when it sets none of its own, matching how `extra_headers` is inherited.
 
 ---
 
@@ -283,13 +315,13 @@ The `web_search` tool uses a separate model. Configure it with:
 
 ```toml
 [models]
-web_search = "grok-4.20-multi-agent"
+web_search = "grok-4.5"
 ```
 
 Or via environment variable:
 
 ```bash
-export GROK_WEB_SEARCH_MODEL="grok-4.20-multi-agent"
+export GROK_WEB_SEARCH_MODEL="grok-4.5"
 ```
 
 If you point web search at a custom model, you also need a `[model.*]` entry so Grok can reach it. Server-side ("backend") web search runs only when the model sets `supports_backend_search = true` (and the build enables backend search); it does not depend on `api_backend`:

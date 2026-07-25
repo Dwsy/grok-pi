@@ -58,6 +58,7 @@ pub struct ImageGenClient {
     /// [`XAI_IMAGINE_MODEL`]). `image_edit` uses its own model and is
     /// unaffected.
     model: String,
+    edit_model: String,
     writer: super::storage::SessionFileWriter,
     api_key_provider: Option<SharedApiKeyProvider>,
     /// Optional 401-attribution hook. Hosts wire this so a 401 from the
@@ -81,6 +82,7 @@ impl ImageGenClient {
             base_url,
             extra_headers,
             model_override,
+            edit_model_override,
             tier_restricted,
             ..
         } = config
@@ -93,6 +95,10 @@ impl ImageGenClient {
             .clone()
             .filter(|m| !m.trim().is_empty())
             .unwrap_or_else(|| XAI_IMAGINE_MODEL.to_owned());
+        let edit_model = edit_model_override
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| super::image_edit::XAI_IMAGINE_EDIT_MODEL.to_owned());
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -138,6 +144,7 @@ impl ImageGenClient {
             http,
             base_url: base_url.clone(),
             model,
+            edit_model,
             writer: super::storage::SessionFileWriter::new(DEFAULT_IMAGE_DIR, "jpg"),
             api_key_provider,
             attribution_callback: None,
@@ -181,6 +188,10 @@ impl ImageGenClient {
 
     pub(crate) fn writer(&self) -> &super::storage::SessionFileWriter {
         &self.writer
+    }
+
+    pub(crate) fn edit_model(&self) -> &str {
+        &self.edit_model
     }
 
     pub async fn generate(
@@ -277,6 +288,7 @@ pub enum ImageGenConfig {
         /// ([`XAI_IMAGINE_MODEL`]). Driven by the remote
         /// `image_gen_model_override` config flag. `image_edit` is unaffected.
         model_override: Option<String>,
+        edit_model_override: Option<String>,
         /// `true` when the user is on a tier the Imagine server zero-limits
         /// (free / X Basic). The tools stay advertised to the model, but
         /// `image_gen` / `image_edit` short-circuit at call time with the
@@ -287,10 +299,24 @@ pub enum ImageGenConfig {
     },
 }
 
+/// Session-id header attached to imagine API requests; matches the header
+/// chat requests already carry.
+pub const SESSION_ID_HEADER: &str = "x-grok-session-id";
+
 impl ImageGenConfig {
     /// Credentials present — required to construct any of the clients.
     pub fn has_credentials(&self) -> bool {
         matches!(self, Self::Enabled { .. })
+    }
+
+    /// Stamp [`SESSION_ID_HEADER`] onto `extra_headers`. A caller-provided
+    /// value is never overwritten. No-op when `Disabled`.
+    pub fn stamp_session_id_header(&mut self, session_id: &str) {
+        if let Self::Enabled { extra_headers, .. } = self {
+            extra_headers
+                .entry(SESSION_ID_HEADER.to_string())
+                .or_insert_with(|| session_id.to_string());
+        }
     }
 
     pub fn image_gen_enabled(&self) -> bool {
@@ -483,6 +509,7 @@ mod tests {
             image_gen_enabled: false,
             image_edit_enabled: true,
             model_override: Some("grok-imagine-image".into()),
+            edit_model_override: None,
             tier_restricted: false,
         };
         assert!(cfg.has_credentials());
@@ -494,6 +521,44 @@ mod tests {
     }
 
     #[test]
+    fn stamp_session_id_header_sets_and_preserves() {
+        let mk = |headers: indexmap::IndexMap<String, String>| ImageGenConfig::Enabled {
+            api_key: "k".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: headers,
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            edit_model_override: None,
+            tier_restricted: false,
+        };
+        let hdrs = |cfg: &ImageGenConfig| match cfg {
+            ImageGenConfig::Enabled { extra_headers, .. } => extra_headers.clone(),
+            _ => unreachable!(),
+        };
+
+        let mut cfg = mk(indexmap::IndexMap::new());
+        cfg.stamp_session_id_header("sess-123");
+        assert_eq!(
+            hdrs(&cfg).get(SESSION_ID_HEADER).map(String::as_str),
+            Some("sess-123")
+        );
+
+        let mut preset = indexmap::IndexMap::new();
+        preset.insert(SESSION_ID_HEADER.to_string(), "caller-set".to_string());
+        let mut cfg = mk(preset);
+        cfg.stamp_session_id_header("sess-123");
+        assert_eq!(
+            hdrs(&cfg).get(SESSION_ID_HEADER).map(String::as_str),
+            Some("caller-set")
+        );
+
+        let mut disabled = ImageGenConfig::Disabled;
+        disabled.stamp_session_id_header("sess-123");
+        assert!(!disabled.has_credentials());
+    }
+
+    #[test]
     fn client_selects_model_from_override() {
         let mk = |model_override: Option<&str>| ImageGenConfig::Enabled {
             api_key: "k".into(),
@@ -502,6 +567,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: model_override.map(String::from),
+            edit_model_override: None,
             tier_restricted: false,
         };
         // No override → default quality model.
@@ -521,6 +587,33 @@ mod tests {
                 .model,
             "grok-imagine-image"
         );
+    }
+
+    #[test]
+    fn client_selects_edit_model_from_override() {
+        let mk = |edit_model_override: Option<&str>| ImageGenConfig::Enabled {
+            api_key: "k".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: indexmap::IndexMap::new(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            edit_model_override: edit_model_override.map(String::from),
+            tier_restricted: false,
+        };
+        assert_eq!(
+            ImageGenClient::new(&mk(None), None).unwrap().edit_model(),
+            super::super::image_edit::XAI_IMAGINE_EDIT_MODEL
+        );
+        assert_eq!(
+            ImageGenClient::new(&mk(Some("  ")), None)
+                .unwrap()
+                .edit_model(),
+            super::super::image_edit::XAI_IMAGINE_EDIT_MODEL
+        );
+        let client = ImageGenClient::new(&mk(Some("grok-imagine-image-v2")), None).unwrap();
+        assert_eq!(client.edit_model(), "grok-imagine-image-v2");
+        assert_eq!(client.model, XAI_IMAGINE_MODEL);
     }
 
     #[tokio::test]
@@ -558,6 +651,7 @@ mod tests {
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
+            edit_model_override: None,
             tier_restricted: true,
         };
         let mut resources = crate::types::resources::Resources::new();

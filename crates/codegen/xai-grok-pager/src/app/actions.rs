@@ -631,6 +631,10 @@ pub enum Action {
     SetHunkTrackerMode(String),
     /// Set default screen mode (`fullscreen` | `minimal`); restart-required.
     SetScreenMode(String),
+    /// Enable/disable the Ctrl+Space / F8 voice-dictation shortcut. SHELL-owned;
+    /// persisted to `[ui].voice_keybind_enabled`. Takes effect on the next
+    /// keypress; `/voice` is unaffected.
+    SetVoiceKeybindEnabled(bool),
     /// Set the voice capture mode (`toggle` | `hold`). SHELL-owned; persisted to
     /// `[ui].voice_capture_mode`. Takes effect for the next Ctrl+Space press.
     SetVoiceCaptureMode(String),
@@ -792,6 +796,9 @@ pub enum Action {
     OpenPiShortcutManager,
     /// Open the in-TUI How-to Guides doc picker (`/docs`, palette "How-to Guides").
     OpenHowtoGuides,
+    /// Open the onboarding tutorial overlay (`/tutorial` or the command
+    /// palette).
+    OpenTutorial,
     /// Open the reset-settings confirmation dialog for a specific key.
     /// Moves the Settings modal state into `ResetSettingsConfirm` so
     /// the underlying modal survives the confirm dialog.
@@ -1903,6 +1910,16 @@ pub enum Effect {
         /// See [`Effect::SendPrompt::prompt_id`].
         prompt_id: String,
     },
+    /// Cancel-and-send: `session/prompt` stamped with `_meta.sendNow`, so the
+    /// shell cancels the running turn and runs this prompt next. Carries
+    /// structured blocks so pasted images ride along.
+    SendPromptNow {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        blocks: Vec<acp::ContentBlock>,
+        /// See [`Effect::SendPrompt::prompt_id`].
+        prompt_id: String,
+    },
     /// Toggle plan mode — fire-and-forget signal to the shell.
     TogglePlanMode { session_id: acp::SessionId },
     /// Remove a server-owned queued prompt: fire-and-forget
@@ -2738,6 +2755,15 @@ pub enum TaskResult {
         /// constructions that don't need gating.
         prompt_id: Option<String>,
     },
+    /// A send-now `session/prompt` RPC failed before the shell accepted it.
+    /// Carries the consumed payload so dispatch can requeue it locally.
+    SendPromptNowFailed {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        prompt_id: String,
+        error: String,
+        blocks: Vec<acp::ContentBlock>,
+    },
     /// Cancel notification was sent (fire-and-forget).
     /// The real turn end comes via PromptResponse.
     CancelComplete,
@@ -3256,7 +3282,6 @@ pub enum TaskResult {
     },
     DoctorFixApplied {
         target: DoctorFixTarget,
-        shell: crate::diagnostics::ShellKind,
         result: Result<crate::diagnostics::FixOutcome, String>,
     },
 }

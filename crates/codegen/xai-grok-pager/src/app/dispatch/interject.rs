@@ -2,6 +2,7 @@
 //! `x.ai/interject` effect, and prompt-history recording. Split out of
 //! `dispatch.rs` verbatim (pure code motion).
 
+use super::voice::voice_stop_on_submit;
 use crate::app::actions::Effect;
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView};
@@ -23,6 +24,8 @@ pub(super) fn dispatch_interject(
     text: String,
     images: Vec<crate::prompt_images::PastedImage>,
 ) -> Vec<Effect> {
+    // Hard-reset only — `text` may not be from the composer.
+    let _ = voice_stop_on_submit(app);
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -99,6 +102,91 @@ pub(super) fn dispatch_interject(
         text,
         interjection_id,
         blocks,
+    }]
+}
+
+/// Cancel-and-send: send `text` (+ images) as a fresh `sendNow` prompt so the
+/// shell cancels the running turn and runs it next. The user block paints at
+/// dispatch (the arm hides the queue echo; the adoption reuses the block).
+pub(super) fn dispatch_send_prompt_now(
+    app: &mut AppView,
+    text: String,
+    images: Vec<crate::prompt_images::PastedImage>,
+) -> Vec<Effect> {
+    // Hard-reset only — `text` may be a queue row, not the composer.
+    let _ = voice_stop_on_submit(app);
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let reconnect_pending = app.reconnect_pending;
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+
+    // Mid-outage guard (mirrors the plain prompt path): the producers already
+    // consumed the payload (composer text / queue row), so requeue it locally
+    // instead of firing into a dead channel and losing the message.
+    if reconnect_pending {
+        let queue_id = agent.session.next_queue_id;
+        agent.session.next_queue_id += 1;
+        agent
+            .session
+            .pending_prompts
+            .push_front(crate::app::agent::QueuedPrompt {
+                images,
+                ..crate::app::agent::QueuedPrompt::plain(
+                    queue_id,
+                    &text,
+                    crate::app::agent::QueueEntryKind::Prompt,
+                )
+            });
+        agent.show_toast("Reconnecting, please wait...");
+        return vec![];
+    }
+
+    // Submitting retires any edit-contextual ephemeral tip.
+    agent.ephemeral_tip.clear_on_submit();
+
+    let Some(session_id) = agent.session.session_id.clone() else {
+        agent.show_toast("No active session");
+        return vec![];
+    };
+
+    record_interject_prompt_history(agent, &text);
+
+    let prompt_id = uuid::Uuid::new_v4().to_string();
+    // Self-originated: the ACP gate must treat this prompt's deltas as ours.
+    agent.note_self_originated_prompt(&prompt_id);
+    // Expect the shell's send-now cancel so the turn-end rails suppress its
+    // marker — only when the shell will actually cancel (goal turns promote
+    // without cancelling; a stale arm would mute a later real cancel marker).
+    if agent.expects_send_now_cancel() {
+        agent.arm_send_now_expectation(prompt_id.clone());
+        // The arm hides the queue echo pushed below — paint the block now.
+        super::queue::push_send_now_user_block(agent, &prompt_id, "prompt", &text, false);
+    }
+    agent.suppress_parked_marker_on_interject();
+
+    let blocks = crate::prompt_images::build_content_blocks_with_workspace(
+        text.clone(),
+        images,
+        Some(std::path::Path::new(&agent.session.cwd)),
+    );
+
+    // Optimistic queue-pane echo, reconciled by the shell's queue broadcast.
+    let sid_str = session_id.0.to_string();
+    super::queue::push_server_queue_echo(app, id, &sid_str, &prompt_id, &text, "prompt");
+    crate::unified_log::info(
+        "prompt.send_now",
+        Some(&sid_str),
+        Some(serde_json::json!({ "len": text.len(), "prompt_id": prompt_id })),
+    );
+
+    vec![Effect::SendPromptNow {
+        agent_id: id,
+        session_id,
+        blocks,
+        prompt_id,
     }]
 }
 

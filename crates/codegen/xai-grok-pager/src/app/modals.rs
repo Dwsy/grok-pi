@@ -714,6 +714,7 @@ impl AgentView {
             filter_label: None,
             filter_key_hint: None,
             filter_active: false,
+            header_note: None,
             action_keys: &[],
             disable_search: false,
             compact_bottom_bar: false,
@@ -951,6 +952,7 @@ impl AgentView {
                     filter_label: None,
                     filter_key_hint: None,
                     filter_active: false,
+                    header_note: None,
                     action_keys: &[],
                     disable_search: false,
                     compact_bottom_bar: false,
@@ -1224,8 +1226,8 @@ impl AgentView {
                     _ => false,
                 };
 
-                // Chat-mode picker lists conversations only: the Local/Remote
-                // source filter and local-disk delete are dead weight there.
+                // Chat-mode picker lists conversations only: the source
+                // filter and local-disk delete are dead weight there.
                 let chat_mode = self.app_chat_mode;
                 let external_picker =
                     *source_filter == crate::views::session_picker::SourceFilter::External;
@@ -1249,6 +1251,7 @@ impl AgentView {
                     filter_label: (!chat_mode && !external_picker).then(|| source_filter.label()),
                     filter_key_hint: (!chat_mode && !external_picker).then_some("f"),
                     filter_active: !chat_mode && !external_picker && source_filter.is_active(),
+                    header_note: None,
                     action_keys: if external_picker {
                         &[('s', "sort")]
                     } else if chat_mode || focused_is_foreign {
@@ -1781,6 +1784,7 @@ impl AgentView {
             filter_label: None,
             filter_key_hint: None,
             filter_active: false,
+            header_note: None,
             action_keys: &[],
             disable_search: false,
             compact_bottom_bar: false,
@@ -1895,6 +1899,7 @@ impl AgentView {
                 filter_label: None,
                 filter_key_hint: None,
                 filter_active: false,
+                header_note: None,
                 action_keys: &[],
                 disable_search: false,
                 compact_bottom_bar: false,
@@ -3236,9 +3241,33 @@ impl AgentView {
                         }
 
                         // Split content into list (top ~75%) + preview (bottom ~25%).
-                        let total_list_height = content_area
+                        let hidden_hint = if chat_mode {
+                            None
+                        } else {
+                            crate::views::session_picker::hidden_external_hint(
+                                entries.as_deref(),
+                                *source_filter,
+                            )
+                        };
+                        let mut entries_start_y = entries_start_y;
+                        let mut total_list_height = content_area
                             .height
                             .saturating_sub(entries_start_y.saturating_sub(content_area.y));
+                        if let Some(hint) = hidden_hint.as_deref()
+                            && total_list_height > 0
+                        {
+                            buf.set_stringn(
+                                content_area.x + 1,
+                                entries_start_y,
+                                hint,
+                                content_area.width.saturating_sub(1) as usize,
+                                ratatui::style::Style::default()
+                                    .fg(theme.gray_dim)
+                                    .bg(theme.bg_base),
+                            );
+                            entries_start_y += 1;
+                            total_list_height -= 1;
+                        }
                         let preview_height = if total_list_height >= 8 {
                             (total_list_height / 4).max(3).min(12)
                         } else {
@@ -3288,7 +3317,13 @@ impl AgentView {
                             &non_sel_flags,
                             &[],
                             Some(theme.bg_base),
-                            entries.is_none() && (*loading || lanes.foreign_loading),
+                            crate::views::session_picker::loading_spinner_active(
+                                entries.as_deref(),
+                                *source_filter,
+                                *loading,
+                                lanes,
+                            ),
+                            self.scrollback.tick_count(),
                             mca.inner_x + mca.inner_width - 1,
                         );
                         // Render bottom preview pane for the selected session.
@@ -4919,7 +4954,7 @@ mod session_picker_delete_tests {
         };
         assert_eq!(
             filter,
-            crate::views::session_picker::SourceFilter::All,
+            crate::views::session_picker::SourceFilter::Grok,
             "f must not cycle the hidden source filter under chat mode"
         );
     }
@@ -4948,6 +4983,11 @@ mod session_picker_delete_tests {
         let mut foreign = entry("codex-session");
         foreign.source = "codex".into();
         open_picker(&mut agent, vec![foreign]);
+        // Pin All: the refusals only fire when the foreign row is focusable.
+        if let Some(ActiveModal::SessionPicker { source_filter, .. }) = agent.active_modal.as_mut()
+        {
+            *source_filter = crate::views::session_picker::SourceFilter::All;
+        }
 
         let delete = agent.handle_palette_or_arg_input(&key('d'));
         assert!(matches!(delete, InputOutcome::Changed));

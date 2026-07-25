@@ -9,7 +9,9 @@ pub(super) fn turn_result_to_hook_outcome(
 ) -> xai_tool_protocol::turn_hook::TurnHookOutcome {
     use xai_tool_protocol::turn_hook::TurnHookOutcome;
     match result {
-        Ok(TurnOutcome::Completed { .. }) => TurnHookOutcome::Completed,
+        Ok(TurnOutcome::Completed { .. }) | Ok(TurnOutcome::StationarityEnded { .. }) => {
+            TurnHookOutcome::Completed
+        }
         Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. }) => {
             TurnHookOutcome::Cancelled
         }
@@ -376,6 +378,7 @@ mod notification_hook_filter_tests {
                 block_waited: false,
                 explicitly_killed: false,
                 owner_session_id: None,
+                description: None,
             },
             will_wake: false,
         };

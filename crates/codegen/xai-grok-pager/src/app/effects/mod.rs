@@ -7,6 +7,7 @@
 //! back through dispatch.
 mod helpers;
 use super::actions;
+use super::session_title_resolve::worktree_resume_failure_message;
 #[allow(unused_imports)]
 use super::{agent, dispatch};
 pub use helpers::ConversationsPartial;
@@ -40,6 +41,7 @@ pub(crate) fn execute(
     progress_tx: &tokio::sync::mpsc::UnboundedSender<RestoreProgressMsg>,
 ) -> (bool, EffectMeta) {
     let mut meta = EffectMeta::default();
+    let effect_is_send_now = matches!(effect, Effect::SendPromptNow { .. });
     match effect {
         Effect::RemoteTuiInput { id, data } => {
             let tx = acp_tx.clone();
@@ -295,6 +297,7 @@ pub(crate) fn execute(
                     .insert("sessionId".into(), serde_json::json!(sid));
             }
             let restore_code = session_flags.restore_code;
+            let resume_local_miss = session_flags.resume_local_miss.clone();
             tracing::info!(
                 ?restore_code,
                 ?load_session_id,
@@ -304,6 +307,9 @@ pub(crate) fn execute(
             tasks
                 .spawn(async move {
                     if let Some(sid) = load_session_id {
+                        let local_miss = resume_local_miss
+                            .as_deref()
+                            .filter(|t| *t == sid);
                         let resume_started = std::time::Instant::now();
                         let wt_type = xai_grok_shell::util::config::worktree_type();
                         let copy_mode = if git_ref.is_some() {
@@ -347,10 +353,9 @@ pub(crate) fn execute(
                             );
                                 return TaskResult::WorktreeSessionFailed {
                                     agent_id,
-                                    error: sanitize_user_error(
-                                        &format!(
-                                    "couldn't resume worktree session: {e}"
-                                ),
+                                    error: worktree_resume_failure_message(
+                                        local_miss,
+                                        &sanitize_user_error(&e.to_string()),
                                     ),
                                 };
                             }
@@ -362,10 +367,9 @@ pub(crate) fn execute(
                             Err(e) => {
                                 return TaskResult::WorktreeSessionFailed {
                                     agent_id,
-                                    error: sanitize_user_error(
-                                        &format!(
-                                    "couldn't resume worktree session: {e}"
-                                ),
+                                    error: worktree_resume_failure_message(
+                                        local_miss,
+                                        &sanitize_user_error(&e.to_string()),
                                     ),
                                 };
                             }
@@ -380,10 +384,9 @@ pub(crate) fn execute(
                                 .unwrap_or_else(|| err.to_string());
                             return TaskResult::WorktreeSessionFailed {
                                 agent_id,
-                                error: sanitize_user_error(
-                                    &format!(
-                                "couldn't resume worktree session: {msg}"
-                            ),
+                                error: worktree_resume_failure_message(
+                                    local_miss,
+                                    &sanitize_user_error(&msg),
                                 ),
                             };
                         }
@@ -1648,7 +1651,9 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::SendPromptBlocks { agent_id, session_id, blocks, prompt_id } => {
+        Effect::SendPromptBlocks { agent_id, session_id, blocks, prompt_id }
+        | Effect::SendPromptNow { agent_id, session_id, blocks, prompt_id } => {
+            let send_now = effect_is_send_now;
             let tx = acp_tx.clone();
             let screen_mode = session_flags.screen_mode_label;
             let is_api_key_auth = session_flags.is_api_key_auth;
@@ -1659,14 +1664,18 @@ pub(crate) fn execute(
                         Some(&session_id.0),
                         Some(
                             serde_json::json!({
-                        "kind": "blocks",
+                        "kind": if send_now { "send_now" } else { "blocks" },
                         "block_count": blocks.len(),
                         "prompt_id": prompt_id,
                     }),
                         ),
                     );
                     let send_start = std::time::Instant::now();
-                    let meta = prompt_request_meta(&prompt_id, screen_mode);
+                    let mut meta = prompt_request_meta(&prompt_id, screen_mode);
+                    if send_now && let Some(map) = meta.as_object_mut() {
+                        map.insert("sendNow".into(), serde_json::Value::Bool(true));
+                    }
+                    let requeue_blocks = send_now.then(|| blocks.clone());
                     let req = acp::PromptRequest::new(session_id.clone(), blocks)
                         .meta(meta.as_object().cloned());
                     let result = acp_send(req, &tx).await;
@@ -1676,7 +1685,7 @@ pub(crate) fn execute(
                         Some(&session_id.0),
                         Some(
                             serde_json::json!({
-                        "kind": "blocks",
+                        "kind": if send_now { "send_now" } else { "blocks" },
                         "elapsed_ms": send_elapsed_ms,
                         "ok": result.is_ok(),
                         "prompt_id": prompt_id,
@@ -1684,14 +1693,22 @@ pub(crate) fn execute(
                         ),
                     );
                     log_prompt_result(&session_id, &result);
+                    if let (Some(blocks), Err(e)) = (requeue_blocks, &result) {
+                        return TaskResult::SendPromptNowFailed {
+                            agent_id,
+                            session_id,
+                            prompt_id,
+                            error: format_acp_error(e, is_api_key_auth),
+                            blocks,
+                        };
+                    }
                     let http_status = result
                         .as_ref()
                         .err()
                         .and_then(http_status_from_error);
                     TaskResult::PromptResponse {
                         agent_id,
-                        result: result
-                            .map_err(|e| format_acp_error(&e, is_api_key_auth)),
+                        result: result.map_err(|e| format_acp_error(&e, is_api_key_auth)),
                         http_status,
                         prompt_id: Some(prompt_id),
                     }
@@ -2407,7 +2424,6 @@ pub(crate) fn execute(
         Effect::ApplyDoctorFix { target, plan } => {
             tasks
                 .spawn(async move {
-                    let shell = plan.shell;
                     let result = tokio::task::spawn_blocking(move || crate::diagnostics::apply_fix(
                             *plan,
                         ))
@@ -2416,7 +2432,6 @@ pub(crate) fn execute(
                         .and_then(|result| result.map_err(|error| error.to_string()));
                     TaskResult::DoctorFixApplied {
                         target,
-                        shell,
                         result,
                     }
                 });

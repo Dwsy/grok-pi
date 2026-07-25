@@ -48,14 +48,17 @@ fn handle_cancel(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
 }
 
 async fn handle_get_bearer_token(agent: &MvpAgent) -> ExtResult {
+    // Fail closed for session tokens: desktop resume treats non-null as success.
+    // Never return a hard-expired AT. Still surface wire-valid session ATs and
+    // static/BYOK keys (process model key / env / disk api_key) so non-session
+    // sessions keep working when AuthManager has no OIDC entry.
     let token = match agent.auth_manager.get_valid_token().await {
         Ok(token) => Some(token),
         Err(_) => agent
-            .sampling_config
-            .borrow()
-            .api_key
-            .clone()
-            .or_else(|| agent.auth_manager.current().map(|a| a.key)),
+            .auth_manager
+            .current_wire_valid()
+            .map(|a| a.key)
+            .or_else(|| agent.auth_manager.static_api_key_for_export()),
     };
     ExtMethodResult::success(serde_json::json!({ "token": token }))
         .to_ext_response()
@@ -209,7 +212,7 @@ fn handle_info(agent: &MvpAgent) -> ExtResult {
         .load()
         .as_ref()
         .map(|m| m.0.to_string());
-    let auth = agent.auth_manager.current();
+    let auth = agent.auth_manager.current_or_expired();
     let raw_asset_id = auth.as_ref().and_then(|a| a.profile_image_asset_id.clone());
 
     // Return a grok-asset:// URL that the Electron renderer resolves at

@@ -425,6 +425,7 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
                                 image_gen_enabled: true,
                                 image_edit_enabled: true,
                                 model_override: None,
+                                edit_model_override: None,
                                 tier_restricted: false,
                             },
                             VideoGenConfig::Enabled {
@@ -466,7 +467,8 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
             session_folder: Self::resolve_session_folder(session_id),
             session_env,
             notification_handle,
-            owner_session_id: None,
+            owner_session_id: Some(session_id.to_string()),
+            subagent: None,
             parent_scheduler_handle: None,
             skills: vec![],
             state_path: self.resolve_state_path(session_id),
@@ -538,7 +540,7 @@ fn build_web_fetch_config() -> xai_grok_tools::implementations::grok_build::web_
     WebFetchConfig::Enabled { params }
 }
 fn default_web_search_model() -> String {
-    std::env::var("GROK_WEB_SEARCH_MODEL").unwrap_or_else(|_| "grok-4.20-multi-agent".to_string())
+    std::env::var("GROK_WEB_SEARCH_MODEL").unwrap_or_else(|_| "grok-4.5".to_string())
 }
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
@@ -590,6 +592,7 @@ pub mod test_support {
                 session_env,
                 notification_handle: ToolNotificationHandle::noop(),
                 owner_session_id: None,
+                subagent: None,
                 parent_scheduler_handle: None,
                 skills: vec![],
                 state_path: session_root.join("tool_state.json"),

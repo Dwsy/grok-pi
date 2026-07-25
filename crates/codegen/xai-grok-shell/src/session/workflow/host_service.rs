@@ -5,6 +5,11 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use xai_grok_tools::implementations::grok_build::task::backend::{ChannelBackend, SubagentBackend};
+use xai_grok_tools::implementations::grok_build::task::types::{
+    ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
+    SubagentOwner, SubagentRequest, SubagentRuntimeOverrides,
+};
 use xai_workflow::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
 
 pub(crate) use super::backend::HostDrainOutcome;
@@ -19,8 +24,8 @@ pub(crate) const WORKFLOW_MAX_AGENT_RUNS: u32 =
     (xai_workflow::MAX_AGENT_BUDGET as u32) * (SCHEMA_CONTRACT_RETRIES + 1);
 pub(crate) const WORKFLOW_MAX_SCRIPT_TELEMETRY_EVENTS: u32 = 64;
 pub(crate) const WORKFLOW_MAX_SCRATCH_FILES: usize = 64;
-pub(crate) const WORKFLOW_MAX_SCRATCH_FILE_BYTES: usize = 1024 * 1024;
-pub(crate) const WORKFLOW_MAX_SCRATCH_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const WORKFLOW_MAX_SCRATCH_FILE_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const WORKFLOW_MAX_SCRATCH_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const WORKFLOW_MAX_AGENT_PROMPT_BYTES: usize = 1024 * 1024;
 const WORKFLOW_MAX_TEMPLATE_OUTPUT_BYTES: usize = 1024 * 1024;
 const WORKFLOW_MAX_PHASE_BYTES: usize = 256;
@@ -116,7 +121,7 @@ struct HostService {
 
 struct FinishOnce<'a> {
     host: &'a HostService,
-    agent_id: &'a str,
+    agent_id: String,
     finished: bool,
 }
 
@@ -128,11 +133,20 @@ impl FinishOnce<'_> {
         }
         self.host.params.tracker.lock().agent_finished(
             &self.host.params.run_id,
-            self.agent_id,
+            &self.agent_id,
             state,
             total_tokens,
             total_duration,
         );
+    }
+
+    fn rebind(&mut self, new_agent_id: &str) {
+        self.host.params.tracker.lock().rebind_agent_id(
+            &self.host.params.run_id,
+            &self.agent_id,
+            new_agent_id,
+        );
+        self.agent_id = new_agent_id.to_string();
     }
 }
 
@@ -387,7 +401,7 @@ impl HostService {
         );
         let mut row = FinishOnce {
             host: self,
-            agent_id: &id,
+            agent_id: id.clone(),
             finished: false,
         };
         let cancel_token = CancellationToken::new();
@@ -412,7 +426,9 @@ impl HostService {
             let child_id = if attempts == 1 {
                 id.clone()
             } else {
-                uuid::Uuid::now_v7().to_string()
+                let retry_id = uuid::Uuid::now_v7().to_string();
+                row.rebind(&retry_id);
+                retry_id
             };
             let spawn_req = WorkflowAgentSpawnRequest {
                 id: child_id.clone(),

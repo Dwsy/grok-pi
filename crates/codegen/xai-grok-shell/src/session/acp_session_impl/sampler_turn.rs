@@ -417,7 +417,7 @@ impl SessionActor {
         }
         impl xai_grok_sampler::BearerResolver for AuthManagerBearerResolver {
             fn current_bearer(&self) -> Option<String> {
-                self.0.current_or_expired().map(|a| a.key)
+                self.0.current_wire_valid().map(|a| a.key)
             }
         }
         let cfg = self
@@ -432,6 +432,8 @@ impl SessionActor {
                 top_p: None,
                 api_backend: Default::default(),
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
@@ -443,6 +445,16 @@ impl SessionActor {
             SessionTokenAuthGate::new(auth_method.as_deref(), model_facts.byok, &cfg.base_url);
         let use_bearer_resolver = gate.active();
         self.log_auth_gate_unknown("reconstruct_full_config", gate, &cfg.base_url);
+        if use_bearer_resolver && let Some(am) = self.auth_manager.as_ref() {
+            let _ = am.auth().await;
+        }
+        let api_key = if use_bearer_resolver {
+            self.auth_manager
+                .as_ref()
+                .and_then(|am| am.current_wire_valid().map(|a| a.key))
+        } else {
+            creds.api_key
+        };
         let auth_scheme = model_facts.auth_scheme;
         let mut extra_headers = cfg.extra_headers;
         crate::agent::config::inject_url_derived_headers(
@@ -475,7 +487,7 @@ impl SessionActor {
             }
         }
         SamplingConfig {
-            api_key: creds.api_key,
+            api_key,
             base_url: cfg.base_url,
             model: cfg.model,
             max_completion_tokens: cfg.max_completion_tokens,
@@ -484,6 +496,8 @@ impl SessionActor {
             api_backend: cfg.api_backend,
             auth_scheme,
             extra_headers,
+            query_params: cfg.query_params.clone(),
+            env_http_headers: cfg.env_http_headers.clone(),
             context_window: cfg.context_window.get(),
             client_version: creds.client_version,
             reasoning_effort: cfg.reasoning_effort,
@@ -1187,6 +1201,11 @@ impl SessionActor {
                     }
                     Err(e) => {
                         let hard_expired = !am.has_usable_token();
+                        if hard_expired && creds.api_key.is_some() {
+                            let mut cleared = creds;
+                            cleared.api_key = None;
+                            self.chat_state_handle.update_credentials(cleared);
+                        }
                         tracing::warn!(
                             error = %e,
                             hard_expired,

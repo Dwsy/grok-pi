@@ -803,7 +803,12 @@ pub(super) fn setting_row_visible(
     voice_mode: bool,
     external_agent: bool,
 ) -> bool {
-    if !voice_mode && matches!(meta.key, "voice_capture_mode" | "voice_stt_language") {
+    if !voice_mode
+        && matches!(
+            meta.key,
+            "voice_keybind_enabled" | "voice_capture_mode" | "voice_stt_language"
+        )
+    {
         return false;
     }
     if meta.key == "voice_capture_mode" && !kitty_releases {
@@ -921,6 +926,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "recap_mermaid" => Some(Action::SetRecapMermaid(new)),
         "progress_bar" => Some(Action::SetProgressBar(new)),
         "remote_tui_footer" => Some(Action::SetRemoteTuiFooter(new)),
+        "voice_keybind_enabled" => Some(Action::SetVoiceKeybindEnabled(new)),
         "remember_tool_approvals" => Some(Action::SetRememberToolApprovals(new)),
         "toolset.ask_user_question.timeout_enabled" => {
             Some(Action::SetAskUserQuestionTimeoutEnabled(new))

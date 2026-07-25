@@ -29,6 +29,7 @@ mod display_refresh_startup;
 mod effects;
 pub mod roster;
 pub mod session_startup;
+pub(crate) mod session_title_resolve;
 pub mod status_blocks;
 pub mod subagent;
 pub mod subscription;
@@ -196,7 +197,42 @@ pub(crate) static VOICE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(crate) fn voice_mode_enabled() -> bool {
     VOICE_MODE_ENABLED.load(Ordering::Acquire)
 }
-/// Resolve whether voice mode is enabled from layered sources.
+/// Test helper for the process-global voice gate.
+pub fn set_voice_mode_enabled_for_test(on: bool) {
+    VOICE_MODE_ENABLED.store(on, Ordering::Release);
+}
+/// Process-global gate for the Ctrl+Space / F8 voice chord, for key-routing
+/// and view code without an `AppView` (`resolve_action`, the cheatsheet).
+/// Default ON. Seeded at startup from `[ui].voice_keybind_enabled` and
+/// updated live by the settings setter; unlike [`VOICE_MODE_ENABLED`] it only
+/// silences the keybinding — `/voice` and the other voice surfaces stay up.
+pub(crate) static VOICE_KEYBIND_ENABLED: AtomicBool = AtomicBool::new(true);
+pub(crate) fn voice_keybind_enabled() -> bool {
+    VOICE_KEYBIND_ENABLED.load(Ordering::Acquire)
+}
+/// Test helper for the process-global voice-keybind gate.
+pub fn set_voice_keybind_enabled_for_test(on: bool) {
+    VOICE_KEYBIND_ENABLED.store(on, Ordering::Release);
+}
+/// `[features] voice_mode` from merged `requirements.toml`.
+pub(crate) fn voice_mode_requirement_pin() -> Option<bool> {
+    xai_grok_config::load_merged_requirements().and_then(|req| {
+        req.get("features")
+            .and_then(|f| f.get("voice_mode"))
+            .and_then(|v| v.as_bool())
+    })
+}
+/// `[features] voice_mode` from effective config (user + managed).
+pub(crate) fn voice_mode_config_value() -> Option<bool> {
+    xai_grok_shell::config::load_effective_config()
+        .ok()
+        .and_then(|cfg| {
+            cfg.get("features")
+                .and_then(|f| f.get("voice_mode"))
+                .and_then(|v| v.as_bool())
+        })
+}
+/// Resolve voice availability.
 ///
 /// Precedence: `env` override (`GROK_VOICE_MODE`) > `remote` (`voice_mode_enabled`)
 /// > default **on**. Remote `Some(false)` is a kill switch; `None` means GA
@@ -543,6 +579,7 @@ pub async fn run_external(config: ExternalRunConfig) -> anyhow::Result<()> {
             session_id,
             original_cwd: session_cwd.clone(),
             title: session_title.clone(),
+            deferred_local_miss: false,
         }
     } else {
         session_startup::MaterializedStartup::NewAuto

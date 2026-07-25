@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use xai_grok_tools::implementations::grok_build::task::types::{
     ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
     SubagentOwner, SubagentRequest, SubagentResult, SubagentRuntimeOverrides,
+    SubagentSpawnRequest,
 };
 use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
 use xai_workflow::HostError;
@@ -86,6 +87,7 @@ pub trait WorkflowAgentBackend: Send + Sync {
 /// Upstream Grok path: funnel through the existing subagent coordinator channel.
 pub struct GrokSubagentBackend {
     pub subagent_event_tx: mpsc::UnboundedSender<SubagentEvent>,
+    pub parent_session_id: String,
 }
 
 #[async_trait]
@@ -119,12 +121,14 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
             fork_context: request.fork_context,
             owner: SubagentOwner::workflow(&request.run_id),
             cancel_token: request.cancel_token,
-            result_tx,
         };
 
         if self
             .subagent_event_tx
-            .send(SubagentEvent::Spawn(Box::new(subagent_request)))
+            .send(SubagentEvent::Spawn(SubagentSpawnRequest {
+                request: Box::new(subagent_request),
+                result_tx,
+            }))
             .is_err()
         {
             return Err(HostError::Failed(
@@ -143,6 +147,7 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
         if self
             .subagent_event_tx
             .send(SubagentEvent::Cancel(SubagentCancelRequest {
+                parent_session_id: Some(self.parent_session_id.clone()),
                 target: SubagentCancelTarget::WorkflowRunId(run_id.to_owned()),
                 respond_to,
             }))
@@ -168,6 +173,7 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
         let (respond_to, _response) = oneshot::channel();
         self.subagent_event_tx
             .send(SubagentEvent::Cancel(SubagentCancelRequest {
+                parent_session_id: Some(self.parent_session_id.clone()),
                 target: SubagentCancelTarget::WorkflowRunId(run_id.to_owned()),
                 respond_to,
             }))

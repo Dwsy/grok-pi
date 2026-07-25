@@ -669,10 +669,7 @@ impl AgentView {
                 scratch,
                 None,
                 false,
-                0,
-                &[],
-                &std::collections::BTreeSet::new(),
-                None,
+                super::BannerSlotParams::none(),
                 bundle_state,
                 false,
                 &mut Vec::new(),
@@ -705,10 +702,7 @@ impl AgentView {
         scratch: &mut ScratchBuffer,
         pending_hint: Option<PendingHint>,
         overlay_focused: bool,
-        banner_height: u16,
-        banner_announcements: &[xai_grok_announcements::RemoteAnnouncement],
-        hidden_announcement_ids: &std::collections::BTreeSet<String>,
-        tip: Option<&str>,
+        banner: super::BannerSlotParams<'_>,
         bundle_state: &crate::app::bundle::BundleState,
         in_dashboard_overlay: bool,
         link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
@@ -724,11 +718,20 @@ impl AgentView {
             esc_owned_before_agent,
         } = app_params;
         self.in_dashboard_overlay = in_dashboard_overlay;
+        let super::BannerSlotParams {
+            height: banner_height,
+            announcements: banner_announcements,
+            hidden_ids: hidden_announcement_ids,
+            privacy_banner,
+            mouse_pos,
+            tip,
+        } = banner;
         self.session_banner_active = crate::views::announcements::first_session_announcement(
             banner_announcements,
             hidden_announcement_ids,
         )
         .is_some();
+        self.privacy_banner.active = privacy_banner;
         self.pinned_upgrade_cta_live =
             crate::views::announcements::promo_cta(banner_announcements, hidden_announcement_ids)
                 .is_some_and(|(owner, _, _)| !crate::views::announcements::is_dismissible(owner));
@@ -776,6 +779,7 @@ impl AgentView {
             self.hit_announcement_hide.clear();
             self.hit_announcement_cta.clear();
             self.hit_upgrade_cta.clear();
+            self.privacy_banner.clear_hits();
             return self.draw_subagent_fullscreen(
                 &child_sid.clone(),
                 area,
@@ -1164,6 +1168,7 @@ impl AgentView {
         let btw_height =
             crate::views::btw_overlay::btw_panel_height(self.btw_state.as_ref(), inner_width);
         let cta_height = match &self.plugin_cta.phase {
+            _ if privacy_banner => 0,
             CtaPhase::Hidden => 0,
             CtaPhase::Matched { .. } if self.prompt.text().trim().is_empty() => 0,
             _ => 1,
@@ -1997,6 +2002,7 @@ impl AgentView {
                 ));
                 self.hit_cancel_button.rect = None;
                 self.hit_bg_button.rect = None;
+                self.hit_watching_cue.rect = None;
             } else {
                 let has_running_execute = !self.is_subagent_view
                     && self
@@ -2015,36 +2021,42 @@ impl AgentView {
                 let turn_output = turn_status::render_turn_status(
                     buf,
                     turn_area,
-                    &self.session.state,
-                    &activity,
-                    self.turn_elapsed(),
-                    self.activity_started_at,
-                    tick,
-                    drain_blocked,
-                    Some(turn_status::MouseButtons {
-                        cancel_hovered: self.hit_cancel_button.hovered,
-                        bg_hovered: self.hit_bg_button.hovered,
-                    }),
-                    has_running_execute,
-                    self.context_state.as_ref().map(|c| c.used),
-                    self.mcp_init_progress.as_ref(),
-                    self.bash_turn,
-                    is_pending_user_input,
-                    goal_verifying,
-                    watchers,
-                    parked,
-                    false,
-                    held_queue,
-                    held_queue_top_sendable,
+                    turn_status::TurnStatusArgs {
+                        state: &self.session.state,
+                        activity: &activity,
+                        turn_elapsed: self.turn_elapsed(),
+                        activity_started_at: self.activity_started_at,
+                        tick,
+                        drain_blocked,
+                        buttons: Some(turn_status::MouseButtons {
+                            cancel_hovered: self.hit_cancel_button.hovered,
+                            bg_hovered: self.hit_bg_button.hovered,
+                            watching_hovered: self.hit_watching_cue.hovered,
+                        }),
+                        has_running_execute,
+                        total_tokens: self.context_state.as_ref().map(|c| c.used),
+                        mcp_init_progress: self.mcp_init_progress.as_ref(),
+                        is_bash_turn: self.bash_turn,
+                        is_pending_user_input,
+                        goal_verifying,
+                        watchers,
+                        parked,
+                        flat_background: false,
+                        held_queue,
+                        held_queue_top_sendable,
+                    },
                 );
                 self.hit_cancel_button
                     .set_unless_dropdown(turn_output.cancel_button, dropdown_open);
                 self.hit_bg_button
                     .set_unless_dropdown(turn_output.bg_button, dropdown_open);
+                self.hit_watching_cue
+                    .set_unless_dropdown(turn_output.watching_cue, dropdown_open);
             }
         } else {
             self.hit_cancel_button.clear();
             self.hit_bg_button.clear();
+            self.hit_watching_cue.clear();
             self.hit_plan_approval_status.clear();
         }
         for (index, line) in self.external_widgets_above_editor.iter().enumerate() {
@@ -2068,7 +2080,24 @@ impl AgentView {
             };
             crate::tips::render::render_ephemeral_tip(row, buf, &styled);
         }
-        if let Some((ref msg, remaining)) = self.mode_switch_banner {
+        let privacy_banner_owns_slot = privacy_banner && layout.banner.height >= 2;
+        if !privacy_banner_owns_slot {
+            self.privacy_banner.clear_hits();
+        }
+        if privacy_banner_owns_slot {
+            self.hit_announcement_hide.clear();
+            self.hit_announcement_cta.clear();
+            let rects = crate::views::privacy_banner::render(layout.banner, buf, &theme, mouse_pos);
+            self.privacy_banner
+                .hit_accept
+                .set_unless_dropdown(Some(rects.accept), dropdown_open);
+            self.privacy_banner
+                .hit_customize
+                .set_unless_dropdown(Some(rects.customize), dropdown_open);
+            self.privacy_banner
+                .hit_legal
+                .set_unless_dropdown(Some(rects.legal), dropdown_open);
+        } else if let Some((ref msg, remaining)) = self.mode_switch_banner {
             self.hit_announcement_hide.clear();
             self.hit_announcement_cta.clear();
             if layout.banner.height > 0 && layout.banner.width > 4 {
@@ -2763,7 +2792,6 @@ impl AgentView {
             };
             let voice_overlay = if voice_available && (voice_listening || voice_interim.is_some()) {
                 Some(crate::views::prompt_widget::VoicePromptOverlay {
-                    listening: voice_listening,
                     interim: voice_interim,
                     color: theme.accent_running,
                 })
@@ -4283,8 +4311,23 @@ impl AgentView {
             let mut view = self.workflows_view.clone();
             view.normalize(&runs);
             let tick = self.tasks.tick_count() as usize;
+            let live: crate::views::workflows::WorkflowAgentLiveMap = self
+                .subagent_sessions
+                .iter()
+                .filter(|(_, info)| info.workflow_run_id.is_some() && info.is_running())
+                .map(|(id, info)| {
+                    (
+                        id.clone(),
+                        crate::views::workflows::WorkflowAgentLiveStatus {
+                            activity: info.activity_label.clone(),
+                            tokens_used: info.tokens_used,
+                            elapsed_ms: Some(info.display_elapsed().as_millis() as u64),
+                        },
+                    )
+                })
+                .collect();
             let popup =
-                crate::views::workflows::render_workflows(buf, area, &runs, &mut view, tick);
+                crate::views::workflows::render_workflows(buf, area, &runs, &mut view, tick, &live);
             self.workflows_view = view;
             if let Some(popup) = popup {
                 self.frame_occluder_rects.push(popup);
@@ -4461,10 +4504,7 @@ mod voice_recording_overlay_tests {
             &mut scratch,
             None,
             false,
-            0,
-            &[],
-            &std::collections::BTreeSet::new(),
-            None,
+            crate::app::agent_view::BannerSlotParams::none(),
             &BundleState::default(),
             false,
             &mut Vec::new(),
@@ -4528,10 +4568,7 @@ mod overlay_post_flush_tests {
                 &mut scratch,
                 None,
                 false,
-                0,
-                &[],
-                &std::collections::BTreeSet::new(),
-                None,
+                crate::app::agent_view::BannerSlotParams::none(),
                 &BundleState::default(),
                 false,
                 &mut Vec::new(),
