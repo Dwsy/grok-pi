@@ -1,5 +1,7 @@
 # 队列取消对齐：Ctrl+C 必须清空排队消息（完整研究记录）
 
+> **历史方案提示（2026-07-25）：** 文中给系统 Pi 打 `clear_queue` 补丁的方案未作为最终实现采用。当前实现不改 Pi 源码，而是在 adapter 隔离队列中同步 clear，并以 fire-and-forget abort + idle probe 收敛；详见 `adapter/20260717-桥接-Pi-queue_update-到-原生队列面板.md`。
+
 ## 日期
 2026-07-21
 

@@ -227,15 +227,30 @@ def main() -> int:
     # Focused renderer manifest gives reviewers a compact list of the actual
     # TUI, input, slash, scrollback, minimal and Markdown files.
     renderer_manifest = json.loads(read(docs / "native_renderer_sha256.json"))
+    renderer_declared_seams = {
+        "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs",
+    }
     renderer_mismatches = [
         rel
         for rel, expected in renderer_manifest["files"].items()
-        if not (ws / rel).exists() or sha256(ws / rel) != expected
+        if rel not in renderer_declared_seams
+        and (not (ws / rel).exists() or sha256(ws / rel) != expected)
     ]
     check(
-        "native_renderer_input_markdown_hashes_match",
+        "message_animation_renderer_seams_are_declared",
+        renderer_declared_seams <= allowed_modified,
+        "three exact native message-animation renderer/state seams are declared"
+        if renderer_declared_seams <= allowed_modified
+        else f"missing message-animation seams: {sorted(renderer_declared_seams - allowed_modified)}",
+    )
+    unchanged_renderer_count = renderer_manifest["fileCount"] - len(renderer_declared_seams)
+    check(
+        "native_renderer_input_markdown_hashes_match_outside_declared_seams",
         not renderer_mismatches,
-        f"{renderer_manifest['fileCount']} native renderer/input/Markdown files match the uploaded Grok source"
+        f"{unchanged_renderer_count} native renderer/input/Markdown files match the uploaded Grok source; "
+        f"{len(renderer_declared_seams)} narrow semantic seams are declared separately"
         if not renderer_mismatches
         else f"renderer mismatches: {renderer_mismatches[:20]}",
     )
@@ -248,6 +263,7 @@ def main() -> int:
         "crates/codegen/xai-grok-pager-bin/Cargo.toml",
         "crates/codegen/xai-grok-pager/Cargo.toml",
         "crates/codegen/xai-grok-pager/src/acp/mod.rs",
+        "crates/codegen/xai-grok-pager/src/acp/tracker.rs",
         "crates/codegen/xai-grok-pager/src/app/actions.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/interactions.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs",
@@ -271,6 +287,8 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/views/settings_modal/input.rs",
         "crates/codegen/xai-grok-pager/src/views/settings_modal/tests.rs",
         "crates/codegen/xai-grok-pager/src/views/session_picker.rs",
+        "crates/codegen/xai-grok-pager/src/views/picker.rs",
+        "crates/codegen/xai-grok-pager/src/views/agent_status.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/settings/setters.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/settings/ui.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/task_result.rs",
@@ -287,6 +305,11 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/slash/command.rs",
         "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
         "crates/codegen/xai-grok-pager/src/slash/mod.rs",
+        # Native message chrome policy: user and agent message bodies may stream,
+        # but their left accent remains static and does not drive animation ticks.
+        "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs",
         # Narrow branding seam: process-wide logo override for external hosts
         # (e.g. grok-pi π art). Layout/shimmer still use the native renderer.
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs",
@@ -299,7 +322,7 @@ def main() -> int:
     check(
         "modified_surface_is_exact_and_semantic",
         allowed_modified == expected_modified,
-        f"exactly {len(expected_modified)} workspace/ACP/state/dispatch/slash/logo seams are declared; no second TUI or broad renderer rewrite"
+        f"exactly {len(expected_modified)} workspace/ACP/state/dispatch/slash/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
         if allowed_modified == expected_modified
         else f"declared seam mismatch: {sorted(allowed_modified ^ expected_modified)}",
     )

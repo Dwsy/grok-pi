@@ -3,7 +3,9 @@
 **Severity**: Critical (用户可复现的消息重复 bug)
 **Component**: `xai-grok-pager` / `pi-grok-adapter` / `xai-grok-shell` / `pi-main`
 **Labels**: `architecture`, `queue`, `steering`, `follow-up`, `duplicate-message`, `pi-plugin`
-**Status**: Research complete, ready for implementation
+**Status**: Historical / superseded — do not implement as written
+
+> **2026-07-25 implementation note:** This document preserves the original failure analysis, but the phase plan was not applied literally. The shipped design uses an adapter-owned isolated lane for client/extension messages plus a read-only mirrored Pi-external lane; QueueMirror remains the protocol boundary. Use `docs/issues/adapter/20260717-桥接-Pi-queue_update-到-原生队列面板.md` and live source as SSOT.
 
 ---
 

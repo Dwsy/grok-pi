@@ -997,6 +997,8 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
             _ => None,
         },
         "ctrl_o_tool_expansion" => Some(Action::SetCtrlOToolExpansion(choice.to_string())),
+        "pi_bash_run_display" => crate::appearance::ExecuteHeaderContent::from_canonical(choice)
+            .map(Action::SetPiBashRunDisplay),
         "hunk_tracker_mode" => Some(Action::SetHunkTrackerMode(choice.to_string())),
         "screen_mode" => Some(Action::SetScreenMode(choice.to_string())),
         "voice_capture_mode" => Some(Action::SetVoiceCaptureMode(choice.to_string())),

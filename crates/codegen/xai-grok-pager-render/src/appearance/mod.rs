@@ -15,6 +15,7 @@
 
 pub mod cache;
 mod config;
+pub mod execute_header_content;
 pub mod permission_cursor;
 pub mod render_mermaid;
 pub mod scroll_mode;
@@ -28,6 +29,7 @@ pub use config::{
     ScrollbarConfig, TodoBadgeFormat, TodoConfig, ToolBullet, ToolConfig,
     persist_respect_manual_folds,
 };
+pub use execute_header_content::ExecuteHeaderContent;
 pub use render_mermaid::RenderMermaid;
 pub use scroll_mode::ScrollMode;
 pub use text_selection::TextSelection;

@@ -246,6 +246,24 @@ const PLAN_MODE_CHOICES: &[EnumChoice] = &[
 // render hot path. Canonicals match `RenderMermaid::as_canonical`.
 // ---------------------------------------------------------------------------
 
+const PI_BASH_RUN_DISPLAY_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "command_only",
+        display: "Command only",
+        description: "Hide Task Name and show the syntax-highlighted command.",
+    },
+    EnumChoice {
+        canonical: "task_name",
+        display: "Task Name only",
+        description: "Show Task Name and hide the command (default).",
+    },
+    EnumChoice {
+        canonical: "task_name_and_command",
+        display: "Task Name + command",
+        description: "Show Task Name, then the syntax-highlighted command line.",
+    },
+];
+
 const RENDER_MERMAID_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "auto",
@@ -1095,6 +1113,26 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
             external_only: false,
+        },
+        // SHELL-owned: `[ui].pi_bash_run_display`; only grok-pi supplies
+        // `task_name`, and the Execute renderer reads the live cache.
+        SettingMeta {
+            key: "pi_bash_run_display",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Bash run display",
+            description: "Choose whether Bash/run cards show Task Name, command, or both.",
+            keywords: &[
+                "bash", "run", "command", "task", "name", "header", "batch", "pi",
+            ],
+            kind: SettingKind::Enum {
+                default: "task_name",
+                choices: PI_BASH_RUN_DISPLAY_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
         },
         // SHELL-owned: `[ui.display_refresh].auto_cadence_enabled`. Restart-
         // required (cadence pinned at startup); hidden in minimal.

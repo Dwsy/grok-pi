@@ -51,6 +51,7 @@ type OutputGuardModule = {
 };
 
 const PROCESS_MARK = "__piGrokGetCommandsStdoutWrap" as const;
+const QUEUE_STATUS_KEY = "__pi_grok_queue_enqueue__" as const;
 
 /** invocationName → empty-prefix completions (sync providers + settled async). */
 const completionCache = new Map<string, ArgCompletion[]>();
@@ -283,7 +284,25 @@ async function installGetCommandsStdoutIntercept(): Promise<void> {
   }
 }
 
-export default async function (_pi: ExtensionAPI): Promise<void> {
+export default async function (pi: ExtensionAPI): Promise<void> {
   await installRunnerHooks();
   await installGetCommandsStdoutIntercept();
+
+  // User extensions such as loop.ts call sendUserMessage(), which re-enters
+  // AgentSession.prompt with source="extension". Capture it before any later
+  // extension handler, hand it to the Rust adapter, and mark it handled so it
+  // does not enter Pi's private follow-up queue. The adapter owns ordering and
+  // only sends the message back through source="rpc" when it is promoted.
+  pi.on("input", (event, ctx) => {
+    if (event.source !== "extension") return;
+    ctx.ui.setStatus(
+      QUEUE_STATUS_KEY,
+      JSON.stringify({
+        text: event.text,
+        images: event.images ?? [],
+        streamingBehavior: event.streamingBehavior ?? "followUp",
+      }),
+    );
+    return { action: "handled" } as const;
+  });
 }

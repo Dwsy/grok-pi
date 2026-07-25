@@ -1,6 +1,8 @@
 # Queue Architecture Redesign — Handoff Prompt
 
-## 目标
+> **Superseded 2026-07-25. Do not continue this handoff.** Phase 2–4 were replaced by an adapter-owned isolated client/extension lane plus a read-only Pi-external mirror; QueueMirror was expanded rather than deleted. Continue from `docs/issues/adapter/20260717-桥接-Pi-queue_update-到-原生队列面板.md` and current source.
+
+## 原目标（已停止）
 
 继续完成 `docs/issues/queue-architecture-redesign.md` 中定义的 Phase 2-4。Phase 1（核心 bug 修复）已完成。
 

@@ -38,6 +38,9 @@ mod tests {
         assert!(source.contains("mode === \"rpc\" ? \"tui\" : mode"));
         assert!(source.contains("getArgumentCompletions"));
         assert!(source.contains("argumentCompletions"));
+        assert!(source.contains("__pi_grok_queue_enqueue__"));
+        assert!(source.contains("event.source !== \"extension\""));
+        assert!(source.contains("action: \"handled\""));
         assert!(source.contains("core/output-guard.js"));
         // Intercept via process.stdout.write + takeOverStdout — never reassign
         // frozen ESM export writeRawStdout (Node: Cannot redefine property).

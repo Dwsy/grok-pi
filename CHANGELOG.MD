@@ -4,6 +4,16 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.11] - 2026-07-25
+
+Range: `v0.0.10` → `v0.0.11` (2026-07-25).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Fixed
+
+- **Release completeness** — include the local Pager appearance, settings, router, and renderer sources required by the bash run-display integration so all release targets compile from the tagged checkout.
+
 ## [0.0.10] - 2026-07-25
 
 Range: `v0.0.9` → `v0.0.10` (2026-07-24 → 2026-07-25).

@@ -533,6 +533,48 @@ pub(in crate::app::dispatch) fn set_ctrl_o_tool_expansion(
     }]
 }
 
+pub(super) fn set_pi_bash_run_display_inner(
+    app: &mut AppView,
+    new: crate::appearance::ExecuteHeaderContent,
+) {
+    crate::appearance::cache::set_execute_header_content(new);
+    app.current_ui.pi_bash_run_display = Some(new.as_canonical().to_string());
+    for agent in app.agents.values_mut() {
+        agent.scrollback.invalidate_heights();
+        for child in agent.subagent_views.values_mut() {
+            child.scrollback.invalidate_heights();
+        }
+    }
+}
+
+/// Set the live grok-pi Bash/run header content and persist it to `[ui]`.
+pub(in crate::app::dispatch) fn set_pi_bash_run_display(
+    app: &mut AppView,
+    new: crate::appearance::ExecuteHeaderContent,
+) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_execute_header_content();
+    if prev == new {
+        return vec![];
+    }
+    set_pi_bash_run_display_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "pi_bash_run_display",
+        value = new.as_canonical(),
+        "setting changed",
+    );
+    app.show_toast(&format!(
+        "Bash run display: {}",
+        new.as_canonical().replace('_', " ")
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_bash_run_display",
+        value: crate::settings::SettingValue::Enum(new.as_canonical()),
+        rollback_value: crate::settings::SettingValue::Enum(prev.as_canonical()),
+    }]
+}
+
 pub(super) fn set_prompt_suggestions_inner(app: &mut AppView, new: bool) {
     crate::appearance::cache::set_prompt_suggestions(new);
     app.current_ui.prompt_suggestions = Some(new);

@@ -35,20 +35,20 @@
 | Pi 功能 | 状态 | 映射 |
 |---|---|---|
 | Prompt | 适配 | ACP prompt → Pi `prompt` |
-| Mid-turn send now | 适配 | Grok `sendNow` → Pi `steer`；队列行 send-now → `x.ai/queue/interject` → steer |
-| Follow-up queue | 适配 | 默认 active-turn prompt → Pi `followUp`（`sendNow`/`followUp:false` 才走 steer） |
-| Abort | 适配 | ACP cancel → `clear_queue`（清空 Pi steering/follow-up 队列，对齐 Pi TUI abort 前的 `clearAllQueues`）→ Pi `abort`；Bash 时用 `abort_bash`；settle 兜底在 Pi 空闲时清空 queue mirror 并完成 prompts |
+| Mid-turn send now | 适配 | 输入框 send-now → Pi `steer`。适配器隔离队列中的待执行行可按版本原子移除并提升为 `steer`，也支持编辑后立即发送；仅存在于 Pi 外部队列的行仍只读，因为 stock RPC 无法原子删除。 |
+| Follow-up queue | 适配 | turn 运行中来自客户端的 prompt，以及 extension 的 `sendUserMessage(..., { deliverAs: "followUp" })`，先进入 adapter 自有隔离队列，真正出队时才以 RPC source 发送给 Pi。绕过拦截的 Pi `queue_update` 消息进入独立外部镜像通道。 |
+| Abort | 适配+边界 | ACP cancel 同步清空 adapter 自有的客户端/扩展队列并完成等待者；取消屏障期间 extension 新产生的续跑消息会被丢弃，随后以 fire-and-forget 通知 Pi `abort`（Bash 用 `abort_bash`）。`get_state` settle 探针只在 Pi 真正空闲后恢复调度。stock Pi 外部队列仍受 0.81.1 无 `clear_queue` 的 RPC 边界限制。 |
 | Text stream | 适配 | `message_update` → AgentMessageChunk |
 | Thinking/reasoning stream | 适配 | `message_update` → AgentThoughtChunk |
 | Tool start/update/end | 适配 | ACP ToolCall/ToolCallUpdate |
 | Pi Bash 后台任务 / Send to Background | 原生+适配 | `grok-pi` 私有 Bash extension 持有前台与初始后台 Bash 子进程；前台仍复用 Pi `createBashToolDefinition` 的输出/渲染语义。Pager 原生 Send to Background 经 `x.ai/terminal/background` 以受控临时控制文件按 `toolCallId` 转交**同一**子进程，随后投影到既有 `x.ai/task_*` 卡片；原生任务卡 kill 经同一控制通道走 `x.ai/task/kill`（`op:kill` + 已发布 `runningTaskIds`）；`is_background` + `description`、`get_task_output` / `wait_tasks` / `kill_task` 保持可用。 |
 | Pi 子代理 | 原生+适配 |
 | Workflow（Rhai / `/workflow`） | 上游引擎 + Pi Spawn 接缝 | **会话宿主 + slash 表面：** 复用 `xai-workflow` + `ExternalWorkflowRuntime`；adapter `x.ai/workflow/{launch,pause,stop}` + `x.ai/workflows/list` + `workflow_updated`；注入 `/workflow`、`/workflows`、`/create-workflow`（及命名脚本）；隐藏 `__pi_workflow_*` 桥命令；Pager 本地处理 + F2 门控。deep-research 实机手测仍建议。`/create-workflow` 为 PassThrough 用户提示（非 Pi skill）。项目脚本目录默认 `<repo>/.grok-pi/workflows`。 | 内置 `pi-grok-subagents` extension 拥有 Pi child `AgentSession`；版本化 bridge 投影到原生 `SubagentBlock`、Tasks Pane、child `AgentView` 与 `x.ai/subagent/cancel`。模型驱动的手工端到端验收待执行。 |
-| Prompt completion | 适配 | 以 Pi `agent_settled` 为完成屏障，不错误使用 `agent_end` |
+| Prompt completion | 适配 | 正常完成仍以 Pi `agent_settled` 为屏障。adapter 提升的客户端行保留 ACP waiter；extension/Pi 所有的运行发送 `x.ai/session/prompt_complete`。若 prompt 被 input handler 吞掉、没有 `agent_start`/`agent_settled`，idle 探针会主动收敛，避免幽灵 “Waiting…”。 |
 | Retry | 适配 | Grok native sticky status/toast |
 | Compaction | 原生+适配 | `/compact [instructions]` → Pi `compact`；Pi `compaction_*` → 原生 CompactionStarted/Completed/Failed/Cancelled scrollback blocks + sticky status |
 | Session recap (`/recap` + auto away) | 适配 | initialize `meta.sessionRecap`；`x.ai/recap` → 注入 extension `__pi_grok_recap`（`complete` 侧调用，不写会话历史）→ custom `pi-grok-recap/v1` → `SessionRecap`。仅使用 F2 显式配置的 `recap_model`，不回退当前会话模型；auto：≥3 turn、最后完成 turn ≥3 分钟、终端失焦期间后台生成、成功后无新 turn 不重复；manual：有 user turn即可；可选 `/recap [focus]` / `/summarize [focus]` 将 `customInstructions` 注入 recap 提示词（追加，同 `/compact`）；输入限最近 6 turn/12k 字符；正文语言优先 macOS `AppleLanguages`，再回退 locale |
-| Queue pane / count | 适配 | Pi `queue_update` 全文数组 → `x.ai/queue/changed`（稳定 id + 出队）+ status；`/queue` 面板镜像 Pi steering/follow-up。Cancel 经 `clear_queue` RPC + 空快照广播清空。Pi RPC 无单项 remove/edit，对应操作 rebroadcast + toast。队列出队模式可经 `pi/queue/mode` ext_method 设置（`one-at-a-time` / `all`） |
+| Queue pane / count | 适配+边界 | adapter 自有的客户端/扩展待执行行支持真实 remove、clear、edit、reorder、interject；稳定 id/version 保持 Pager reconcile 与原始展示文本。绕过拦截的 Pi `queue_update` 仍进入只读外部通道；只有 follow-up 出队推进 `runningPromptId`，steering 保持当前 turn。队列出队模式仍可经 `pi/queue/mode` 设置（`one-at-a-time` / `all`）。 |
 | Context bar used tokens | 适配 | Pi `contextUsage` / message usage → ACP `_meta.totalTokens` → 右上角 bar |
 | Context click / `/context` | 原生+适配 | Grok `x.ai/session/info` → Pi stats + messages + `__pi_context_breakdown` + 可选 `cacheMetrics`（`get_entries`，对齐 pi-cache-graph）→ 原生 `ModalWindow`（`ContextInfoBlock` + `0/1/2/3/s` 视图、`e` 导出、`r` 刷新）；F2 `[ui].pi_cache_graph` 默认开；运行中即时刷新、不写 scrollback |
 

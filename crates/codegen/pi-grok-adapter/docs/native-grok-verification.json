@@ -35,15 +35,19 @@
     },
     "uploaded_grok_tree_is_byte_identical_outside_declared_seams": {
       "passed": false,
-      "detail": "missing=['crates/codegen/xai-grok-pager/src/views/settings_modal.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/endline_wake_markers_close_each_wakeup.rs', 'crates/codegen/xai-grok-shell/tests/signed_managed_config.rs', 'crates/codegen/xai-grok-shell/tests/signed_managed_config/common.rs', 'crates/codegen/xai-grok-shell/tests/signed_managed_config_extended.rs']; mismatched=['.gitignore', 'README.md', 'crates/build/xai-proto-build/src/find_protoc.rs', 'crates/build/xai-proto-build/src/lib.rs', 'crates/codegen/xai-crash-handler/src/handler.rs', 'crates/codegen/xai-crash-handler/src/lib.rs', 'crates/codegen/xai-fast-worktree/src/api.rs', 'crates/codegen/xai-fast-worktree/src/discovery.rs', 'crates/codegen/xai-grok-agent/Cargo.toml', 'crates/codegen/xai-grok-agent/src/plugins/git_install.rs']; unexpected additions=['.DS_Store', '.github/workflows/release.yml', '.gitmodules', 'AGENTS.md', 'CHANGELOG.MD', 'FEATURE_MATRIX.md', 'FEATURE_MATRIX.zh-CN.md', 'NATIVE_GROK_TUI_ALIGNMENT.md', 'NATIVE_GROK_TUI_ALIGNMENT.zh-CN.md', 'README.zh-CN.md']"
+      "detail": "missing=['crates/codegen/xai-grok-pager/src/diagnostics.rs', 'crates/codegen/xai-grok-pager/src/slash/commands/terminal_setup.rs', 'crates/codegen/xai-grok-pager/src/views/settings_modal.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/endline_wake_markers_close_each_wakeup.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/esc_mid_turn_from_prompt_is_swallowed_preserves_draft.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/esc_mid_turn_from_scrollback_is_swallowed.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_esc_mid_turn_is_swallowed.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_transcript_expands_collapsed_thinking.rs', 'crates/codegen/xai-grok-shell/skills/best-of-n/SKILL.md', 'crates/codegen/xai-grok-shell/skills/check-work/SKILL.md']; mismatched=['.gitignore', 'LICENSE', 'README.md', 'crates/build/xai-proto-build/src/find_protoc.rs', 'crates/build/xai-proto-build/src/lib.rs', 'crates/codegen/xai-chat-state/src/actor/mod.rs', 'crates/codegen/xai-chat-state/src/actor/mutations.rs', 'crates/codegen/xai-chat-state/src/actor/queries.rs', 'crates/codegen/xai-chat-state/src/actor/request_builder.rs', 'crates/codegen/xai-chat-state/src/actor/tests.rs']; unexpected additions=['.DS_Store', '.github/workflows/release.yml', '.github/workflows/website.yml', '.gitmodules', '.grok-pi/pi-resources.toml', '.pi/fabric.json', '.pi/fabric/mesh/state.json', '.pi/skills/upstream-changelog/SKILL.md', '.pi/skills/upstream-changelog/assets/entry-template.md', '.pi/skills/upstream-changelog/references/area-map.md']"
     },
-    "native_renderer_input_markdown_hashes_match": {
+    "message_animation_renderer_seams_are_declared": {
+      "passed": true,
+      "detail": "three exact native message-animation renderer/state seams are declared"
+    },
+    "native_renderer_input_markdown_hashes_match_outside_declared_seams": {
       "passed": false,
-      "detail": "renderer mismatches: ['crates/codegen/xai-grok-pager-minimal/Cargo.toml', 'crates/codegen/xai-grok-pager-minimal/src/auth.rs', 'crates/codegen/xai-grok-pager-minimal/src/commit.rs', 'crates/codegen/xai-grok-pager-minimal/src/lib.rs', 'crates/codegen/xai-grok-pager-minimal/src/live.rs', 'crates/codegen/xai-grok-pager-minimal/src/overlay.rs', 'crates/codegen/xai-grok-pager-minimal/src/panel.rs', 'crates/codegen/xai-grok-pager-minimal/src/welcome.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/input.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/interactions.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/links.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/media.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/modals.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/notices.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/prompt.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/queue.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/render.rs']"
+      "detail": "renderer mismatches: ['crates/codegen/xai-grok-markdown/src/colors.rs', 'crates/codegen/xai-grok-markdown/src/lib.rs', 'crates/codegen/xai-grok-pager-minimal/Cargo.toml', 'crates/codegen/xai-grok-pager-minimal/src/auth.rs', 'crates/codegen/xai-grok-pager-minimal/src/commit.rs', 'crates/codegen/xai-grok-pager-minimal/src/lib.rs', 'crates/codegen/xai-grok-pager-minimal/src/live.rs', 'crates/codegen/xai-grok-pager-minimal/src/overlay.rs', 'crates/codegen/xai-grok-pager-minimal/src/panel.rs', 'crates/codegen/xai-grok-pager-minimal/src/welcome.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/input.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/interactions.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/links.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/media.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/modals.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/notices.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/plan.rs']"
     },
     "modified_surface_is_exact_and_semantic": {
-      "passed": false,
-      "detail": "declared seam mismatch: ['crates/codegen/xai-grok-pager/src/views/agent_status.rs', 'crates/codegen/xai-grok-pager/src/views/picker.rs']"
+      "passed": true,
+      "detail": "exactly 54 workspace/ACP/state/dispatch/slash/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
     },
     "no_fallback_or_old_custom_tui": {
       "passed": true,
@@ -51,22 +55,32 @@
     },
     "slash_surface_uses_grok_native_commands_and_pi_catalog": {
       "passed": false,
-      "detail": "builtins=['exit', 'help', 'new', 'compact', 'model', 'effort', 'rename', 'resume', 'tree', 'notify', 'dashboard', 'recap', 'copy', 'find', 'transcript', 'export', 'expand', 'queue', 'multiline', 'compact-mode', 'vim-mode', 'theme', 'timestamps', 'timeline', 'toggle-mouse-reporting', 'voice', 'pi-config']; forbidden local commands=['voice']",
+      "detail": "builtins=['exit', 'help', 'hotkeys', 'new', 'compact', 'model', 'effort', 'rename', 'resume', 'session-info', 'tree', 'tree-map', 'fork', 'clone', 'reload', 'notify', 'dashboard', 'recap', 'btw', 'copy', 'find', 'jump', 'review-session', 'review-message', 'transcript', 'export', 'expand', 'queue', 'multiline', 'compact-mode', 'vim-mode', 'theme', 'timestamps', 'timeline', 'toggle-mouse-reporting', 'voice', 'doctor', 'pi-config', 'pi-shortcut-manager']; forbidden local commands=['fork', 'voice']",
       "evidence": [
         "exit",
         "help",
+        "hotkeys",
         "new",
         "compact",
         "model",
         "effort",
         "rename",
         "resume",
+        "session-info",
         "tree",
+        "tree-map",
+        "fork",
+        "clone",
+        "reload",
         "notify",
         "dashboard",
         "recap",
+        "btw",
         "copy",
         "find",
+        "jump",
+        "review-session",
+        "review-message",
         "transcript",
         "export",
         "expand",
@@ -79,7 +93,9 @@
         "timeline",
         "toggle-mouse-reporting",
         "voice",
-        "pi-config"
+        "doctor",
+        "pi-config",
+        "pi-shortcut-manager"
       ]
     },
     "pi_commands_are_dynamic_acp_commands": {

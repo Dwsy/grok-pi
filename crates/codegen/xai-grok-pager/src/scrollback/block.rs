@@ -929,6 +929,18 @@ impl RenderBlock {
         matches!(self, RenderBlock::AgentMessage(_))
     }
 
+    /// Whether a running entry should animate its left accent.
+    ///
+    /// User and agent message bodies stream/update through their own content
+    /// paths, but their chrome stays static. Activity blocks (thinking, tools,
+    /// tasks, workflows, and similar) retain the native running wave.
+    pub fn animates_running_accent(&self) -> bool {
+        !matches!(
+            self,
+            RenderBlock::UserPrompt(_) | RenderBlock::AgentMessage(_)
+        )
+    }
+
     /// Check if this block is a CreditLimit card.
     pub fn is_credit_limit(&self) -> bool {
         matches!(self, RenderBlock::CreditLimit(_))
@@ -1351,6 +1363,16 @@ mod tests {
         let output = block.output(&c);
         assert!(!output.lines.is_empty());
         assert!(block.has_raw_mode());
+    }
+
+    #[test]
+    fn message_blocks_do_not_animate_running_accent() {
+        assert!(!RenderBlock::user_prompt("hello").animates_running_accent());
+        assert!(!RenderBlock::agent_message("hello").animates_running_accent());
+        assert!(
+            RenderBlock::stub("working", ratatui::style::Color::Blue).animates_running_accent(),
+            "activity blocks keep the running wave"
+        );
     }
 
     #[test]

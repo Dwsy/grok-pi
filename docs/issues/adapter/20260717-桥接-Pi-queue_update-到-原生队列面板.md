@@ -1,93 +1,114 @@
 ---
 id: "2026-07-17-桥接-pi-queue-update-到-原生队列面板"
-title: "桥接 Pi queue_update 到 x.ai/queue/changed"
+title: "Pi / Grok 原生队列隔离与生命周期对齐"
 status: "completed"
 created: "2026-07-17"
-updated: "2026-07-17"
+updated: "2026-07-25"
 category: "adapter"
-tags: ["workhub", "queue", "follow-up", "steer"]
+tags: ["workhub", "queue", "follow-up", "steer", "isolation", "extension"]
 ---
 
-# Issue: 桥接 Pi queue_update 到 x.ai/queue/changed
+# Issue: Pi / Grok 原生队列隔离与生命周期对齐
 
 ## Goal
 
-消除 grok-pi mid-turn 消息「已入队 / AI 已处理 / UI 永不消队」与「Send now hover 无效」的断环，让原生 QueuePane 以 Pi 队列为权威镜像。
+同时提供两种真实语义：
+
+- **Send now / steering**：注入当前 turn；已有待执行行可原子移除后立即发送，不重复执行。
+- **Append / follow-up**：先留在 Grok 可管理队列，当前 turn 完成后才真正发送给 Pi。
+
+并修复 extension（尤其 `~/.pi/agent/extensions/loop.ts`）通过 `sendUserMessage(..., { deliverAs: "followUp" })` 产生的消息被吞到末尾、响应已结束但 UI 仍等待、Esc 长期停在 Cancelling 的问题。
 
 ## 根因
 
-| 层 | 行为 |
+1. Pager 有稳定 id/version 与完整 CRUD 协议，但 stock Pi 0.81.1 RPC 队列只有文本数组，没有单行 id、编辑、删除、重排或 `clear_queue`。
+2. 直接把 Pager 行复制成 Pi `steer` 无法原子删除原 follow-up，会造成二次执行。
+3. extension `sendUserMessage` 使用 `source="extension"`，过去会直接进入 Pi 私有队列，绕过 Pager 行生命周期。
+4. extension 驱动的新 turn 没有 ACP prompt waiter；只依赖客户端 PromptResponse 会让 Pager 在 Pi 已空闲时仍显示 Waiting。
+5. 取消过程中 `loop.ts` 的终止处理器仍可能再次发 follow-up，若接收该消息，取消完成后循环会“复活”。
+
+## 最终架构
+
+### A. Adapter-owned isolated lane
+
+客户端 active-turn follow-up 与被拦截的 extension 消息先进入 `QueueMirror.local_entries`，此时**尚未发送给 Pi**。
+
+每行保存：
+
+- 稳定 `id` 与 `version`
+- `execution_text` / `display_text`
+- images
+- lane（steering / follow-up）
+- origin（client / extension）
+
+因此待执行行可以真实执行：
+
+| ACP 扩展方法 | 行为 |
 |---|---|
-| Pager | turn 进行中走 `immediate_server_send`：optimistic 写入 `shared_queue`，等 `x.ai/queue/changed` 确认/出队 |
-| Adapter | 收 ACP prompt → Pi `prompt` + `streamingBehavior`；`queue_update` **只**刷 status 文案 |
-| Pi | `queue_update` 已带 `steering: string[]` / `followUp: string[]` 全文；交付时 `message_start` 会摘条并再发 `queue_update` |
+| `x.ai/queue/remove` | 按 id + expectedVersion 原子移除 |
+| `x.ai/queue/clear` | 清空本地待执行行，并完成客户端 waiter 为 Cancelled |
+| `x.ai/queue/edit` | 修改文本并递增 version |
+| `x.ai/queue/reorder` | 重排本地行；未列出的行保持相对顺序并追加 |
+| `x.ai/queue/interject` | 原子取出本地行；运行中发送 Pi `steer`，空闲时作为正常新 turn 执行 |
 
-`x.ai/*` 是上游 Grok Build ACP 扩展**命名空间**，不是 xAI 云产品依赖。本项目复用协议形状，但未接队列生命周期。
+### B. Extension interception
 
-## 边界
+最先注入的 `pi-grok-rpc-compat` extension 监听 Pi 官方 `input` 事件：
 
-1. Pi 是队列权威；adapter 只镜像，不做第二套 scheduler。
-2. 不改 Pi 源码扩 RPC。
-3. Pi RPC **无** `clearQueue` / 按 id 删除 / 编辑 / 重排；对应 `x.ai/queue/{remove,clear,edit,reorder}` 只能 rebroadcast 当前镜像（必要时 toast），不能假装成功。
-4. `x.ai/queue/interject`：无单条删除时无法安全「只 promote 一条」；映射为对该条文案的 `steer`（与现有 `x.ai/interject` 一致），并 rebroadcast。followUp 条可能仍会被 Pi 再投递一次——记为已知边界。
-5. mid-turn 默认 `followUp`；`sendNow: true` → `steer`（对齐 FEATURE_MATRIX）。
+- 仅拦截 `event.source === "extension"`
+- 通过内部 `setStatus(__pi_grok_queue_enqueue__)` 把 text/images/streamingBehavior 交给 Rust adapter
+- 返回 `{ action: "handled" }`，阻止消息进入 Pi 私有 follow-up 队列
+- adapter 真正调度时用 RPC source 重新发送，因此不会再次被拦截
 
-## 方案
+`loop.ts` 当前调用路径已核对：`pi.sendUserMessage(loopState.prompt, { deliverAs: "followUp" })`，会进入上述隔离层。
 
-### A. QueueMirror（adapter 内）
+### C. Pi external lane
 
-- 维护 `steering` / `followUp` 有序镜像与稳定 `id`。
-- ACP mid-turn prompt 若带 `promptId`，按 `(text, lane)` 预留 id，使 optimistic echo **按 id** 命中。
-- `queue_update` → 调和镜像 → 广播 `x.ai/queue/changed`：
-  - `entries`: kind=`prompt`，position 连续
-  - `runningPromptId`: 本轮从镜像消失的条目（Pi 交付摘条）
-- 保留 status：`N steering` / `N follow-up`。
+绕过兼容扩展、已存在于 Pi 私有队列的消息仍由 `queue_update` 全量数组镜像为 `pi_entries`。
 
-### B. prompt streamingBehavior
+该通道保持只读边界：stock Pi RPC 无法按行原子删除/编辑/重排。外部 follow-up 出队时可成为 running；steering 出队只注入当前 turn，不覆盖 primary `runningPromptId`。
 
-```text
-!already_active          → None
-meta.sendNow == true     → steer
-meta.followUp == true    → followUp
-default (mid-turn)       → followUp
-```
+### D. Dispatch and completion
 
-### C. ext_notification
+- adapter 空闲时取本地首行，设置 running，再发送普通 Pi RPC prompt。
+- 客户端行把 queued completion sender 提升到 `active_prompts`，直到 turn 完成才回复 ACP PromptResponse。
+- extension/Pi-owned running 行在完成时发送 `x.ai/session/prompt_complete`。
+- 正常完成屏障是 Pi `agent_settled`，不是 `agent_end`。
+- 每次 adapter-owned dispatch 都启动短延迟 idle probe；若其他 input handler 消费了 RPC prompt、没有产生 `agent_start`/`agent_settled`，探针会清理 ghost running、完成通知并继续下一行。
 
-| 方法 | 行为 |
-|---|---|
-| `x.ai/queue/remove` | rebroadcast + toast 边界 |
-| `x.ai/queue/clear` | rebroadcast + toast 边界 |
-| `x.ai/queue/edit` | rebroadcast + toast 边界 |
-| `x.ai/queue/reorder` | rebroadcast |
-| `x.ai/queue/interject` | `steer(text)` + rebroadcast |
+### E. Cancel barrier
+
+ACP cancel：
+
+1. 同步标记 cancelling。
+2. 清空 adapter-owned pending rows，完成所有客户端 waiter 为 Cancelled。
+3. 清除当前 running 展示并立即广播空队列，Pager 不再卡 Cancelling。
+4. fire-and-forget 发送 Pi `abort` / `abort_bash`，避免 Pi 内部等待导致 ACP cancel 阻塞。
+5. `get_state` 探针等待 Pi 真正 idle 后再允许新调度。
+6. cancelling 期间 extension 新产生的 continuation 直接丢弃，防止 `loop.ts` 在 Esc 后重启循环。
+
+用户在取消期间新提交的客户端消息仍可排入本地队列，并在 Pi idle 后执行；只屏蔽自动 extension continuation。
 
 ## 验收
 
-1. mid-turn 发送后 QueuePane 出现行；Pi 开始处理该条后行消失（不再幽灵挂起）。
-2. 确认后的行在 turn running 时渲染 `[Send now]`，hover 高亮。
-3. 空 composer Enter / send-now 仍走现有 interject/steer 路径。
-4. `cargo test -p pi-grok-adapter` 通过；含 QueueMirror 与 streamingBehavior 单测。
-5. FEATURE_MATRIX Queue 行更新为「Pi queue_update 全文 → x.ai/queue/changed」。
+1. active turn 追加多条消息：按 Pager 顺序显示，可编辑、删除、重排、清空。
+2. 队列行 Send now：只执行一次；运行中走 steer，空闲时走新 turn。
+3. `loop.ts` follow-up 出现在原生队列正确位置，不被吞到最后。
+4. extension-driven turn 结束后 Waiting 状态收敛；被 input handler handled 的 prompt 也由 idle probe 收敛。
+5. Esc 清空待执行行并立即完成 ACP 请求；取消期间 loop continuation 不会复活。
+6. Pi 外部队列行保持只读并给出边界提示，不伪造成功。
+7. Pi 文本经 input handler / skill / template / plan reminder 改写后，外部镜像仍尽量按 lane FIFO 保留 reservation id 与原始展示文本。
 
-## 非目标
+## 验证记录（2026-07-25）
 
-- 不实现多 client 共享队列一致性（单机 Pi）。
-- 不改 Pager source-identity 接缝（纯 adapter 广播 + 既有 handler）。
-- 不在 Pi 源码增加 clearQueue RPC。
+- `cargo test -p pi-grok-adapter`：127 passed。
+- `cargo check -p xai-grok-pager-bin --bin grok-pi`：通过，仅既有 warnings。
+- `queue_bridge` 覆盖稳定 id、文本变换、外部出队、CRUD、重复文本 FIFO 与 running preservation。
+- `rpc_compat_extension` embedding test 校验 extension-source 拦截与 handled 短路。
 
-## 进度
+## 边界
 
-- [x] 根因与协议事实
-- [x] QueueMirror + queue_update 广播（`queue_bridge.rs`）
-- [x] streamingBehavior 默认 followUp；`sendNow` → steer
-- [x] ext_notification 队列方法（remove/clear/edit/reorder rebroadcast；interject → steer）
-- [x] 测试：`cargo test -p pi-grok-adapter` → 44 passed（含 5 个 QueueMirror 单测）
-- [x] FEATURE_MATRIX 已更新
-
-## 实现要点
-
-- `queue_bridge::QueueMirror`：预留 client `promptId`、调和 Pi 全文数组、消失项 → `runningPromptId`
-- `queue_update` → `x.ai/queue/changed` + status
-- `agent_settled` 清 `runningPromptId` 并 rebroadcast，避免 idle 后幽灵 running id
-- **PromptResponse 回显 `promptId`**：mid-turn 1/2/3 与主 turn 同批 settle 时，Pager 只对 `current_prompt_id` 画 `Worked for`；无 meta 时会误 finish 出 3 个 `Worked for 0.0s`
+- 不修改 Pi 源码，不给 stock RPC 私加命令。
+- Pi 外部私有队列仍无单行 CRUD / guaranteed clear；只有 adapter-owned isolated lane 具备完整功能。
+- 单进程、单 Pi session；不实现多客户端共享队列共识。
+- 未执行真实模型驱动的长循环端到端手测，仍建议用 `loop.ts` 做一次人工验收。

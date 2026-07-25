@@ -371,6 +371,11 @@ pub async fn set_ctrl_o_tool_expansion(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.ctrl_o_tool_expansion = Some(value)).await
 }
 
+/// Persist `[ui].pi_bash_run_display`.
+pub async fn set_pi_bash_run_display(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_bash_run_display = Some(value)).await
+}
+
 /// Persist `[ui].keep_text_selection` (`flash` | `hold` | `word_select`).
 /// Clears the legacy `selection_highlight_duration_ms` and the retired
 /// `double_click_action` keys it supersedes so the two can never drift (one-shot

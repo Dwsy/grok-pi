@@ -494,9 +494,12 @@ impl ScrollbackState {
     /// entry counts as visible.
     fn any_running_in_viewport(&self) -> bool {
         self.running.iter().any(|id| {
-            self.entries
-                .get_index_of(id)
-                .is_some_and(|idx| self.entry_index_in_viewport(idx))
+            let Some(idx) = self.entries.get_index_of(id) else {
+                return false;
+            };
+            self.entries.get_index(idx).is_some_and(|(_, entry)| {
+                entry.block.animates_running_accent() && self.entry_index_in_viewport(idx)
+            })
         })
     }
 
@@ -1429,8 +1432,14 @@ impl ScrollbackState {
     pub fn finish_running_with_time(&mut self, id: EntryId, thinking_time_ms: Option<i64>) {
         self.running.remove(&id);
         // Track the finish-flash window so `tick()` checks O(flashing)
-        // entries instead of scanning the whole scrollback per tick.
-        if self.entries.contains_key(&id) && !self.flashing.contains(&id) {
+        // entries instead of scanning the whole scrollback per tick. Message
+        // chrome is intentionally static, so message completion never enters
+        // the flash list.
+        let animates_running_accent = self
+            .entries
+            .get(&id)
+            .is_some_and(|entry| entry.block.animates_running_accent());
+        if animates_running_accent && !self.flashing.contains(&id) {
             self.flashing.push(id);
         }
         let thinking_mode = self.thinking_display_mode;
@@ -2634,6 +2643,42 @@ mod tests {
     }
 
     // ── Animation gating: off-screen running entries must not redraw ────
+
+    #[test]
+    fn running_message_entries_do_not_demand_animation_ticks_or_finish_flashes() {
+        for block in [
+            RenderBlock::user_prompt("hello"),
+            RenderBlock::agent_message("hello"),
+        ] {
+            let mut state = ScrollbackState::new();
+            let id = state.push_block(block);
+            state.set_last_running(true);
+
+            assert!(state.has_running_entries(), "running semantics stay intact");
+            assert!(
+                !state.needs_animation(),
+                "message-only running state must not arm the animation timer"
+            );
+            assert!(
+                !state.tick(),
+                "message-only running state must not request a redraw tick"
+            );
+
+            state.finish_running(id);
+            assert!(
+                !state.flashing.contains(&id),
+                "message completion must not create a left-accent flash"
+            );
+        }
+
+        let mut state = ScrollbackState::new();
+        state.push_block(stub_block("tool activity"));
+        state.set_last_running(true);
+        assert!(
+            state.needs_animation(),
+            "non-message activity blocks keep native running animation"
+        );
+    }
 
     /// A running entry scrolled far out of the viewport must not demand
     /// animation ticks or redraws — the wave accent can't be seen, and

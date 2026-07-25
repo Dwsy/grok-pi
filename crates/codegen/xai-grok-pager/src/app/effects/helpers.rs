@@ -1083,6 +1083,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_bash_run_display" => {
+            let SettingValue::Enum(value) = value else {
+                return Err(kind_mismatch("pi_bash_run_display", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_pi_bash_run_display(value.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
         "prompt_suggestions" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("prompt_suggestions", "Bool", &value));

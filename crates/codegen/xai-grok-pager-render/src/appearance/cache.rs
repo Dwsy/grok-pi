@@ -18,6 +18,7 @@ use std::cell::Cell;
 
 use xai_grok_shared::ui_config::UiConfig;
 
+use super::execute_header_content::ExecuteHeaderContent;
 use super::render_mermaid::RenderMermaid;
 use super::scroll_mode::ScrollMode;
 use super::text_selection::TextSelection;
@@ -588,6 +589,36 @@ pub fn set_scroll_lines(lines: u8) {
     SCROLL_LINES_LOADED.with(|l| l.set(true));
 }
 
+// -- Execute/Bash header content ---------------------------------------------
+
+thread_local! {
+    static EXECUTE_HEADER_CONTENT_CURRENT: Cell<ExecuteHeaderContent> =
+        const { Cell::new(ExecuteHeaderContent::TaskName) };
+    static EXECUTE_HEADER_CONTENT_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the cached grok-pi Bash/run header preference, seeding from
+/// `[ui].pi_bash_run_display` on first call.
+pub fn load_execute_header_content() -> ExecuteHeaderContent {
+    EXECUTE_HEADER_CONTENT_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_str_from_effective_config("pi_bash_run_display")
+                .as_deref()
+                .and_then(ExecuteHeaderContent::from_canonical)
+                .unwrap_or_default();
+            EXECUTE_HEADER_CONTENT_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    EXECUTE_HEADER_CONTENT_CURRENT.with(|c| c.get())
+}
+
+/// Replace the cached Bash/run header preference (optimistic modal update or rollback).
+pub fn set_execute_header_content(value: ExecuteHeaderContent) {
+    EXECUTE_HEADER_CONTENT_CURRENT.with(|c| c.set(value));
+    EXECUTE_HEADER_CONTENT_LOADED.with(|l| l.set(true));
+}
+
 // -- Render mermaid (auto | on | off) ---------------------------------------
 
 thread_local! {
@@ -654,6 +685,12 @@ pub fn prime(ui: &UiConfig) {
     let _ = load_scroll_mode();
     let _ = load_invert_scroll();
     let _ = load_scroll_lines();
+    set_execute_header_content(
+        ui.pi_bash_run_display
+            .as_deref()
+            .and_then(ExecuteHeaderContent::from_canonical)
+            .unwrap_or_default(),
+    );
     let _ = load_render_mermaid();
     let _ = load_show_thinking_blocks();
     let _ = load_group_tool_verbs();

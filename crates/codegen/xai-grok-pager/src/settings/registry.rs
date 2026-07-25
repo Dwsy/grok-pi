@@ -583,6 +583,9 @@ pub fn current_value_for(
                 _ => "write_edit",
             },
         )),
+        "pi_bash_run_display" => Some(SettingValue::Enum(
+            crate::appearance::cache::load_execute_header_content().as_canonical(),
+        )),
         // Live cache; `GROK_PROMPT_SUGGESTIONS` env overrides at the gate.
         "prompt_suggestions" => Some(SettingValue::Bool(
             crate::appearance::cache::load_prompt_suggestions(),

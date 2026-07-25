@@ -2769,7 +2769,10 @@
     "crates/codegen/xai-grok-pager/src/views/picker.rs",
     "crates/codegen/xai-grok-pager/src/views/agent_status.rs",
     "crates/codegen/xai-grok-update/src/lib.rs",
-    "crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs"
+    "crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs"
   ],
   "allowedAddedPrefixes": [
     "crates/codegen/pi-grok-adapter/"

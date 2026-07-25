@@ -3,6 +3,7 @@ use crate::{
         background_bash_notification, background_bash_output_update, parse_background_bash_message,
         parse_background_bash_tool_result,
     },
+    btw_bridge::parse_btw_message,
     context_projection::{
         build_session_info_response, context_tokens_from_stats, context_tokens_from_usage,
         entries_to_messages_value, parse_context_breakdown,
@@ -23,8 +24,9 @@ use crate::{
         direct_bash_command, format_bash_result, prompt_response, prompt_streaming_behavior,
         prompt_to_pi, queue_lane_for_behavior,
     },
-    queue_bridge::{QueueLane, QueueMirror, queue_changed_params, string_list},
-    btw_bridge::parse_btw_message,
+    queue_bridge::{
+        QueueEntry, QueueLane, QueueMirror, QueueOrigin, queue_changed_params, string_list,
+    },
     recap_bridge::{parse_recap_message, session_recap_notification},
     subagent_projection::{BridgeOperation, bridge_parent_session_id, parse_bridge_message},
     todo_bridge::plan_update_for_tool,
@@ -123,6 +125,15 @@ struct PromptCompletion {
     client_prompt_id: Option<String>,
 }
 
+const EXTENSION_QUEUE_STATUS_KEY: &str = "__pi_grok_queue_enqueue__";
+
+fn stop_reason_wire(reason: &acp::StopReason) -> &'static str {
+    match reason {
+        acp::StopReason::Cancelled => "cancelled",
+        _ => "end_turn",
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct StreamSeen {
     text: bool,
@@ -185,7 +196,10 @@ struct AdapterState {
     acp_session_id: String,
     model_map: HashMap<String, PiModel>,
     active_prompts: Vec<ActivePrompt>,
+    queued_prompt_completions: HashMap<String, oneshot::Sender<PromptCompletion>>,
     next_prompt_id: u64,
+    agent_running: bool,
+    cancelling: bool,
     bash_running: bool,
     live_assistant: Option<StreamSeen>,
     session_dir: PathBuf,
@@ -288,7 +302,10 @@ impl PiAgent {
                 acp_session_id,
                 model_map,
                 active_prompts: Vec::new(),
+                queued_prompt_completions: HashMap::new(),
                 next_prompt_id: 1,
+                agent_running: false,
+                cancelling: false,
                 bash_running: false,
                 live_assistant: None,
                 session_dir: session_dir.clone(),
@@ -844,17 +861,8 @@ impl PiAgent {
         };
         self.emit_goal_updated_from_control(&control).await;
         let directive = GoalHost::continuation_directive(&control);
-        if let Err(error) = self
-            .rpc
-            .request(json!({
-                "type": "prompt",
-                "message": directive,
-                "streamingBehavior": "followUp",
-            }))
-            .await
-        {
-            tracing::debug!(%error, "goal continuation follow-up failed");
-        }
+        self.enqueue_extension_message(directive, Vec::new(), Some("followUp"))
+            .await;
     }
 
     async fn handle_workflow_bridge_message(&self, event: &Value) -> Result<bool> {
@@ -1142,9 +1150,12 @@ impl PiAgent {
             .cloned()
             .map(|model| (model_key(&model), model))
             .collect();
-        // A session change invalidates the previous session's queue mirror.
-        // Stale entries would otherwise leak into the new session's queue UI.
+        // A session change invalidates the previous session's isolated queue.
+        // Dropping completion senders resolves waiting ACP requests as cancelled.
         state.queue_mirror = QueueMirror::default();
+        state.queued_prompt_completions.clear();
+        state.agent_running = false;
+        state.cancelling = false;
         // Drop cached context usage so publish_bootstrap cannot re-stamp the
         // previous session's totalTokens onto a fresh AgentView (context bar).
         if session_changed {
@@ -1658,6 +1669,286 @@ impl PiAgent {
         self.publish_queue_snapshot().await;
     }
 
+    fn adapter_busy(state: &AdapterState) -> bool {
+        state.agent_running
+            || state.cancelling
+            || state.bash_running
+            || !state.active_prompts.is_empty()
+            || state.queue_mirror.running().is_some()
+    }
+
+    fn prepare_execution_text(state: &mut AdapterState, mut message: String) -> String {
+        if let Some(reminder) = state.plan_mode.build_reminder_for_prompt() {
+            if message.is_empty() {
+                message = reminder;
+            } else {
+                message = format!("{reminder}\n\n{message}");
+            }
+        }
+        message
+    }
+
+    fn finish_queued_entries(&self, entries: Vec<QueueEntry>, reason: acp::StopReason) {
+        let completions = {
+            let mut state = self.state.borrow_mut();
+            entries
+                .into_iter()
+                .filter_map(|entry| {
+                    state
+                        .queued_prompt_completions
+                        .remove(&entry.id)
+                        .map(|completion| (entry.id, completion))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, completion) in completions {
+            let _ = completion.send(PromptCompletion {
+                reason: reason.clone(),
+                client_prompt_id: Some(id),
+            });
+        }
+    }
+
+    async fn send_server_prompt_complete(&self, entry: &QueueEntry, reason: acp::StopReason) {
+        self.send_ext_notification(
+            "x.ai/session/prompt_complete",
+            json!({
+                "sessionId": self.session_id().0,
+                "promptId": entry.id,
+                "stopReason": stop_reason_wire(&reason),
+                "agentResult": Value::Null,
+            }),
+        )
+        .await;
+    }
+
+    fn activate_queued_client(state: &mut AdapterState, entry_id: &str) -> Option<u64> {
+        let completion = state.queued_prompt_completions.remove(entry_id)?;
+        let id = state.next_prompt_id;
+        state.next_prompt_id = state.next_prompt_id.wrapping_add(1).max(1);
+        state.active_prompts.push(ActivePrompt {
+            id,
+            client_prompt_id: Some(entry_id.to_string()),
+            completion,
+            agent_started: false,
+            cancelled: false,
+        });
+        Some(id)
+    }
+
+    fn take_active_prompt(&self, id: u64) -> Option<ActivePrompt> {
+        let mut state = self.state.borrow_mut();
+        let index = state
+            .active_prompts
+            .iter()
+            .position(|active| active.id == id)?;
+        Some(state.active_prompts.remove(index))
+    }
+
+    async fn dispatch_next_queued(&self) -> bool {
+        loop {
+            let Some((entry, active_id)) = ({
+                let mut state = self.state.borrow_mut();
+                if Self::adapter_busy(&state) {
+                    None
+                } else {
+                    state.queue_mirror.pop_next_local().map(|mut entry| {
+                        entry.execution_text =
+                            Self::prepare_execution_text(&mut state, entry.execution_text);
+                        let active_id = Self::activate_queued_client(&mut state, &entry.id);
+                        state.agent_running = true;
+                        state.live_prompt_id = Some(entry.id.clone());
+                        state.queue_mirror.set_running(entry.clone());
+                        (entry, active_id)
+                    })
+                }
+            }) else {
+                return false;
+            };
+
+            if let Err(error) = self.persist_plan_mode_state() {
+                tracing::debug!(%error, "failed to persist plan mode before queued dispatch");
+            }
+            if let Err(error) = self.sync_plan_mode_control() {
+                tracing::debug!(%error, "failed to sync plan mode before queued dispatch");
+            }
+            self.publish_queue_snapshot().await;
+
+            let mut request = json!({
+                "type": "prompt",
+                "message": entry.execution_text,
+            });
+            if !entry.images.is_empty() {
+                request["images"] = Value::Array(entry.images.clone());
+            }
+            match self.rpc.request(request).await {
+                Ok(_) => {
+                    // Extension-owned rows have no ACP completion waiter, but
+                    // they still need the same idle probe. Another input
+                    // handler may consume the promoted RPC prompt without
+                    // producing agent_start/agent_settled; without this probe
+                    // the native queue would remain pinned to a ghost run.
+                    let probe = self.clone();
+                    tokio::task::spawn_local(async move {
+                        probe.probe_prompt_without_agent().await;
+                    });
+                    return true;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, prompt_id = %entry.id, "queued Pi prompt failed");
+                    let active = active_id.and_then(|id| self.take_active_prompt(id));
+                    {
+                        let mut state = self.state.borrow_mut();
+                        state.agent_running = false;
+                        state.live_prompt_id = None;
+                        state.queue_mirror.clear_running();
+                    }
+                    if let Some(active) = active {
+                        let _ = active.completion.send(PromptCompletion {
+                            reason: acp::StopReason::Cancelled,
+                            client_prompt_id: active.client_prompt_id,
+                        });
+                    } else {
+                        self.send_server_prompt_complete(&entry, acp::StopReason::Cancelled)
+                            .await;
+                    }
+                    self.send_ui_notification(
+                        &format!("Queued Pi message failed: {error}"),
+                        Some("error"),
+                    )
+                    .await;
+                    self.publish_queue_snapshot().await;
+                }
+            }
+        }
+    }
+
+    async fn enqueue_extension_message(
+        &self,
+        text: String,
+        images: Vec<Value>,
+        streaming_behavior: Option<&str>,
+    ) {
+        if text.trim().is_empty() && images.is_empty() {
+            return;
+        }
+        let lane = if streaming_behavior == Some("steer") {
+            QueueLane::Steering
+        } else {
+            QueueLane::FollowUp
+        };
+        let (id, version, should_interject) = {
+            let mut state = self.state.borrow_mut();
+            // Cancel is a hard barrier for extension continuations. In
+            // particular, loop.ts may call sendUserMessage() from its terminal
+            // handler while Pi is aborting; accepting that follow-up here
+            // would restart the loop as soon as cancellation settles.
+            if state.cancelling {
+                tracing::debug!("dropping extension queue message during cancellation");
+                return;
+            }
+            let id = state.queue_mirror.enqueue_local(
+                None,
+                text.clone(),
+                text,
+                images,
+                lane,
+                QueueOrigin::Extension,
+            );
+            let version = state
+                .queue_mirror
+                .local_entry(&id)
+                .map(|entry| entry.version)
+                .unwrap_or(0);
+            let should_interject =
+                lane == QueueLane::Steering && state.agent_running && !state.cancelling;
+            (id, version, should_interject)
+        };
+        self.publish_queue_snapshot().await;
+        if should_interject {
+            self.interject_local_queue(&id, Some(version), None).await;
+        } else {
+            self.dispatch_next_queued().await;
+        }
+    }
+
+    async fn interject_local_queue(
+        &self,
+        id: &str,
+        expected_version: Option<u64>,
+        new_text: Option<String>,
+    ) -> bool {
+        let mut dispatch_idle = false;
+        let steer = {
+            let mut state = self.state.borrow_mut();
+            let Some(mut entry) = state.queue_mirror.take_local(id, expected_version) else {
+                return false;
+            };
+            if let Some(text) = new_text {
+                entry.execution_text = text.clone();
+                entry.display_text = text;
+                entry.version = entry.version.wrapping_add(1);
+            }
+            if state.cancelling {
+                state.queue_mirror.push_front_local(entry);
+                None
+            } else if !state.agent_running && state.active_prompts.is_empty() {
+                state.queue_mirror.push_front_local(entry);
+                dispatch_idle = true;
+                None
+            } else {
+                entry.execution_text =
+                    Self::prepare_execution_text(&mut state, entry.execution_text);
+                let active_id = Self::activate_queued_client(&mut state, &entry.id);
+                state.queue_mirror.reserve(
+                    entry.id.clone(),
+                    entry.execution_text.clone(),
+                    entry.display_text.clone(),
+                    entry.images.clone(),
+                    QueueLane::Steering,
+                    entry.origin,
+                );
+                Some((entry, active_id))
+            }
+        };
+        self.publish_queue_snapshot().await;
+        if dispatch_idle {
+            return self.dispatch_next_queued().await;
+        }
+        let Some((entry, active_id)) = steer else {
+            return false;
+        };
+        let mut request = json!({
+            "type": "prompt",
+            "message": entry.execution_text,
+            "streamingBehavior": "steer",
+        });
+        if !entry.images.is_empty() {
+            request["images"] = Value::Array(entry.images.clone());
+        }
+        if let Err(error) = self.rpc.request(request).await {
+            tracing::warn!(%error, prompt_id = %entry.id, "queued interject failed");
+            self.state
+                .borrow_mut()
+                .queue_mirror
+                .release_reservation(&entry.id);
+            if let Some(active) = active_id.and_then(|id| self.take_active_prompt(id)) {
+                let _ = active.completion.send(PromptCompletion {
+                    reason: acp::StopReason::Cancelled,
+                    client_prompt_id: active.client_prompt_id,
+                });
+            }
+            self.send_ui_notification(
+                &format!("Pi queue interject failed: {error}"),
+                Some("error"),
+            )
+            .await;
+            self.publish_queue_snapshot().await;
+            return false;
+        }
+        true
+    }
+
     async fn send_title(&self, title: Option<&str>) {
         let title = title
             .filter(|title| !title.trim().is_empty())
@@ -1814,37 +2105,55 @@ impl PiAgent {
             .or_else(|| event.get("event"))
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let suppress_cancelled_stream = self.state.borrow().cancelling
+            && matches!(
+                event_type,
+                "turn_start"
+                    | "turn_end"
+                    | "message_start"
+                    | "message_update"
+                    | "message_end"
+                    | "tool_execution_start"
+                    | "tool_execution_update"
+                    | "tool_execution_end"
+                    | "agent_end"
+            );
+        if suppress_cancelled_stream {
+            return Ok(());
+        }
         match event_type {
             "agent_start" => {
                 let now = utc_now_ms();
                 let mut state = self.state.borrow_mut();
+                state.agent_running = true;
                 for active in &mut state.active_prompts {
                     active.agent_started = true;
                 }
-                // Anchor turn + first stream so subsequent live updates carry
-                // streamStartMs (Pager pre-create Thinking on first boundary).
-                state.turn_start_ms = Some(now);
-                state.stream_start_ms = Some(now);
-                // Prefer the client promptId already known from session/prompt.
-                if state.live_prompt_id.is_none() {
-                    state.live_prompt_id = state
-                        .active_prompts
-                        .iter()
-                        .rev()
-                        .find_map(|p| p.client_prompt_id.clone());
+                if !state.cancelling {
+                    state.turn_start_ms = Some(now);
+                    state.stream_start_ms = Some(now);
+                    if state.live_prompt_id.is_none() {
+                        state.live_prompt_id = state
+                            .active_prompts
+                            .iter()
+                            .rev()
+                            .find_map(|p| p.client_prompt_id.clone())
+                            .or_else(|| state.queue_mirror.running().map(|entry| entry.id.clone()));
+                    }
                 }
             }
             "agent_settled" => {
                 self.refresh_context_usage().await;
-                let mode_update = {
+                let (mode_update, running) = {
                     let mut state = self.state.borrow_mut();
+                    state.agent_running = false;
+                    state.cancelling = false;
                     state.turn_start_ms = None;
                     state.stream_start_ms = None;
                     state.live_prompt_id = None;
                     state.bash_stream_output.clear();
-                    state.queue_mirror.clear_running();
-                    // Complete deferred plan-mode exit after the in-flight turn.
-                    if matches!(
+                    let running = state.queue_mirror.clear_running();
+                    let mode_update = if matches!(
                         state.plan_mode.state(),
                         crate::plan_mode::PiPlanState::ExitPending
                     ) {
@@ -1852,7 +2161,8 @@ impl PiAgent {
                         Some(acp::SessionModeId::new("default"))
                     } else {
                         None
-                    }
+                    };
+                    (mode_update, running)
                 };
                 if let Some(mode_id) = mode_update {
                     self.persist_plan_mode_state()?;
@@ -1862,12 +2172,18 @@ impl PiAgent {
                     ))
                     .await;
                 }
-                // Idle barrier: drop any stale runningPromptId so the pager can
-                // drain local rows without waiting on a ghost running id.
                 self.rebroadcast_queue_mirror().await;
                 self.finish_prompts(acp::StopReason::EndTurn);
-                // Legacy goal path: keep working until update_goal(completed).
-                self.maybe_continue_goal().await;
+                if let Some(entry) = running
+                    && entry.origin != QueueOrigin::Client
+                {
+                    self.send_server_prompt_complete(&entry, acp::StopReason::EndTurn)
+                        .await;
+                }
+                let dispatched = self.dispatch_next_queued().await;
+                if !dispatched {
+                    self.maybe_continue_goal().await;
+                }
             }
             // `agent_end` is not the Pi idle barrier. Retry, compaction and
             // extension handlers can continue after it; `agent_settled` owns
@@ -1979,8 +2295,25 @@ impl PiAgent {
             }
             "adapter_process_exit" => {
                 let message = string(&event, &["message"]).unwrap_or("Pi RPC process exited");
-                self.send_ui_notification(message, Some("error")).await;
+                let (queued, running) = {
+                    let mut state = self.state.borrow_mut();
+                    state.agent_running = false;
+                    state.cancelling = false;
+                    let queued = state.queue_mirror.clear_local();
+                    let running = state.queue_mirror.clear_running();
+                    state.queue_mirror.clear();
+                    (queued, running)
+                };
+                self.finish_queued_entries(queued, acp::StopReason::Cancelled);
                 self.finish_prompts(acp::StopReason::Cancelled);
+                if let Some(entry) = running
+                    && entry.origin != QueueOrigin::Client
+                {
+                    self.send_server_prompt_complete(&entry, acp::StopReason::Cancelled)
+                        .await;
+                }
+                self.publish_queue_snapshot().await;
+                self.send_ui_notification(message, Some("error")).await;
             }
             _ => {}
         }
@@ -2102,59 +2435,35 @@ impl PiAgent {
         id
     }
 
-    /// Backstop for `cancel()`: poll Pi until the agent is idle, then finish
-    /// the still-active prompts (all marked `cancelled` by the cancel).
-    ///
-    /// Covers the race where Pi's turn ends before the abort lands: the
-    /// `agent_settled` event was already consumed and nothing else completes
-    /// the prompt, stranding the pager on "Cancelling…". `finish_prompts` is
-    /// idempotent — a genuine `agent_settled` arriving during the poll
-    /// finishes the prompts first and this becomes a no-op.
+    /// Poll until Pi is truly idle after a fire-and-forget abort. ACP prompt
+    /// completion already happened synchronously in `cancel()`; this only
+    /// re-opens the adapter scheduler once the underlying Pi run has stopped.
     async fn settle_cancelled_prompts(&self) {
         const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
         const SETTLE_POLL_DEADLINE: Duration = Duration::from_secs(30);
         let deadline = Instant::now() + SETTLE_POLL_DEADLINE;
         loop {
-            if !self
-                .state
-                .borrow()
-                .active_prompts
-                .iter()
-                .any(|active| active.cancelled)
-            {
+            if !self.state.borrow().cancelling {
                 return;
             }
             let Ok(value) = self.rpc.request(json!({ "type": "get_state" })).await else {
-                // Pi RPC is gone (process exited); the exit coordinator
-                // finishes the prompts via finish_prompts.
                 return;
             };
             if !parse_state(&value).is_streaming {
-                // Backstop: ensure the queue mirror is clean even if the
-                // cancel path's clear_queue RPC was unavailable.
                 {
                     let mut state = self.state.borrow_mut();
-                    state.queue_mirror.clear();
+                    state.agent_running = false;
+                    state.cancelling = false;
+                    state.live_prompt_id = None;
+                    state.queue_mirror.clear_running();
                 }
                 self.publish_queue_snapshot().await;
-                self.finish_prompts(acp::StopReason::Cancelled);
+                self.dispatch_next_queued().await;
                 return;
             }
             if Instant::now() >= deadline {
-                // Pi is stuck streaming past the deadline; force-finish so
-                // the pager cannot strand on "Cancelling…" forever.
-                tracing::warn!(
-                    "Pi still streaming after cancel settle deadline; forcing prompt completion"
-                );
-                // Same backstop as the idle branch: keep the queue mirror
-                // consistent even when the cancel path's clear_queue RPC was
-                // unavailable and Pi never went idle.
-                {
-                    let mut state = self.state.borrow_mut();
-                    state.queue_mirror.clear();
-                }
-                self.publish_queue_snapshot().await;
-                self.finish_prompts(acp::StopReason::Cancelled);
+                tracing::warn!("Pi still streaming after asynchronous cancel deadline");
+                self.state.borrow_mut().cancelling = false;
                 return;
             }
             tokio::time::sleep(SETTLE_POLL_INTERVAL).await;
@@ -2162,33 +2471,44 @@ impl PiAgent {
     }
 
     async fn probe_prompt_without_agent(&self) {
-        // Pi acknowledges prompt preflight before its asynchronous event stream.
-        // A short grace period lets a normal agent_start arrive. Extension
-        // commands that complete without an agent run otherwise have no
-        // agent_settled event, so get_state is the authoritative fallback.
         tokio::time::sleep(Duration::from_millis(40)).await;
-        let should_probe = self
-            .state
-            .borrow()
-            .active_prompts
-            .iter()
-            .any(|active| !active.agent_started);
+        let should_probe = {
+            let state = self.state.borrow();
+            state
+                .active_prompts
+                .iter()
+                .any(|active| !active.agent_started)
+                || (state.queue_mirror.running().is_some() && state.agent_running)
+        };
         if !should_probe {
             return;
         }
         let Ok(value) = self.rpc.request(json!({ "type": "get_state" })).await else {
             return;
         };
-        let pi_state = parse_state(&value);
-        let should_finish = self
-            .state
-            .borrow()
-            .active_prompts
-            .iter()
-            .any(|active| !active.agent_started)
-            && !pi_state.is_streaming;
-        if should_finish {
-            self.finish_prompts(acp::StopReason::EndTurn);
+        if parse_state(&value).is_streaming {
+            return;
+        }
+        let running = {
+            let mut state = self.state.borrow_mut();
+            state.agent_running = false;
+            state.cancelling = false;
+            state.live_prompt_id = None;
+            state.turn_start_ms = None;
+            state.stream_start_ms = None;
+            state.queue_mirror.clear_running()
+        };
+        self.publish_queue_snapshot().await;
+        self.finish_prompts(acp::StopReason::EndTurn);
+        if let Some(entry) = running
+            && entry.origin != QueueOrigin::Client
+        {
+            self.send_server_prompt_complete(&entry, acp::StopReason::EndTurn)
+                .await;
+        }
+        let dispatched = self.dispatch_next_queued().await;
+        if !dispatched {
+            self.maybe_continue_goal().await;
         }
     }
 
@@ -2240,8 +2560,7 @@ impl PiAgent {
                 let exit_code = result.get("exitCode").and_then(Value::as_i64);
                 let failed = cancelled || exit_code.is_some_and(|code| code != 0);
                 let output = format_bash_result(&result);
-                let raw_output =
-                    bash_tool_output(&command, None, &result, failed && !cancelled);
+                let raw_output = bash_tool_output(&command, None, &result, failed && !cancelled);
                 self.send_update(acp::SessionUpdate::ToolCallUpdate(
                     acp::ToolCallUpdate::new(
                         acp::ToolCallId::new(call_id),
@@ -2704,8 +3023,24 @@ impl PiAgent {
             "setstatus" => {
                 let key = string(&event, &["statusKey", "key"]).unwrap_or("extension");
                 let text = string(&event, &["statusText", "text"]);
-                self.send_status(key, text.filter(|text| !text.is_empty()))
-                    .await;
+                if key == EXTENSION_QUEUE_STATUS_KEY {
+                    if let Some(payload) =
+                        text.and_then(|text| serde_json::from_str::<Value>(text).ok())
+                    {
+                        let message = string(&payload, &["text"]).unwrap_or_default().to_string();
+                        let images = payload
+                            .get("images")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let behavior = string(&payload, &["streamingBehavior", "deliverAs"]);
+                        self.enqueue_extension_message(message, images, behavior)
+                            .await;
+                    }
+                } else {
+                    self.send_status(key, text.filter(|text| !text.is_empty()))
+                        .await;
+                }
             }
             "setwidget" => {
                 // Grok owns the sticky surface and ordering; the adapter only
@@ -3090,11 +3425,11 @@ impl acp::Agent for PiAgent {
             return self.execute_bash(command, arguments.meta.as_ref()).await;
         }
 
-        let (mut message, images) = prompt_to_pi(&arguments.prompt);
+        let (message, images) = prompt_to_pi(&arguments.prompt);
+        let display_message = message.clone();
         if message.trim().is_empty() && images.is_empty() {
             return Err(acp::Error::invalid_params().data("Pi prompt is empty"));
         }
-
         let client_prompt_id = arguments
             .meta
             .as_ref()
@@ -3103,8 +3438,6 @@ impl acp::Agent for PiAgent {
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(str::to_string);
-
-        let (completion_tx, completion_rx) = oneshot::channel();
         let plan_file_to_seed = {
             let state = self.state.borrow();
             (state.plan_mode.state() == crate::plan_mode::PiPlanState::Pending)
@@ -3113,139 +3446,184 @@ impl acp::Agent for PiAgent {
         if let Some(plan_file) = plan_file_to_seed {
             ensure_plan_file(&plan_file).map_err(acp_internal)?;
         }
-        let (prompt_id, streaming_behavior, pin_primary_running) = {
+
+        enum Disposition {
+            Queued {
+                id: String,
+            },
+            Direct {
+                operation_id: u64,
+                message: String,
+                streaming_behavior: Option<&'static str>,
+                pin_primary_running: bool,
+            },
+        }
+
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let disposition = {
             let mut state = self.state.borrow_mut();
-            // Inject plan-mode reminder as a prompt prefix before the user text.
-            // Pi RPC has no systemPrompt mutation command; prefix is the only lever.
-            if let Some(reminder) = state.plan_mode.build_reminder_for_prompt() {
-                if message.is_empty() {
-                    message = reminder;
-                } else {
-                    message = format!("{reminder}\n\n{message}");
+            let streaming_behavior =
+                prompt_streaming_behavior(Self::adapter_busy(&state), arguments.meta.as_ref());
+            if streaming_behavior == Some("followUp") {
+                let id = state.queue_mirror.enqueue_local(
+                    client_prompt_id.clone(),
+                    message,
+                    display_message,
+                    images.clone(),
+                    QueueLane::FollowUp,
+                    QueueOrigin::Client,
+                );
+                state
+                    .queued_prompt_completions
+                    .insert(id.clone(), completion_tx);
+                Disposition::Queued { id }
+            } else {
+                let execution_message = Self::prepare_execution_text(&mut state, message);
+                let operation_id = state.next_prompt_id;
+                state.next_prompt_id = state.next_prompt_id.wrapping_add(1).max(1);
+                if let Some(lane) = streaming_behavior.and_then(queue_lane_for_behavior)
+                    && let Some(client_id) = client_prompt_id.as_deref()
+                {
+                    state.queue_mirror.reserve(
+                        client_id.to_string(),
+                        execution_message.clone(),
+                        display_message.clone(),
+                        images.clone(),
+                        lane,
+                        QueueOrigin::Client,
+                    );
+                }
+                let pin_primary_running = streaming_behavior.is_none()
+                    && client_prompt_id.as_deref().is_some_and(|id| !id.is_empty());
+                if pin_primary_running {
+                    let client_id = client_prompt_id.clone().expect("checked non-empty");
+                    state.live_prompt_id = Some(client_id.clone());
+                    state.queue_mirror.set_running_primary(
+                        client_id,
+                        execution_message.clone(),
+                        display_message,
+                        images.clone(),
+                        QueueOrigin::Client,
+                    );
+                }
+                state.agent_running = true;
+                state.active_prompts.push(ActivePrompt {
+                    id: operation_id,
+                    client_prompt_id: client_prompt_id.clone(),
+                    completion: completion_tx,
+                    agent_started: false,
+                    cancelled: false,
+                });
+                Disposition::Direct {
+                    operation_id,
+                    message: execution_message,
+                    streaming_behavior,
+                    pin_primary_running,
                 }
             }
-            let already_active = !state.active_prompts.is_empty();
-            let prompt_id = state.next_prompt_id;
-            state.next_prompt_id = state.next_prompt_id.wrapping_add(1).max(1);
-            let streaming_behavior =
-                prompt_streaming_behavior(already_active, arguments.meta.as_ref());
-            // Prefer the pager's client promptId so optimistic queue echoes
-            // confirm by id (not only by text content).
-            if let Some(lane) = streaming_behavior.and_then(queue_lane_for_behavior)
-                && let Some(client_id) = client_prompt_id.as_deref()
-            {
-                state
-                    .queue_mirror
-                    .reserve(client_id.to_string(), message.clone(), lane);
-            }
-            // Primary (idle) prompt: pin live promptId + runningPromptId so the
-            // pager's turn chrome / status spinner match stock Grok shell.
-            // Mid-turn steer/followUp must NOT replace the primary pin.
-            let pin_primary_running = streaming_behavior.is_none()
-                && client_prompt_id
-                    .as_deref()
-                    .is_some_and(|id| !id.is_empty());
-            if pin_primary_running {
-                let client_id = client_prompt_id.clone().expect("checked non-empty");
-                state.live_prompt_id = Some(client_id.clone());
-                state.queue_mirror.set_running(client_id);
-            }
-            state.active_prompts.push(ActivePrompt {
-                id: prompt_id,
-                client_prompt_id: client_prompt_id.clone(),
-                completion: completion_tx,
-                agent_started: false,
-                cancelled: false,
-            });
-            (prompt_id, streaming_behavior, pin_primary_running)
         };
+
         self.persist_plan_mode_state().map_err(acp_internal)?;
         self.sync_plan_mode_control().map_err(acp_internal)?;
-        let mut request = json!({ "type": "prompt", "message": message });
-        if !images.is_empty() {
-            request["images"] = Value::Array(images);
+
+        match disposition {
+            Disposition::Queued { id } => {
+                self.publish_queue_snapshot().await;
+                self.dispatch_next_queued().await;
+                let completion = completion_rx.await.unwrap_or(PromptCompletion {
+                    reason: acp::StopReason::Cancelled,
+                    client_prompt_id: Some(id.clone()),
+                });
+                Ok(prompt_response(
+                    completion.reason,
+                    completion.client_prompt_id.as_deref().or(Some(id.as_str())),
+                ))
+            }
+            Disposition::Direct {
+                operation_id,
+                message,
+                streaming_behavior,
+                pin_primary_running,
+            } => {
+                let mut request = json!({ "type": "prompt", "message": message });
+                if !images.is_empty() {
+                    request["images"] = Value::Array(images);
+                }
+                if let Some(streaming_behavior) = streaming_behavior {
+                    request["streamingBehavior"] = Value::String(streaming_behavior.to_string());
+                }
+                if let Err(error) = self.rpc.request(request).await {
+                    if let Some(client_id) = client_prompt_id.as_deref() {
+                        self.state
+                            .borrow_mut()
+                            .queue_mirror
+                            .release_reservation(client_id);
+                    }
+                    self.remove_prompt(operation_id);
+                    if pin_primary_running {
+                        let mut state = self.state.borrow_mut();
+                        state.agent_running = false;
+                        state.live_prompt_id = None;
+                        state.queue_mirror.clear_running();
+                    }
+                    self.publish_queue_snapshot().await;
+                    return Err(acp_internal(error));
+                }
+                if pin_primary_running {
+                    self.rebroadcast_queue_mirror().await;
+                }
+                let probe = self.clone();
+                tokio::task::spawn_local(async move {
+                    probe.probe_prompt_without_agent().await;
+                });
+                let completion = completion_rx.await.unwrap_or(PromptCompletion {
+                    reason: acp::StopReason::Cancelled,
+                    client_prompt_id: client_prompt_id.clone(),
+                });
+                Ok(prompt_response(
+                    completion.reason,
+                    completion
+                        .client_prompt_id
+                        .as_deref()
+                        .or(client_prompt_id.as_deref()),
+                ))
+            }
         }
-        if let Some(streaming_behavior) = streaming_behavior {
-            request["streamingBehavior"] = Value::String(streaming_behavior.to_string());
-        }
-        if let Err(error) = self.rpc.request(request).await {
-            self.remove_prompt(prompt_id);
-            return Err(acp_internal(error));
-        }
-        // Tell the pager which prompt is running before the first Pi event.
-        // Without this, TurnRunning chrome exists locally but queue adoption
-        // never sees a server-side runningPromptId for the primary turn.
-        if pin_primary_running {
-            self.rebroadcast_queue_mirror().await;
-        }
-        let probe = self.clone();
-        tokio::task::spawn_local(async move {
-            probe.probe_prompt_without_agent().await;
-        });
-        // Wait for agent_settled (or cancel). Mid-turn followUp/steer prompts
-        // share this barrier with the primary turn; PromptResponse MUST carry
-        // promptId so the pager discards non-current completions instead of
-        // painting phantom "Worked for 0.0s" markers for each queued item.
-        let completion = completion_rx.await.unwrap_or(PromptCompletion {
-            reason: acp::StopReason::Cancelled,
-            client_prompt_id: client_prompt_id.clone(),
-        });
-        Ok(prompt_response(
-            completion.reason,
-            completion
-                .client_prompt_id
-                .as_deref()
-                .or(client_prompt_id.as_deref()),
-        ))
     }
 
     async fn cancel(&self, _arguments: acp::CancelNotification) -> Result<(), acp::Error> {
-        let command = {
+        let (command, queued, running) = {
             let mut state = self.state.borrow_mut();
             for active in &mut state.active_prompts {
                 active.cancelled = true;
             }
-            if state.bash_running {
+            state.cancelling = true;
+            let command = if state.bash_running {
                 "abort_bash"
             } else {
                 "abort"
-            }
+            };
+            let queued = state.queue_mirror.clear_local();
+            let running = state.queue_mirror.clear_running();
+            state.queue_mirror.clear();
+            (command, queued, running)
         };
 
-        // Clear Pi's steering/follow-up queues BEFORE aborting. Without this,
-        // queued messages survive the abort and Pi's post-run continuation
-        // (`_handlePostAgentRun → hasQueuedMessages → agent.continue()`) auto-
-        // delivers them — the user sees the turn "cancelled" but Pi silently
-        // starts processing the queued message. This mirrors Pi TUI's
-        // `restoreQueuedMessagesToEditor({ abort: true })` which calls
-        // `clearAllQueues()` before `agent.abort()`.
-        //
-        // Best-effort: if clear_queue fails (older Pi without the command),
-        // the abort still proceeds; the settle backstop handles the fallout.
-        if let Err(error) = self.rpc.request(json!({ "type": "clear_queue" })).await {
-            tracing::debug!(%error, "clear_queue RPC unavailable; proceeding with abort");
-        }
-
-        // Clear the local queue mirror and publish an empty snapshot so the
-        // pager's QueuePane drains immediately instead of showing stale rows.
+        self.finish_queued_entries(queued, acp::StopReason::Cancelled);
+        self.finish_prompts(acp::StopReason::Cancelled);
+        if let Some(entry) = running
+            && entry.origin != QueueOrigin::Client
         {
-            let mut state = self.state.borrow_mut();
-            state.queue_mirror.clear();
+            self.send_server_prompt_complete(&entry, acp::StopReason::Cancelled)
+                .await;
         }
         self.publish_queue_snapshot().await;
 
-        if let Err(error) = self.rpc.request(json!({ "type": command })).await {
-            self.finish_prompts(acp::StopReason::Cancelled);
-            return Err(acp_internal(error));
+        // Do not await Pi's abort RPC. AgentSession.abort() waits for idle, and
+        // extension continuations can otherwise keep ACP cancel blocked forever.
+        if let Err(error) = self.rpc.notify(json!({ "type": command })) {
+            tracing::warn!(%error, "failed to notify Pi abort");
         }
-        // A successful abort RPC means Pi accepted the abort request, but the
-        // `agent_settled` event that completes prompts may already have been
-        // consumed (Pi finished before the abort landed) or never comes (the
-        // agent was already idle). The PromptResponse RPC is the pager's only
-        // exit from TurnCancelling, so without a backstop the UI strands on
-        // "Cancelling…" until restart. Poll get_state until Pi is idle, then
-        // finish the prompts. A genuine agent_settled arriving in between
-        // finishes first (finish_prompts is idempotent — it drains the list).
         let probe = self.clone();
         tokio::task::spawn_local(async move {
             probe.settle_cancelled_prompts().await;
@@ -3726,47 +4104,102 @@ impl acp::Agent for PiAgent {
                 }
                 Ok(())
             }
-            "x.ai/queue/remove" | "x.ai/queue/clear" | "x.ai/queue/edit" | "x.ai/queue/reorder" => {
-                // Pi RPC does not expose per-item queue mutation / clearQueue.
-                // Rebroadcast the authoritative Pi mirror so the pager cannot
-                // keep a client-only ghost removal, and surface the boundary.
-                if matches!(
-                    arguments.method.as_ref(),
-                    "x.ai/queue/remove" | "x.ai/queue/clear" | "x.ai/queue/edit"
-                ) {
+            "x.ai/queue/remove" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let id = string(&params, &["id"]).unwrap_or_default();
+                let expected_version = params
+                    .get("expectedVersion")
+                    .or_else(|| params.get("version"))
+                    .and_then(Value::as_u64);
+                let removed = self
+                    .state
+                    .borrow_mut()
+                    .queue_mirror
+                    .take_local(id, expected_version);
+                if let Some(entry) = removed {
+                    self.finish_queued_entries(vec![entry], acp::StopReason::Cancelled);
+                } else {
                     self.send_ui_notification(
-                        "Pi queue is read-mirrored; remove/edit/clear are not supported over RPC",
+                        "This queue row is already running or belongs to Pi's external queue",
                         Some("warning"),
                     )
                     .await;
                 }
-                self.rebroadcast_queue_mirror().await;
+                self.publish_queue_snapshot().await;
                 Ok(())
             }
-            "x.ai/queue/interject" => {
-                // Promote by text via steer (same lane as x.ai/interject).
-                // Pi cannot drop a single follow-up row, so a follow-up item may
-                // still deliver later — documented adapter boundary.
+            "x.ai/queue/clear" => {
+                let removed = self.state.borrow_mut().queue_mirror.clear_local();
+                self.finish_queued_entries(removed, acp::StopReason::Cancelled);
+                self.publish_queue_snapshot().await;
+                Ok(())
+            }
+            "x.ai/queue/edit" => {
                 let params: Value =
                     serde_json::from_str(arguments.params.get()).unwrap_or_default();
                 let id = string(&params, &["id"]).unwrap_or_default();
-                let text = {
-                    let state = self.state.borrow();
-                    state.queue_mirror.text_for_id(id).map(str::to_string)
-                };
-                let text =
-                    text.or_else(|| string(&params, &["newText", "text"]).map(str::to_string));
-                if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
-                    let _ = self
-                        .rpc
-                        .request(json!({
-                            "type": "prompt",
-                            "message": text,
-                            "streamingBehavior": "steer",
-                        }))
-                        .await;
+                let new_text = string(&params, &["newText", "text"])
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string);
+                let edited = new_text
+                    .is_some_and(|text| self.state.borrow_mut().queue_mirror.edit_local(id, text));
+                if !edited {
+                    self.send_ui_notification(
+                        "Only pending adapter queue rows can be edited",
+                        Some("warning"),
+                    )
+                    .await;
                 }
-                self.rebroadcast_queue_mirror().await;
+                self.publish_queue_snapshot().await;
+                Ok(())
+            }
+            "x.ai/queue/reorder" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let ordered_ids = params
+                    .get("orderedIds")
+                    .or_else(|| params.get("ids"))
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.state
+                    .borrow_mut()
+                    .queue_mirror
+                    .reorder_local(&ordered_ids);
+                self.publish_queue_snapshot().await;
+                Ok(())
+            }
+            "x.ai/queue/interject" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let id = string(&params, &["id"]).unwrap_or_default();
+                let expected_version = params
+                    .get("expectedVersion")
+                    .or_else(|| params.get("version"))
+                    .and_then(Value::as_u64);
+                let new_text = string(&params, &["newText", "text"])
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string);
+                if !self
+                    .interject_local_queue(id, expected_version, new_text)
+                    .await
+                {
+                    self.send_ui_notification(
+                        "Only a pending adapter queue row can be sent now",
+                        Some("warning"),
+                    )
+                    .await;
+                    self.publish_queue_snapshot().await;
+                }
                 Ok(())
             }
             _ => Ok(()),
@@ -3904,7 +4337,10 @@ impl PiAgent {
             "models": models,
             "thinkingLevel": thinking_level,
         });
-        if let Err(error) = self.run_bridge_command(BTW_COMMAND, &payload.to_string()).await {
+        if let Err(error) = self
+            .run_bridge_command(BTW_COMMAND, &payload.to_string())
+            .await
+        {
             self.state.borrow_mut().pending_btw.remove(&request_id);
             return Err(error);
         }
@@ -3940,14 +4376,18 @@ impl PiAgent {
         if message.trim().is_empty() && images.is_empty() {
             return Err(acp::Error::invalid_params().data("Pi interjection is empty"));
         }
-        if let Some(client_id) = string(&params, &["interjectionId", "promptId"])
+        let client_id = string(&params, &["interjectionId", "promptId"])
             .map(str::trim)
             .filter(|id| !id.is_empty())
-        {
+            .map(str::to_string);
+        if let Some(client_id) = client_id.as_deref() {
             self.state.borrow_mut().queue_mirror.reserve(
                 client_id.to_string(),
                 message.clone(),
+                message.clone(),
+                images.clone(),
                 QueueLane::Steering,
+                QueueOrigin::Client,
             );
         }
         let mut request = json!({
@@ -3958,7 +4398,18 @@ impl PiAgent {
         if !images.is_empty() {
             request["images"] = Value::Array(images);
         }
-        let data = self.rpc.request(request).await.map_err(acp_internal)?;
+        let data = match self.rpc.request(request).await {
+            Ok(data) => data,
+            Err(error) => {
+                if let Some(client_id) = client_id.as_deref() {
+                    self.state
+                        .borrow_mut()
+                        .queue_mirror
+                        .release_reservation(client_id);
+                }
+                return Err(acp_internal(error));
+            }
+        };
         ext_response(data).map_err(acp_internal)
     }
 }
@@ -4730,11 +5181,7 @@ fn append_shortcut_dispatch_event(event: Value) -> Result<()> {
     use std::io::Write;
 
     let keys_path = if let Ok(path) = std::env::var("PI_GROK_SHORTCUT_KEYS") {
-        if path.is_empty() {
-            None
-        } else {
-            Some(path)
-        }
+        if path.is_empty() { None } else { Some(path) }
     } else {
         None
     };

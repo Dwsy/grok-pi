@@ -549,7 +549,16 @@ impl AgentView {
                 review.list_area.area() > 0 && review.list_area.contains((col, row).into());
             let in_preview =
                 review.preview_area.area() > 0 && review.preview_area.contains((col, row).into());
-            if in_list {
+            let in_ask =
+                review.ask_area.area() > 0 && review.ask_area.contains((col, row).into());
+            if in_ask {
+                review.focus = ReviewFocus::Ask;
+                let max = review.ask.max_response_scroll(
+                    review.ask_area.width.saturating_sub(2) as usize,
+                    review.ask_area.height.saturating_sub(2) as usize,
+                );
+                review.ask.scroll_response(lines, max);
+            } else if in_list {
                 review.focus = ReviewFocus::List;
                 review.move_sel(lines.signum());
                 review.ensure_viewer(&self.scrollback);

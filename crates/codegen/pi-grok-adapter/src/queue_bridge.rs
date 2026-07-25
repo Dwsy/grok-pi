@@ -1,8 +1,9 @@
-//! Mirror Pi `queue_update` into Grok's native `x.ai/queue/changed` surface.
+//! Adapter-owned queue isolation for the native Grok queue surface.
 //!
-//! Pi owns the real steering / follow-up queues. This module only assigns stable
-//! wire ids (preferring client `promptId`s) so the pager's optimistic echoes can
-//! be confirmed and retired without inventing a second scheduler.
+//! User and extension follow-ups stay here until the adapter dispatches them to
+//! Pi. That makes remove/edit/reorder/clear/interject real operations instead of
+//! optimistic UI mutations against Pi's text-only RPC arrays. Pi `queue_update`
+//! is still mirrored as an external lane for messages that bypass the adapter.
 
 use serde_json::{Value, json};
 
@@ -12,52 +13,215 @@ pub(crate) enum QueueLane {
     FollowUp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueueOrigin {
+    Client,
+    Extension,
+    Pi,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MirrorEntry {
-    id: String,
-    text: String,
-    version: u64,
-    lane: QueueLane,
+pub(crate) struct QueueEntry {
+    pub id: String,
+    pub execution_text: String,
+    pub display_text: String,
+    pub images: Vec<Value>,
+    pub version: u64,
+    pub lane: QueueLane,
+    pub origin: QueueOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReservedPrompt {
     id: String,
-    text: String,
+    execution_text: String,
+    display_text: String,
+    images: Vec<Value>,
     lane: QueueLane,
+    origin: QueueOrigin,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct QueueMirror {
-    entries: Vec<MirrorEntry>,
+    local_entries: Vec<QueueEntry>,
+    pi_entries: Vec<QueueEntry>,
     reserved: Vec<ReservedPrompt>,
     next_seq: u64,
-    running_prompt_id: Option<String>,
+    running: Option<QueueEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QueueSnapshot {
     pub entries: Vec<Value>,
     pub running_prompt_id: Option<String>,
+    pub running_text: Option<String>,
     pub steering_count: usize,
     pub follow_up_count: usize,
 }
 
 impl QueueMirror {
-    pub(crate) fn reserve(&mut self, id: String, text: String, lane: QueueLane) {
+    fn next_id(&mut self, prefix: &str) -> String {
+        self.next_seq = self.next_seq.wrapping_add(1).max(1);
+        format!("{prefix}-{}", self.next_seq)
+    }
+
+    pub(crate) fn enqueue_local(
+        &mut self,
+        id: Option<String>,
+        execution_text: String,
+        display_text: String,
+        images: Vec<Value>,
+        lane: QueueLane,
+        origin: QueueOrigin,
+    ) -> String {
+        let id = id.filter(|id| !id.trim().is_empty()).unwrap_or_else(|| {
+            let prefix = match origin {
+                QueueOrigin::Client => "pi-client-queue",
+                QueueOrigin::Extension => "pi-extension-queue",
+                QueueOrigin::Pi => "pi-queue",
+            };
+            self.next_id(prefix)
+        });
+        if let Some(existing) = self.local_entries.iter_mut().find(|entry| entry.id == id) {
+            existing.execution_text = execution_text;
+            existing.display_text = display_text;
+            existing.images = images;
+            existing.lane = lane;
+            existing.origin = origin;
+            return id;
+        }
+        self.local_entries.push(QueueEntry {
+            id: id.clone(),
+            execution_text,
+            display_text,
+            images,
+            version: 0,
+            lane,
+            origin,
+        });
+        id
+    }
+
+    pub(crate) fn local_entry(&self, id: &str) -> Option<&QueueEntry> {
+        self.local_entries.iter().find(|entry| entry.id == id)
+    }
+
+    pub(crate) fn take_local(
+        &mut self,
+        id: &str,
+        expected_version: Option<u64>,
+    ) -> Option<QueueEntry> {
+        let index = self.local_entries.iter().position(|entry| {
+            entry.id == id && expected_version.is_none_or(|version| version == entry.version)
+        })?;
+        Some(self.local_entries.remove(index))
+    }
+
+    pub(crate) fn pop_next_local(&mut self) -> Option<QueueEntry> {
+        (!self.local_entries.is_empty()).then(|| self.local_entries.remove(0))
+    }
+
+    pub(crate) fn push_front_local(&mut self, entry: QueueEntry) {
+        self.local_entries.retain(|current| current.id != entry.id);
+        self.local_entries.insert(0, entry);
+    }
+
+    pub(crate) fn edit_local(&mut self, id: &str, new_text: String) -> bool {
+        let Some(entry) = self.local_entries.iter_mut().find(|entry| entry.id == id) else {
+            return false;
+        };
+        entry.execution_text = new_text.clone();
+        entry.display_text = new_text;
+        entry.version = entry.version.wrapping_add(1);
+        true
+    }
+
+    pub(crate) fn reorder_local(&mut self, ordered_ids: &[String]) -> bool {
+        if self.local_entries.len() < 2 {
+            return false;
+        }
+        let before: Vec<String> = self
+            .local_entries
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect();
+        let mut remaining = std::mem::take(&mut self.local_entries);
+        let mut reordered = Vec::with_capacity(remaining.len());
+        for id in ordered_ids {
+            if let Some(index) = remaining.iter().position(|entry| &entry.id == id) {
+                reordered.push(remaining.remove(index));
+            }
+        }
+        reordered.append(&mut remaining);
+        let after: Vec<String> = reordered.iter().map(|entry| entry.id.clone()).collect();
+        self.local_entries = reordered;
+        before != after
+    }
+
+    pub(crate) fn clear_local(&mut self) -> Vec<QueueEntry> {
+        std::mem::take(&mut self.local_entries)
+    }
+
+    pub(crate) fn reserve(
+        &mut self,
+        id: String,
+        execution_text: String,
+        display_text: String,
+        images: Vec<Value>,
+        lane: QueueLane,
+        origin: QueueOrigin,
+    ) {
         if id.trim().is_empty() {
             return;
         }
-        // Latest reservation for the same client id wins.
         self.reserved.retain(|item| item.id != id);
-        self.reserved.push(ReservedPrompt { id, text, lane });
+        self.reserved.push(ReservedPrompt {
+            id,
+            execution_text,
+            display_text,
+            images,
+            lane,
+            origin,
+        });
     }
 
-    pub(crate) fn text_for_id(&self, id: &str) -> Option<&str> {
-        self.entries
-            .iter()
-            .find(|entry| entry.id == id)
-            .map(|entry| entry.text.as_str())
+    pub(crate) fn release_reservation(&mut self, id: &str) {
+        self.reserved.retain(|item| item.id != id);
+    }
+
+    pub(crate) fn set_running(&mut self, entry: QueueEntry) {
+        self.running = Some(entry);
+    }
+
+    pub(crate) fn set_running_primary(
+        &mut self,
+        id: String,
+        execution_text: String,
+        display_text: String,
+        images: Vec<Value>,
+        origin: QueueOrigin,
+    ) {
+        if id.trim().is_empty() {
+            return;
+        }
+        self.running = Some(QueueEntry {
+            id,
+            execution_text,
+            display_text,
+            images,
+            version: 0,
+            lane: QueueLane::FollowUp,
+            origin,
+        });
+    }
+
+    pub(crate) fn running(&self) -> Option<&QueueEntry> {
+        self.running.as_ref()
+    }
+
+    pub(crate) fn clear_running(&mut self) -> Option<QueueEntry> {
+        self.reserved.clear();
+        self.running.take()
     }
 
     pub(crate) fn apply_queue_update(
@@ -77,121 +241,102 @@ impl QueueMirror {
             )
             .collect();
 
-        let previous = std::mem::take(&mut self.entries);
+        let previous = std::mem::take(&mut self.pi_entries);
         let mut next = Vec::with_capacity(desired.len());
         let mut used_prev = vec![false; previous.len()];
 
         for (text, lane) in &desired {
-            if let Some((idx, entry)) = previous
-                .iter()
-                .enumerate()
-                .find(|(idx, entry)| !used_prev[*idx] && entry.lane == *lane && entry.text == *text)
-            {
-                used_prev[idx] = true;
+            if let Some((index, entry)) = previous.iter().enumerate().find(|(index, entry)| {
+                !used_prev[*index] && entry.lane == *lane && entry.execution_text == *text
+            }) {
+                used_prev[index] = true;
                 next.push(entry.clone());
                 continue;
             }
 
-            if let Some(pos) = self
+            let reserved_index = self
                 .reserved
                 .iter()
-                .position(|item| item.lane == *lane && item.text == *text)
-            {
-                let reserved = self.reserved.remove(pos);
-                next.push(MirrorEntry {
+                .position(|item| item.lane == *lane && item.execution_text == *text)
+                .or_else(|| self.reserved.iter().position(|item| item.lane == *lane));
+            if let Some(index) = reserved_index {
+                let reserved = self.reserved.remove(index);
+                next.push(QueueEntry {
                     id: reserved.id,
-                    text: text.clone(),
+                    execution_text: text.clone(),
+                    display_text: reserved.display_text,
+                    images: reserved.images,
                     version: 0,
                     lane: *lane,
+                    origin: reserved.origin,
                 });
                 continue;
             }
 
-            self.next_seq = self.next_seq.wrapping_add(1).max(1);
-            next.push(MirrorEntry {
-                id: format!("pi-queue-{}", self.next_seq),
-                text: text.clone(),
+            let id = self.next_id("pi-queue");
+            next.push(QueueEntry {
+                id,
+                execution_text: text.clone(),
+                display_text: text.clone(),
+                images: Vec::new(),
                 version: 0,
                 lane: *lane,
+                origin: QueueOrigin::Pi,
             });
         }
 
-        // Drop reservations that already landed or were superseded by Pi.
-        self.reserved.retain(|item| {
-            !next.iter().any(|entry| {
-                entry.id == item.id || (entry.lane == item.lane && entry.text == item.text)
-            })
-        });
+        self.reserved
+            .retain(|item| !next.iter().any(|entry| entry.id == item.id));
 
-        let removed: Vec<String> = previous
-            .into_iter()
-            .enumerate()
-            .filter_map(|(idx, entry)| (!used_prev[idx]).then_some(entry.id))
-            .collect();
-
-        // Pi delivers at most one queued user message at a time; the first
-        // vanished row is the one that became the running user message.
-        self.running_prompt_id = removed.into_iter().next();
-        self.entries = next;
+        if let Some(entry) = previous.iter().enumerate().find_map(|(index, entry)| {
+            (!used_prev[index] && entry.lane == QueueLane::FollowUp).then(|| entry.clone())
+        }) {
+            self.running = Some(entry);
+        }
+        self.pi_entries = next;
         self.snapshot()
     }
 
     pub(crate) fn snapshot(&self) -> QueueSnapshot {
         let entries = self
-            .entries
+            .pi_entries
             .iter()
+            .chain(self.local_entries.iter())
             .enumerate()
             .map(|(position, entry)| {
-                // Keep wire minimal: no owner attribution (single-client Pi).
-                // Lane lives only in mirror state for reconcile.
                 json!({
                     "id": entry.id,
                     "version": entry.version,
                     "kind": "prompt",
-                    "text": entry.text,
+                    "text": entry.display_text,
                     "position": position,
                 })
             })
             .collect();
         let steering_count = self
-            .entries
+            .pi_entries
             .iter()
+            .chain(self.local_entries.iter())
             .filter(|entry| entry.lane == QueueLane::Steering)
             .count();
-        let follow_up_count = self.entries.len() - steering_count;
+        let total = self.pi_entries.len() + self.local_entries.len();
         QueueSnapshot {
             entries,
-            running_prompt_id: self.running_prompt_id.clone(),
+            running_prompt_id: self.running.as_ref().map(|entry| entry.id.clone()),
+            running_text: self
+                .running
+                .as_ref()
+                .map(|entry| entry.display_text.clone()),
             steering_count,
-            follow_up_count,
+            follow_up_count: total - steering_count,
         }
     }
 
-    pub(crate) fn clear_running(&mut self) {
-        self.running_prompt_id = None;
-    }
-
-    /// Mark the primary in-flight client prompt as running.
-    ///
-    /// Stock Grok shell pins `runningPromptId` for the active turn so the pager
-    /// can adopt turn chrome (status spinner / elapsed). Mid-turn queue drain
-    /// already sets this via [`Self::apply_queue_update`]; the first/idle prompt
-    /// never enters Pi's steering/follow-up arrays, so the adapter must pin it
-    /// explicitly when `session/prompt` starts.
-    pub(crate) fn set_running(&mut self, id: impl Into<String>) {
-        let id = id.into();
-        if id.trim().is_empty() {
-            return;
-        }
-        self.running_prompt_id = Some(id);
-    }
-
-    /// Clear all mirrored entries and reservations (cancel path).
-    /// Returns a snapshot with empty entries so the pager can update.
     pub(crate) fn clear(&mut self) -> QueueSnapshot {
-        self.entries.clear();
+        self.local_entries.clear();
+        self.pi_entries.clear();
         self.reserved.clear();
-        self.running_prompt_id = None;
+        self.running = None;
         self.snapshot()
     }
 }
@@ -216,6 +361,10 @@ pub(crate) fn queue_changed_params(session_id: &str, snapshot: &QueueSnapshot) -
     });
     if let Some(running) = &snapshot.running_prompt_id {
         params["runningPromptId"] = Value::String(running.clone());
+        params["runningKind"] = Value::String("prompt".to_string());
+    }
+    if let Some(text) = &snapshot.running_text {
+        params["runningText"] = Value::String(text.clone());
     }
     params
 }
@@ -224,95 +373,121 @@ pub(crate) fn queue_changed_params(session_id: &str, snapshot: &QueueSnapshot) -
 mod tests {
     use super::*;
 
-    #[test]
-    fn set_running_pins_primary_prompt_id() {
-        let mut mirror = QueueMirror::default();
-        mirror.set_running("primary-1");
-        let snap = mirror.snapshot();
-        assert_eq!(snap.running_prompt_id.as_deref(), Some("primary-1"));
-        mirror.clear_running();
-        assert!(mirror.snapshot().running_prompt_id.is_none());
+    fn enqueue(mirror: &mut QueueMirror, id: &str, text: &str) {
+        mirror.enqueue_local(
+            Some(id.into()),
+            text.into(),
+            text.into(),
+            Vec::new(),
+            QueueLane::FollowUp,
+            QueueOrigin::Client,
+        );
     }
 
     #[test]
-    fn prefers_reserved_client_prompt_id() {
+    fn local_queue_supports_edit_reorder_remove_and_clear() {
         let mut mirror = QueueMirror::default();
-        mirror.reserve("client-1".into(), "hello".into(), QueueLane::FollowUp);
-        let snap = mirror.apply_queue_update(&[], &["hello".into()]);
-        assert_eq!(snap.entries.len(), 1);
-        assert_eq!(snap.entries[0]["id"], "client-1");
-        assert_eq!(snap.entries[0]["text"], "hello");
-        assert!(snap.running_prompt_id.is_none());
+        enqueue(&mut mirror, "a", "one");
+        enqueue(&mut mirror, "b", "two");
+        enqueue(&mut mirror, "c", "three");
+        assert!(mirror.edit_local("b", "two edited".into()));
+        assert_eq!(mirror.local_entry("b").unwrap().version, 1);
+        assert!(mirror.reorder_local(&["c".into(), "b".into(), "a".into()]));
+        assert_eq!(mirror.snapshot().entries[0]["id"], "c");
+        let removed = mirror.take_local("b", Some(1)).unwrap();
+        assert_eq!(removed.display_text, "two edited");
+        assert_eq!(mirror.clear_local().len(), 2);
+        assert!(mirror.snapshot().entries.is_empty());
     }
 
     #[test]
-    fn dequeues_delivered_item_and_sets_running_id() {
+    fn running_entry_carries_text_for_pager_adoption() {
         let mut mirror = QueueMirror::default();
-        mirror.reserve("a".into(), "one".into(), QueueLane::FollowUp);
-        mirror.reserve("b".into(), "two".into(), QueueLane::FollowUp);
-        let first = mirror.apply_queue_update(&[], &["one".into(), "two".into()]);
-        assert_eq!(first.follow_up_count, 2);
-
-        let second = mirror.apply_queue_update(&[], &["two".into()]);
-        assert_eq!(second.entries.len(), 1);
-        assert_eq!(second.entries[0]["id"], "b");
-        assert_eq!(second.running_prompt_id.as_deref(), Some("a"));
-
-        let third = mirror.apply_queue_update(&[], &[]);
-        assert!(third.entries.is_empty());
-        assert_eq!(third.running_prompt_id.as_deref(), Some("b"));
+        enqueue(&mut mirror, "client-1", "hello");
+        let entry = mirror.pop_next_local().unwrap();
+        mirror.set_running(entry);
+        let snapshot = mirror.snapshot();
+        assert_eq!(snapshot.running_prompt_id.as_deref(), Some("client-1"));
+        assert_eq!(snapshot.running_text.as_deref(), Some("hello"));
+        let params = queue_changed_params("session", &snapshot);
+        assert_eq!(params["runningText"], "hello");
     }
 
     #[test]
-    fn steering_rows_precede_follow_up_rows() {
+    fn pi_updates_do_not_erase_local_queue() {
         let mut mirror = QueueMirror::default();
-        let snap = mirror.apply_queue_update(&["steer-me".into()], &["later".into()]);
-        assert_eq!(snap.entries[0]["text"], "steer-me");
-        assert_eq!(snap.entries[1]["text"], "later");
-        assert_eq!(snap.steering_count, 1);
-        assert_eq!(snap.follow_up_count, 1);
+        enqueue(&mut mirror, "local", "later");
+        mirror.apply_queue_update(&["steer".into()], &["external".into()]);
+        let snapshot = mirror.snapshot();
+        assert_eq!(snapshot.entries.len(), 3);
+        assert_eq!(snapshot.entries[2]["id"], "local");
     }
 
     #[test]
-    fn stable_ids_survive_reorder_within_lane() {
+    fn transformed_pi_text_keeps_reserved_id_and_display() {
         let mut mirror = QueueMirror::default();
-        mirror.apply_queue_update(&[], &["a".into(), "b".into()]);
-        let before = mirror.snapshot();
-        let id_a = before.entries[0]["id"].as_str().unwrap().to_string();
-        let id_b = before.entries[1]["id"].as_str().unwrap().to_string();
-
-        // Same multiset, same order — ids preserved.
-        let after = mirror.apply_queue_update(&[], &["a".into(), "b".into()]);
-        assert_eq!(after.entries[0]["id"], id_a);
-        assert_eq!(after.entries[1]["id"], id_b);
+        mirror.reserve(
+            "client-1".into(),
+            "raw input".into(),
+            "raw input".into(),
+            Vec::new(),
+            QueueLane::Steering,
+            QueueOrigin::Client,
+        );
+        let snapshot = mirror.apply_queue_update(&["expanded input".into()], &[]);
+        assert_eq!(snapshot.entries[0]["id"], "client-1");
+        assert_eq!(snapshot.entries[0]["text"], "raw input");
     }
 
     #[test]
-    fn duplicate_texts_match_fifo() {
+    fn external_follow_up_dequeue_becomes_running() {
         let mut mirror = QueueMirror::default();
-        mirror.reserve("first".into(), "same".into(), QueueLane::Steering);
-        mirror.reserve("second".into(), "same".into(), QueueLane::Steering);
-        let snap = mirror.apply_queue_update(&["same".into(), "same".into()], &[]);
-        assert_eq!(snap.entries[0]["id"], "first");
-        assert_eq!(snap.entries[1]["id"], "second");
+        mirror.apply_queue_update(&[], &["one".into(), "two".into()]);
+        let first_ids: Vec<String> = mirror
+            .pi_entries
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect();
+        mirror.apply_queue_update(&[], &["two".into()]);
+        assert_eq!(mirror.running().unwrap().id, first_ids[0]);
+        assert_eq!(mirror.running().unwrap().origin, QueueOrigin::Pi);
     }
 
     #[test]
-    fn clear_empties_all_state() {
+    fn steering_dequeue_preserves_primary_running_entry() {
         let mut mirror = QueueMirror::default();
-        mirror.reserve("a".into(), "one".into(), QueueLane::FollowUp);
-        mirror.apply_queue_update(&["steer".into()], &["one".into(), "two".into()]);
-        assert!(!mirror.snapshot().entries.is_empty());
+        mirror.set_running_primary(
+            "primary".into(),
+            "primary".into(),
+            "primary".into(),
+            Vec::new(),
+            QueueOrigin::Client,
+        );
+        mirror.apply_queue_update(&["change".into()], &[]);
+        mirror.apply_queue_update(&[], &[]);
+        assert_eq!(mirror.running().unwrap().id, "primary");
+    }
 
-        let snap = mirror.clear();
-        assert!(snap.entries.is_empty());
-        assert!(snap.running_prompt_id.is_none());
-        assert_eq!(snap.steering_count, 0);
-        assert_eq!(snap.follow_up_count, 0);
-
-        // After clear, new queue_update starts fresh.
-        let after = mirror.apply_queue_update(&[], &["new".into()]);
-        assert_eq!(after.entries.len(), 1);
-        assert_eq!(after.entries[0]["text"], "new");
+    #[test]
+    fn generated_extension_ids_are_stable_and_distinct() {
+        let mut mirror = QueueMirror::default();
+        let first = mirror.enqueue_local(
+            None,
+            "one".into(),
+            "one".into(),
+            Vec::new(),
+            QueueLane::FollowUp,
+            QueueOrigin::Extension,
+        );
+        let second = mirror.enqueue_local(
+            None,
+            "two".into(),
+            "two".into(),
+            Vec::new(),
+            QueueLane::FollowUp,
+            QueueOrigin::Extension,
+        );
+        assert!(first.starts_with("pi-extension-queue-"));
+        assert_ne!(first, second);
     }
 }

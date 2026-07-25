@@ -796,7 +796,10 @@ impl Renderable for EntryRenderer<'_> {
         // this fallback the wave animation never renders for Read/Search/Edit/
         // Thinking/etc. — the accent column is simply blank.
         let accent = match accent {
-            None if self.entry.is_running && !self.hide_accent => {
+            None if self.entry.is_running
+                && self.entry.block.animates_running_accent()
+                && !self.hide_accent =>
+            {
                 Some(AccentStyle::animated(self.theme.accent_running))
             }
             other => other,
@@ -1150,6 +1153,43 @@ mod tests {
                     "pending bullet color must be static across ticks (tick {tick})"
                 ),
             }
+        }
+    }
+
+    #[test]
+    fn running_messages_do_not_receive_wave_accent_fallback() {
+        let theme = Theme::current();
+        for block in [
+            RenderBlock::user_prompt("hello"),
+            RenderBlock::agent_message("hello"),
+        ] {
+            let entry = ScrollbackEntry::running(block);
+            assert!(entry.is_running, "precondition: entry is running");
+            assert!(
+                !entry.block.animates_running_accent(),
+                "message chrome must stay static while content streams"
+            );
+
+            let area = Rect::new(0, 0, 60, 3);
+            let mut frames = Vec::new();
+            for tick in [0u64, 11, 23] {
+                let mut buf = Buffer::empty(area);
+                EntryRenderer::new(&entry, &theme)
+                    .with_tick(tick)
+                    .render(area, &mut buf);
+                frames.push(
+                    (0..area.height)
+                        .map(|y| {
+                            let cell = buf.cell((0, y)).unwrap();
+                            (cell.symbol().to_string(), cell.fg)
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            }
+            assert!(
+                frames.windows(2).all(|pair| pair[0] == pair[1]),
+                "message accent column must be tick-invariant"
+            );
         }
     }
 

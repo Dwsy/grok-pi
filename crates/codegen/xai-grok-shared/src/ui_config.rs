@@ -235,6 +235,11 @@ pub struct UiConfig {
     /// expands write and edit output; `all_tools` expands every tool output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctrl_o_tool_expansion: Option<String>,
+    /// Header content for grok-pi Bash/run tool cards:
+    /// `command_only` | `task_name` (default) | `task_name_and_command`.
+    /// Written by the pager's F2 settings modal and applied live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_bash_run_display: Option<String>,
     /// Next-prompt suggestions (tab autocomplete ghost text) after each turn.
     /// `None` = on (client default). Written by the pager's settings modal;
     /// the `GROK_PROMPT_SUGGESTIONS` env var overrides at runtime.
@@ -429,6 +434,7 @@ impl Default for UiConfig {
             group_tool_verbs: None,
             collapsed_edit_blocks: None,
             ctrl_o_tool_expansion: None,
+            pi_bash_run_display: None,
             prompt_suggestions: None,
             cursor_blink: None,
             screen_mode: None,
