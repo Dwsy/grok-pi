@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     env,
+    fs::{File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -167,6 +169,7 @@ impl PiRpc {
         // Stderr reader: buffers lines and signals completion.
         let stderr_ring_for_reader = stderr_ring.clone();
         let (stderr_done_tx, stderr_done_rx) = oneshot::channel::<()>();
+        let mut stderr_log = open_pi_stderr_log();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -174,6 +177,12 @@ impl PiRpc {
                     .lock()
                     .expect("stderr ring poisoned")
                     .push(line.clone());
+                if let Some(log) = stderr_log.as_mut()
+                    && let Err(error) = writeln!(log, "{line}")
+                {
+                    tracing::warn!(%error, "failed writing Pi stderr log");
+                    stderr_log = None;
+                }
                 tracing::warn!(target: "pi_rpc", "{line}");
             }
             let _ = stderr_done_tx.send(());
@@ -358,6 +367,29 @@ where
         .expect("pi-json-deep thread panicked")
 }
 
+/// Opens the complete Pi stderr log under the product-isolated Grok home.
+///
+/// Pi stderr is intentionally mirrored to a file because narrow terminal
+/// surfaces can truncate multi-line Node stack traces.
+fn open_pi_stderr_log() -> Option<File> {
+    let grok_home = env::var_os("GROK_HOME")?;
+    match open_pi_stderr_log_at(Path::new(&grok_home)) {
+        Ok(file) => Some(file),
+        Err(error) => {
+            tracing::warn!(%error, home = %Path::new(&grok_home).display(), "failed opening Pi stderr log");
+            None
+        }
+    }
+}
+
+fn open_pi_stderr_log_at(grok_home: &Path) -> std::io::Result<File> {
+    let path = grok_home.join("logs/pi-rpc-stderr.log");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    OpenOptions::new().create(true).append(true).open(path)
+}
+
 /// Ring buffer that keeps the last N stderr lines from the Pi child process.
 /// Used to surface meaningful diagnostics when the RPC connection drops.
 struct StderrRingBuffer {
@@ -471,6 +503,20 @@ fn fail_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persists_pi_stderr_to_product_log_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("logs/pi-rpc-stderr.log");
+        let mut file = open_pi_stderr_log_at(temp.path()).expect("open stderr log");
+        writeln!(file, "Error: stale extension context").expect("write stderr");
+        drop(file);
+
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read stderr log"),
+            "Error: stale extension context\n"
+        );
+    }
 
     #[test]
     fn only_long_running_pi_operations_skip_the_default_deadline() {

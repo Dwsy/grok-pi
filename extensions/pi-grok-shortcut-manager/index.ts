@@ -452,15 +452,8 @@ export default function (pi: ExtensionAPI): void {
     ensureDispatchChannel();
     refreshRegistry();
     publishRegistryToHost(ctx.ui);
-    // Late-loading extensions (npm) may finish after session_start.
-    setTimeout(() => {
-      refreshRegistry();
-      publishRegistryToHost(ctx.ui);
-    }, 500);
-    setTimeout(() => {
-      refreshRegistry();
-      publishRegistryToHost(ctx.ui);
-    }, 2000);
+    // Later turn_start or bridge dispatch refreshes extensions that load after session_start.
+    // Timers must not retain this ctx: Pi invalidates it on session replacement.
   });
 
   pi.on("turn_start", (_event, ctx) => {

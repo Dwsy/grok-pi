@@ -4,6 +4,17 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.10] - 2026-07-25
+
+Range: `v0.0.9` → `v0.0.10` (2026-07-24 → 2026-07-25).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Fixed
+
+- **Session replacement crash** — shortcut-manager no longer retains a stale Pi extension context in delayed callbacks after a session reload, fork, or switch.
+- **Pi RPC diagnostics** — complete child stderr is appended to `$GROK_HOME/logs/pi-rpc-stderr.log`, preserving uncropped Node stack traces when terminal error surfaces are narrow.
+
 ## [0.0.9] - 2026-07-24
 
 Range: `v0.0.8` → `v0.0.9` (2026-07-22 → 2026-07-24).
