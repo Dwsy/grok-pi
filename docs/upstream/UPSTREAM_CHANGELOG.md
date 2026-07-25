@@ -33,6 +33,109 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [6e38642] — 2026-07-25
+
+> **Status:** Pending — not yet merged into grok-pi.
+
+- **Sync range:** `a5727c5..6e38642` (`a5727c5960452e7527a154b25cb5bf00cda0545e` → `6e386420825bd44ae648c63e7c8cba12fcec9401`)
+- **Upstream commits:** 2 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `9b8d35b46d959c042ea9aa31cbbebbd1f0c5c527` (was `30192d2eef5d91a8fff0e53957de5bd05b43398c`)
+- **Diff size:** 349 files changed, +27899 / −10881
+
+### Summary
+
+Large sync dominated by Pager and Shell changes: title-based resume, queue editing, tutorial and privacy surfaces, auth/provider hardening, true-noop turn handling, workflow recovery, and expanded tool/workspace behavior. Pager `app/`, session, queue, voice, settings, workflow overlay, and Shell ACP/auth paths overlap heavily with Pi-Grok integration seams, so the merge must remain isolated and preserve the fork's external-agent and Pi-owned runtime boundaries.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Shell (agent runtime) | 111 | +6726/−7519 | 4/2 | auth refresh, provider gateways, turn stop/origin, resumable workflows |
+| Pager (TUI) | 130 | +9666/−1587 | 16/0 | resume, queue edit, tutorial/privacy, voice and workflow overlay |
+| Tools | 40 | +5623/−887 | 7/0 | managed catalog refresh and tools-server callback surface |
+| Sandbox | 8 | +2103/−262 | 2/0 | persistent hook-source protection and deny-path hardening |
+| Config | 8 | +1020/−2 | 2/0 | global hook sources and managed configuration |
+| Workspace / Permission | 10 | +915/−63 | 0/0 | readiness failure reporting and fail-closed policy behavior |
+| Update / Version | 5 | +349/−436 | 1/1 | soft and required CLI version checks |
+| Agent lifecycle | 6 | +464/−28 | 1/0 | agent/session metadata and lifecycle changes |
+| Models / Sampling | 7 | +338/−29 | 1/0 | image/session metadata and default web-search model |
+| Other | 6 | +307/−5 | 0/0 | documentation and supporting project assets |
+| Workflow | 2 | +183/−2 | 0/0 | scratch quotas and failed-run resume support |
+| Other crates | 5 | +85/−16 | 0/0 | shared support changes outside mapped areas |
+| Root / meta | 3 | +27/−31 | 0/0 | workspace metadata, lockfile, and SOURCE_REV |
+| Hooks / Plugins | 2 | +44/−14 | 0/0 | marketplace URL validation and hook discovery |
+| Chat state | 4 | +20/−0 | 0/0 | deploy-state and turn metadata plumbing |
+| Telemetry / Mixpanel | 1 | +16/−0 | 0/0 | gateway lifecycle telemetry |
+| Voice | 1 | +13/−0 | 0/0 | interim text submission and editing behavior |
+| **Total** | **349** | **+27899/−10881** | **34/3** | |
+
+### Added
+
+- ACP terminal output recorder
+- Cross-platform provider-auth commands in the Shell
+- Custom provider gateways and subprocess-environment policy in the Shell
+- `/tutorial`, an opt-in Grok Build onboarding tour
+- Soft and required CLI version checks in the Shell
+- Remote flag to override the image-edit model
+- Edit control on queued prompt rows
+- Setting to disable the Ctrl+Space/F8 voice shortcut
+- Privacy upsell banner in agent view until acted on
+- Tools-server client callback surface
+- Documentation for marketplaces, plugins, and organization controls
+- Chat API fields for deploy archive, taken-down, limit, and in-progress reasons
+- Chat-supplied per-session turn index in turn hooks
+- Metrics for true-noop and stationarity stops
+- Gateway bridge lifecycle telemetry
+
+### Changed
+
+- Default `/resume` to Grok sessions and show a hint for hidden external sessions
+- Resume sessions by title with `--resume`
+- Limit app-builder archive size
+- Drive slash-command tag labels from data
+- Surface Grok Computer media-generation results as file-path chunks
+- Stamp session ID on image-generation direct-to-API requests
+- Make auto mode consider recent user intent
+- Show Bash mode chrome in minimal mode
+- Include voice interim text on prompt submission
+- Silently end a turn on true-noop thrash
+- Quiet the copy toast when clipboard delivery is confirmed
+- Make the idle “still running” watcher cue open the tasks pane
+- Default the web-search model to Grok 4.5
+- Let plugin subagents inherit parent MCP servers
+- Gate the no-op end-turn reminder on system reminders
+- Allow editing finalized text while voice is open
+- Relocate the token carrier to turn-commit events and plumb per-turn origin context
+- Raise workflow scratch quotas and make failed runs resumable
+- Auto-progress workflow-overlay phases, show live agent status, and remove the budget meter
+
+### Fixed
+
+- Report workspace-server `/ready` failure with dwell when hub connection fails
+- Refresh the Grok agent OIDC token in the Shell
+- Fix tmux issues through Doctor remediation
+- Preserve privacy-banner environment overrides across live settings updates
+- Return auth-info profile fields even when the access token is expired
+- Keep fail-closed behavior when clearing orphans with no team
+- Pass `--raw` to `pw-record` for Linux dictation on older PipeWire
+- Validate Git URLs when adding marketplace entries
+- Stop shipping stale tool-doc parameter and tool names
+- Re-point dashboard attach after `/fork` only when the parent was attached
+- Clear the web background-task tray on kill while retaining the task description
+- Protect persistent global hook sources
+- Refresh tool search when the managed MCP catalog is re-fetched
+- Prevent duplicate leader-process spawn and startup hangs from stale leaders
+- Correct auto-mode blocked documentation
+- Enforce a fail-closed auth-refresh contract for Shell clients
+- Fix session forks truncating at the wrong prompt in rewound sessions
+
+### Merge risk for grok-pi
+
+- Upstream changes heavily overlap `xai-grok-pager/src/app/`, including session lifecycle, queue editing, settings, voice, workflow overlay, event loop, actions, effects, mouse handling, and task results.
+- Preserve Pi-Grok seams: `external_agent` routing, Pi-owned queue/session/trust behavior, OpenPiConfig and product-isolated paths, DirectPi effects/results, model-picker guards, and native Pager-only rendering.
+- Shell auth/workflow changes are upstream-owned and should normally take upstream behavior; do not let them pull Grok runtime ownership into `pi-grok-adapter`.
+- Update `SOURCE_REV`, `AGENTS.md` base, and source-identity/renderer baselines only after the isolated merge is resolved and verified.
+
 ## [a5727c5] — 2026-07-23
 
 > **Status:** Merged into grok-pi `main` via `sync/upstream-a5727c5` @ `4d19f00` (ff-only).
