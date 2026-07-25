@@ -35,7 +35,7 @@ Each entry records:
 
 ## [6e38642] — 2026-07-25
 
-> **Status:** Pending — not yet merged into grok-pi.
+> **Status:** Verified on `sync/upstream-6e38642` via merge commit `963ccf5`; pending ff-only delivery to `main`.
 
 - **Sync range:** `a5727c5..6e38642` (`a5727c5960452e7527a154b25cb5bf00cda0545e` → `6e386420825bd44ae648c63e7c8cba12fcec9401`)
 - **Upstream commits:** 2 (`Synced from monorepo`)
@@ -128,6 +128,13 @@ Large sync dominated by Pager and Shell changes: title-based resume, queue editi
 - Correct auto-mode blocked documentation
 - Enforce a fail-closed auth-refresh contract for Shell clients
 - Fix session forks truncating at the wrong prompt in rewound sessions
+
+### Integration result
+
+- Resolved 16 conflicts in an isolated worktree and preserved upstream ancestry in two-parent merge commit `963ccf5`.
+- Preserved Pi-owned workflow spawning, external-agent routing, product-isolated paths, Pi session/tree/queue/settings, DirectPi effects and `pi_update`; adapted upstream mailbox, voice, tutorial, privacy, slash-tag and send-now contracts.
+- Passed adapter tests (128), serial `grok-pi` binary tests (56), `cargo check`, and `./build.sh`.
+- Remaining source/renderer/slash/mock verifier failures reproduce unchanged on pre-merge `main`; allowlists were not broadened. Workflow focused tests are 73/74 with the known macOS `/var` canonical-path assertion failure.
 
 ### Merge risk for grok-pi
 
