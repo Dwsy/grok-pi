@@ -35,7 +35,7 @@ Each entry records:
 
 ## [6e38642] — 2026-07-25
 
-> **Status:** Verified on `sync/upstream-6e38642` via merge commit `963ccf5`; pending ff-only delivery to `main`.
+> **Status:** Merged into grok-pi `main` by ff-only through verified integration tip `92b7c3d` (two-parent upstream merge `963ccf5`).
 
 - **Sync range:** `a5727c5..6e38642` (`a5727c5960452e7527a154b25cb5bf00cda0545e` → `6e386420825bd44ae648c63e7c8cba12fcec9401`)
 - **Upstream commits:** 2 (`Synced from monorepo`)
