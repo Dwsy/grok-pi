@@ -1,13 +1,26 @@
 # Grok Native TUI × Pi Verification Report
 
 Verification date: 2026-07-26
-Verified integration tip: `db8205983efeec7181facaf58065baaa5beb3c6b` (upstream merge `be91fe7`, upstream `47348d1`)
+Delivered local main lineage: integration base `1a52f81af9d7f871f7067de35cc57756faf4bd31` (upstream merge `be91fe7`, upstream `47348d1`); restored WIP safety tip `3d4278d`
 
 ## Conclusion
 
 The current delivery has passed production build, adapter unit tests, and native Grok architecture plus Pi protocol-contract verification. The entry point genuinely uses Grok Build's production Pager, not a standalone Ratatui/fallback/character-art frontend.
 
 We cannot yet claim **all** verification is green. The Rust syntax stage of `verify.sh` depends on undeclared Python packages `tree_sitter` / `tree_sitter_rust`, which are missing from this environment. The native-source and renderer hash manifests, slash `fork`/`voice` rule, and one mock `agent_settled` completion-barrier expectation are stale and require deliberate baseline review; they were not broadened or regenerated during the merge. One Hooks SSRF test is environment-dependent here because the local resolver maps `.invalid` to an internal IPv6 address, and the same failure reproduces before the merge. Focused Pager lib tests now compile and pass. No new real-model PTY end-to-end smoke test has been added.
+
+
+## 2026-07-26 Lossless Main Delivery
+
+| Layer | Result | Notes |
+|---|---:|---|
+| Main history | PASS | ff-only from `906470c` to `1a52f81`; no rebase, squash, force update, or remote push |
+| Restored WIP | PASS | 64 paths (33 modified, 31 added), zero SHA-256 or mode mismatches against safety tip `3d4278d` |
+| Herdr extension | PASS | Node socket tests 2/2; Rust `grok-pi herdr` tests 3/3 |
+| Model management | PASS | focused Pager model tests 12/12 |
+| Product compile | PASS | `cargo check -p xai-grok-pager-bin --bin grok-pi` |
+| CLI smoke | PASS | `target/debug/grok-pi --help` |
+| Recovery | PASS | two original stashes, combined/rebased safety branches, binary patch and manifest retained |
 
 ## 2026-07-18 Subagent Adaptation Increment
 
