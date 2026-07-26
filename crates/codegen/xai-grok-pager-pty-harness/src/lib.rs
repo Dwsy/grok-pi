@@ -42,8 +42,8 @@ pub use content::{
 pub use env::pager_binary;
 pub use flows::{
     inference_request_count, oauth_credential_ops, seed_fake_oauth,
-    seed_fake_oauth_coding_data_opted_out, submit_turn, wait_for_labels_absent,
-    wait_for_model_via_new_sessions,
+    seed_fake_oauth_coding_data_opted_out, seed_fake_oauth_team_member, seed_fake_oauth_zdr_team,
+    submit_turn, wait_for_labels_absent, wait_for_model_via_new_sessions,
 };
 pub use host_clipboard::HostClipboardTextGuard;
 pub use leader::LeaderCluster;
@@ -72,6 +72,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use portable_pty::PtySize;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PtyPump {
+    Chunk,
+    Timeout,
+    Closed,
+}
 
 /// High-level harness that composes PTY control, screen state, and frame timing.
 ///
@@ -324,30 +331,32 @@ impl PtyHarness {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if remaining.is_zero() || !matches!(self.pump_one(remaining), PtyPump::Chunk) {
                 break;
             }
-            match self.pty.recv_chunk(remaining) {
-                Some(chunk) => {
-                    self.raw_output.extend_from_slice(&chunk);
-                    self.cast_events.push((
-                        self.spawned_at.elapsed().as_secs_f64(),
-                        self.raw_output.len(),
-                    ));
-                    self.screen.feed(&chunk);
-                    self.timing.feed(&chunk);
-                    // Answer terminal probes (cursor-position reports, …) the
-                    // emulator queued while parsing this chunk, mirroring a real
-                    // terminal. Opt-in so probe-scripting tests keep control.
-                    if self.respond_to_queries {
-                        let responses = self.screen.drain_responses();
-                        if !responses.is_empty() {
-                            let _ = self.pty.inject_keys(&responses);
-                        }
+        }
+    }
+
+    fn pump_one(&mut self, timeout: Duration) -> PtyPump {
+        match self.pty.recv_chunk(timeout) {
+            PtyRead::Chunk(chunk) => {
+                self.raw_output.extend_from_slice(&chunk);
+                self.cast_events.push((
+                    self.spawned_at.elapsed().as_secs_f64(),
+                    self.raw_output.len(),
+                ));
+                self.screen.feed(&chunk);
+                self.timing.feed(&chunk);
+                if self.respond_to_queries {
+                    let responses = self.screen.drain_responses();
+                    if !responses.is_empty() {
+                        let _ = self.pty.inject_keys(&responses);
                     }
                 }
-                None => break, // timeout or child exited
+                PtyPump::Chunk
             }
+            PtyRead::Timeout => PtyPump::Timeout,
+            PtyRead::Closed => PtyPump::Closed,
         }
     }
 
@@ -396,25 +405,19 @@ impl PtyHarness {
         self.screen.contains(text)
     }
 
-    /// Block until the screen contains `text` or `timeout` expires.
+    /// Pump PTY output until `condition` becomes true or `timeout` expires.
     ///
-    /// Checks the current screen state first to avoid unnecessary blocking.
-    pub fn wait_for_text(&mut self, text: &str, timeout: Duration) -> Result<()> {
-        // Fast path: text may already be on screen from a prior update().
-        if self.screen.contains(text) {
-            return Ok(());
-        }
+    /// The condition is checked before the first pump and after each output
+    /// slice. `description` names the semantic state in timeout diagnostics.
+    pub fn wait_until(
+        &mut self,
+        description: &str,
+        timeout: Duration,
+        mut condition: impl FnMut(&Self) -> bool,
+    ) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                anyhow::bail!(
-                    "timed out after {timeout:?} waiting for text: {text:?}\nscreen contents:\n{}",
-                    self.screen.contents()
-                );
-            }
-            self.update(Duration::from_millis(50).min(remaining));
-            if self.screen.contains(text) {
+            if condition(self) {
                 return Ok(());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());

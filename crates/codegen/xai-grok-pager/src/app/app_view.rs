@@ -1356,6 +1356,17 @@ impl AppView {
                 .as_deref()
                 .is_some_and(|r| r.eq_ignore_ascii_case("admin"))
     }
+    /// Why `coding_data_sharing` is locked for this user (`None` = editable).
+    /// Mirrors the dispatch guards in `set_coding_data_sharing`.
+    pub fn coding_data_sharing_lock(&self) -> Option<crate::settings::CodingDataSharingLock> {
+        if self.is_zdr {
+            Some(crate::settings::CodingDataSharingLock::Zdr)
+        } else if self.is_team_non_admin() {
+            Some(crate::settings::CodingDataSharingLock::TeamManaged)
+        } else {
+            None
+        }
+    }
     /// Welcome privacy banner visibility gates.
     pub fn privacy_banner_should_show(&self) -> bool {
         if self.screen_mode.is_minimal() {
@@ -7299,6 +7310,10 @@ pub(crate) mod tests {
                 entries_query: None,
                 source_filter: crate::views::session_picker::SourceFilter::default(),
                 pending_delete: None,
+                preview_scroll: 0,
+                search_mode: false,
+                preview_mode: false,
+                preview_messages: None,
             });
         assert_eq!(
             app.tick_demand(),
@@ -7308,6 +7323,11 @@ pub(crate) mod tests {
         let foreign_entry = SessionPickerEntry {
             id: "claude-1".into(),
             summary: "claude".into(),
+            name: None,
+            first_message: None,
+            session_path: None,
+            total_tokens: None,
+            total_cost: None,
             updated_at: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             cwd: String::new(),
@@ -7319,6 +7339,7 @@ pub(crate) mod tests {
             branch: None,
             repo_name: "r".into(),
             worktree_label: None,
+            parent_session_path: None,
             card_detail: None,
         };
         if let Some(crate::views::modal::ActiveModal::SessionPicker { entries, .. }) =

@@ -2133,15 +2133,15 @@ mod jump_backout_key_tests {
     use super::{AgentPane, AgentView};
     use crate::views::jump::{JumpRestore, JumpState};
     fn open_jump(agent: &mut AgentView) {
-        agent.jump_state = Some(JumpState {
-            entries: Vec::new(),
-            selected: 0,
-            restore: JumpRestore {
+        agent.jump_state = Some(JumpState::new(
+            Vec::new(),
+            0,
+            JumpRestore {
                 bookmark: None,
                 selected: None,
                 follow_mode: false,
             },
-        });
+        ));
     }
     /// In the dashboard overlay, a bare Esc backs out via
     /// `no_esc_consumer_pending`; the open `/jump` picker must count as a

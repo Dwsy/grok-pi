@@ -21,6 +21,7 @@ pub mod keys {
     pub const Q: &[u8] = b"q";
     pub const DOWN: &[u8] = b"\x1b[B";
     pub const UP: &[u8] = b"\x1b[A";
+    pub const RIGHT: &[u8] = b"\x1b[C";
     pub const PGDN: &[u8] = b"\x1b[6~";
     pub const PGUP: &[u8] = b"\x1b[5~";
     pub const ENTER: &[u8] = b"\r";
@@ -28,6 +29,8 @@ pub mod keys {
     /// Ctrl+R (0x12) — prompt history search / scrollback mouse-reporting toggle.
     pub const CTRL_R: &[u8] = b"\x12";
     pub const ESC: &[u8] = b"\x1b";
+    /// F2 (SS3 `ESC O Q`, the xterm encoding crossterm parses) — opens the settings modal.
+    pub const F2: &[u8] = b"\x1bOQ";
 }
 
 /// One explicit environment mutation applied after the TestSandbox baseline.
@@ -231,13 +234,15 @@ impl PtyController {
         }
     }
 
-    /// Receive a single chunk from the reader channel, blocking up to `timeout`.
+    /// Receive one chunk, distinguishing timeout from reader EOF.
     ///
-    /// Returns `None` on timeout or channel disconnect (child exited).
-    /// Use this instead of [`drain_output`] when timing accuracy matters —
-    /// processing each chunk inline preserves inter-chunk timing.
-    pub fn recv_chunk(&self, timeout: Duration) -> Option<Vec<u8>> {
-        self.reader_rx.recv_timeout(timeout).ok()
+    /// Processing each chunk inline preserves inter-chunk timing.
+    pub(crate) fn recv_chunk(&self, timeout: Duration) -> PtyRead {
+        match self.reader_rx.recv_timeout(timeout) {
+            Ok(chunk) => PtyRead::Chunk(chunk),
+            Err(mpsc::RecvTimeoutError::Timeout) => PtyRead::Timeout,
+            Err(mpsc::RecvTimeoutError::Disconnected) => PtyRead::Closed,
+        }
     }
 
     /// Return true only while the child is live; pending status is non-running.

@@ -2203,7 +2203,7 @@ fn format_session_info_shows_pi_style_file_and_message_counts() {
     info.data.context.message_count = 12;
     info.data.context.turn_count = 5;
     info.data.context.tool_call_count = 3;
-    let text = format_session_info(&info, Some("demo"), false);
+    let text = format_session_info(&info, Some("demo"), false, false, false);
     assert!(text.contains("File: /tmp/project/session.jsonl"));
     assert!(text.contains("Messages: 12 (turns 5)"));
     assert!(text.contains("Tools: 3 calls"));

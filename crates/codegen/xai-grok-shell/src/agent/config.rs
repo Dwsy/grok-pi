@@ -2043,9 +2043,18 @@ impl Config {
             t.remove("auth_provider");
             t.remove("model_providers");
         }
+        let parsed_mcp_servers =
+            crate::util::config::parse_mcp_servers_from_toml(&raw_without_model_sections);
+        if let toml::Value::Table(ref mut t) = raw_without_model_sections {
+            t.remove("mcp_servers");
+        }
         crate::config::deep_merge_toml(&mut base, &raw_without_model_sections);
+        if let toml::Value::Table(ref mut t) = base {
+            t.remove("mcp_servers");
+        }
         let (mut config, user_unused) =
             Self::deserialize_collecting_unrecognized(base, &raw_without_model_sections)?;
+        config.mcp_servers = parsed_mcp_servers.into_iter().collect();
         if !user_unused.is_empty() {
             let keys = user_unused.join(", ");
             tracing::warn!(
@@ -3445,6 +3454,15 @@ pub fn apply_external_otel_remote_policy(settings: Option<&crate::util::config::
 }
 /// Seed free-function remote caches after writing `Config.remote_settings`.
 pub fn apply_remote_settings_side_effects(settings: Option<&crate::util::config::RemoteSettings>) {
+    if let Some(s) = settings {
+        let origin_trusted = crate::util::is_prod_cli_chat_proxy_url(
+            &EndpointsConfig::from_effective_config().proxy_url(),
+        );
+        xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
+            s.managed_config_signature_verification,
+            origin_trusted,
+        );
+    }
     crate::util::config::cache_remote_mcp_startup_timeout_secs(
         settings.and_then(|s| s.mcp_startup_timeout_secs),
     );
@@ -5953,6 +5971,45 @@ reasoning_effort = "low"
         )
         .expect("warm cache resolves");
         assert_eq!(resolved.api_key.as_deref(), Some("ws-token"));
+    }
+    /// GBT-4128: bad `[mcp_servers.*]` entries are dropped, not fatal.
+    #[test]
+    fn invalid_mcp_server_stub_does_not_fail_config_load() {
+        let raw_config: toml::Value = toml::from_str(
+            r#"
+            [mcp_servers.github]
+            enabled = false
+
+            mcp_servers.broken = "not-a-table"
+
+            [mcp_servers.also_broken]
+            enabled = "yes"
+
+            [mcp_servers.linear]
+            command = "npx"
+            args = ["-y", "mcp-remote", "https://mcp.linear.app/mcp"]
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw_config)
+            .expect("bad mcp stubs must be dropped, not fail whole config");
+        assert!(
+            !cfg.mcp_servers.contains_key("broken"),
+            "non-table entry is dropped"
+        );
+        assert!(
+            !cfg.mcp_servers.contains_key("also_broken"),
+            "wrong-type enabled is dropped"
+        );
+        assert!(
+            !cfg.mcp_servers.contains_key("github"),
+            "transport-less stub is dropped (disable via disabled_mcp_servers)"
+        );
+        assert!(
+            cfg.mcp_servers.contains_key("linear"),
+            "valid MCP neighbor must still load"
+        );
+        assert!(cfg.mcp_servers["linear"].enabled);
     }
     /// The lenient parser warns per problem and never fails the whole
     /// config.
@@ -12521,5 +12578,82 @@ default = "grok-4.5"
         let r = resolve_mcp_recursive_config_watch(None, None, None, None, Some(false));
         assert!(!r.value);
         assert_eq!(r.source, ConfigSource::Remote);
+    }
+    #[test]
+    #[serial_test::serial(remote_sig_disarm)]
+    fn remote_settings_disarm_managed_config_signatures() {
+        xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
+            Some(true),
+            true,
+        );
+        assert!(xai_grok_config::signed_policy::verification_active());
+        let settings = crate::util::config::RemoteSettings {
+            managed_config_signature_verification: Some(false),
+            ..Default::default()
+        };
+        apply_remote_settings_side_effects(Some(&settings));
+        assert!(!xai_grok_config::signed_policy::verification_active());
+        let settings = crate::util::config::RemoteSettings {
+            managed_config_signature_verification: Some(true),
+            ..Default::default()
+        };
+        apply_remote_settings_side_effects(Some(&settings));
+        assert!(xai_grok_config::signed_policy::verification_active());
+        xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
+            Some(false),
+            true,
+        );
+        apply_remote_settings_side_effects(None);
+        assert!(!xai_grok_config::signed_policy::verification_active());
+        xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
+            Some(true),
+            true,
+        );
+        assert!(xai_grok_config::signed_policy::verification_active());
+    }
+    /// Keyed path: prod proxy origin can disarm; env override cannot.
+    #[test]
+    #[serial_test::serial(remote_sig_disarm)]
+    fn remote_settings_disarm_requires_prod_proxy_when_keys_embedded() {
+        xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
+            Some(true),
+            true,
+        );
+        assert!(xai_grok_config::signed_policy::verification_active());
+        let settings = crate::util::config::RemoteSettings {
+            managed_config_signature_verification: Some(false),
+            ..Default::default()
+        };
+        unsafe {
+            std::env::remove_var("GROK_CLI_CHAT_PROXY_BASE_URL");
+        }
+        apply_remote_settings_side_effects(Some(&settings));
+        assert!(
+            !xai_grok_config::signed_policy::verification_active(),
+            "prod proxy origin must allow disarm when keys are embedded"
+        );
+        xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
+            Some(true),
+            true,
+        );
+        assert!(xai_grok_config::signed_policy::verification_active());
+        unsafe {
+            std::env::set_var(
+                "GROK_CLI_CHAT_PROXY_BASE_URL",
+                "https://attacker.example/v1",
+            );
+        }
+        apply_remote_settings_side_effects(Some(&settings));
+        assert!(
+            xai_grok_config::signed_policy::verification_active(),
+            "env-overridden proxy must not be able to disarm keyed verification"
+        );
+        unsafe {
+            std::env::remove_var("GROK_CLI_CHAT_PROXY_BASE_URL");
+        }
+        xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
+            Some(true),
+            true,
+        );
     }
 }

@@ -570,7 +570,7 @@ pub fn render_peek_panel(
     live_tail: Option<PeekLiveTailArgs<'_>>,
     empty_hint: Option<&str>,
 ) -> PeekRenderResult {
-    use crate::views::prompt_widget::PromptStyle;
+    use crate::views::prompt_widget::{PromptBg, PromptStyle};
     use ratatui::widgets::{Block, BorderType, Borders, Widget};
     use unicode_width::UnicodeWidthStr;
     if area.area() == 0 || area.height < 3 || area.width < 20 {
@@ -723,7 +723,7 @@ pub fn render_peek_panel(
                             show_prefix: false,
                             vpad_top: 0,
                             chrome: false,
-                            bg_override: Some(theme.bg_base),
+                            bg: PromptBg::Canvas(theme.bg_base),
                             image_preview: false,
                             ..PromptStyle::default()
                         };
@@ -862,7 +862,7 @@ pub fn render_peek_panel(
         show_prefix: false,
         vpad_top: 0,
         chrome: false,
-        bg_override: Some(theme.bg_base),
+        bg: PromptBg::Canvas(theme.bg_base),
         placeholder_override: Some("reply\u{2026}"),
         image_preview: false,
         ..PromptStyle::default()
