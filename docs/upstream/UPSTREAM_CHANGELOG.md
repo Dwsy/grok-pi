@@ -35,7 +35,7 @@ Each entry records:
 
 ## [47348d1] — 2026-07-26
 
-> **Status:** Pending — not yet merged into grok-pi.
+> **Status:** Verified on integration branch `sync/upstream-47348d1` at `db82059`; pending lossless ff-only delivery to local `main`.
 
 - **Sync range:** `6e38642..47348d1` (`6e386420825bd44ae648c63e7c8cba12fcec9401` → `47348d13ec4508dcfe440e34c6d511bb02998fb2`)
 - **Upstream commits:** 1 (`Synced from monorepo`)
@@ -86,6 +86,15 @@ This sync is dominated by Pager and Shell reliability changes plus workspace-sec
 - Security: prevent `acceptEdits` from auto-approving writes into the always-trusted global hook root.
 - Render stacked “Worked for” markers correctly so parks appear as status and turns close with exactly one marker.
 - Security: keep workspace file-reference resolution inside workspace filesystem confinement.
+
+### Integration result
+
+- Preserved upstream ancestry in two-parent merge commit `be91fe7` after resolving five conflicts by combining upstream lock/security/lifecycle semantics with Pi-Grok settings, model-picker and external-agent seams.
+- Preserved Pi-owned queue/session/tree/trust/tools/extensions behavior, `OpenPiConfig`, `DirectPi`, F2 settings (including Pi built-in tools and grouped recap/BtW model slots), `.grok-pi` product isolation, and the locked `pi-main` gitlink `a5afc3f`.
+- Restored omitted upstream lifecycle/test infrastructure during semantic audit: external ACP `agent_thread`, PTY timeout/EOF pump semantics, and `workspace.tasks_snapshot` dispatch.
+- Passed adapter tests (128), serial `grok-pi` binary tests (56), config tests (184), isolated-home Workspace tests (1560 library + 21 server), settings-modal tests (173; 1 ignored), two focused Pager contract tests, `cargo check`, and `./build.sh`.
+- Added a repository-managed Cargo cache at `<git-common-dir>/pi-grok-cargo-target`; all linked worktrees share the same generated artifacts via ignored `target` symlinks. The migration and wrapper were tested in a temporary multi-worktree repository and on all current worktrees.
+- Remaining failures are separated from merge regressions: one Hooks DNS test reproduces before the merge because this machine resolves `.invalid` to an internal address; Python tree-sitter packages are absent; source/renderer hash manifests, slash `fork`/`voice` rules, and one mock completion-barrier expectation were already stale and were not weakened or regenerated blindly.
 
 ### Merge risk for grok-pi
 

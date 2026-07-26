@@ -122,7 +122,7 @@ cargo check -p xai-grok-pager-bin --bin grok-pi
 
 All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-cargo-target`. `./build.sh` and `./verify.sh` initialize the root `target` symlink automatically. Before running Cargo directly in a newly-created worktree, run `./scripts/setup-shared-cargo-target.sh` once or use `./scripts/cargo-shared.sh <cargo-args>`. An explicit `CARGO_TARGET_DIR` remains authoritative for CI or one-off isolation. Never copy `target/` between worktrees.
 
-`./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known infrastructure blockers are documented in [`VERIFICATION.md`](VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and Pager focused lib tests have an upstream cross-crate test-helper configuration issue. Do not claim full verification is green unless those blockers are resolved.
+`./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known blockers are documented in [`VERIFICATION.md`](VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and several source-identity/mock expectations require deliberate baseline maintenance. Focused Pager lib tests compile and pass after the `47348d1` integration. Do not claim full verification is green unless the remaining blockers are resolved.
 
 For a standalone change under `extensions/`, validate the extension source and diff only; do **not** run Cargo unless Rust code, the embedded-extension loader, or its Rust contract changed, or the user asks.
 

@@ -1,13 +1,13 @@
 # Grok Native TUI × Pi Verification Report
 
-Verification date: 2026-07-17
-Delivered version: `pi-grok-native-v4.0.0`
+Verification date: 2026-07-26
+Verified integration tip: `db8205983efeec7181facaf58065baaa5beb3c6b` (upstream merge `be91fe7`, upstream `47348d1`)
 
 ## Conclusion
 
 The current delivery has passed production build, adapter unit tests, and native Grok architecture plus Pi protocol-contract verification. The entry point genuinely uses Grok Build's production Pager, not a standalone Ratatui/fallback/character-art frontend.
 
-We cannot yet claim **all** verification is green: the Rust syntax stage of `verify.sh` depends on undeclared Python packages `tree_sitter` / `tree_sitter_rust`, and currently stops because that dependency is missing from the environment; two Pager focused lib tests also fail on a pre-existing unrelated Pager test-configuration issue (unrelated to adapter logic). No new `grok-pi` PTY end-to-end smoke test has been added.
+We cannot yet claim **all** verification is green. The Rust syntax stage of `verify.sh` depends on undeclared Python packages `tree_sitter` / `tree_sitter_rust`, which are missing from this environment. The native-source and renderer hash manifests, slash `fork`/`voice` rule, and one mock `agent_settled` completion-barrier expectation are stale and require deliberate baseline review; they were not broadened or regenerated during the merge. One Hooks SSRF test is environment-dependent here because the local resolver maps `.invalid` to an internal IPv6 address, and the same failure reproduces before the merge. Focused Pager lib tests now compile and pass. No new real-model PTY end-to-end smoke test has been added.
 
 ## 2026-07-18 Subagent Adaptation Increment
 
@@ -41,7 +41,7 @@ A built-in `pi-grok-subagents` extension was added: it creates, tracks, cancels,
 | `cargo check` | PASS | `cargo check -p xai-grok-pager-bin --bin grok-pi` succeeds; only 1 pre-existing dead-code warning in the adapter |
 | Adapter Rust unit tests | PASS | `cargo test -p pi-grok-adapter`: 17 passing |
 | `grok-pi` binary unit tests | PASS | `cargo test -p xai-grok-pager-bin --bin grok-pi`: 1 passing |
-| Pager focused lib tests | BLOCKED | depends on `xai-grok-pager-render`'s `#[cfg(test)]` helper; the test dependency's test-support feature is not enabled, so compilation fails |
+| Pager focused lib tests | PASS | settings-modal suite: 173 passing, 1 ignored; `external_builtin_filter_accepts_aliases_and_omits_product_commands` and `slash_compact_with_context_enqueues_command` both pass |
 | Local Pi npm build | PASS | `npm run build` succeeded in a Node.js `v24.15.0` environment |
 
 Machine-readable reports:
@@ -154,4 +154,4 @@ Branch: `sync/upstream-98c3b24` (not yet merged back to `main`)
 | `grok-pi` unit tests | 4/5 PASS; 1 item `--append-system-prompt` naming drift is a pre-existing main failure |
 | Architecture invariants | adapter headless; Pager is the only TUI; Pi is the only core |
 
-Known remaining infrastructure blockers are in the `verify.sh` / Pager focused lib tests sections above.
+Known remaining blockers are the Python tree-sitter dependency, deliberate verifier/mock baseline maintenance, the resolver-dependent Hooks test, and manual real-model runtime acceptance described above.
