@@ -33,6 +33,67 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [47348d1] — 2026-07-26
+
+> **Status:** Pending — not yet merged into grok-pi.
+
+- **Sync range:** `6e38642..47348d1` (`6e386420825bd44ae648c63e7c8cba12fcec9401` → `47348d13ec4508dcfe440e34c6d511bb02998fb2`)
+- **Upstream commits:** 1 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `d02693a856a54f1030695b36b91d276e96b30b23` (was `9b8d35b46d959c042ea9aa31cbbebbd1f0c5c527`)
+- **Diff size:** 138 files changed, +7283 / −5796
+
+### Summary
+
+This sync is dominated by Pager and Shell reliability changes plus workspace-security, managed-config signing, and hook configuration updates. It makes startup/runtime failures recoverable, preserves completed terminal output across gateway loss, tightens workspace file confinement and hook-root approval boundaries, and changes lifecycle behavior around session termination. Pager `app/`, session visibility, inline/freeform input, task output, hooks, config paths, and external-agent integration are high-risk Pi-Grok seam areas and must be merged in isolation.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Shell (agent runtime) | 30 | +1891/−2608 | 5/1 | recoverable HTTP/runtime/session failures and terminal transport behavior |
+| Pager (TUI) | 69 | +2181/−2148 | 1/0 | task details, paste parity, session visibility, status-marker rendering |
+| Workspace / Permission | 16 | +1334/−325 | 2/0 | workspace file confinement and `acceptEdits` hook-root security |
+| Config | 9 | +1039/−138 | 0/0 | signing key and managed-config verification controls |
+| Hooks / Plugins | 7 | +722/−414 | 0/0 | config-file hook parsing and SessionEnd behavior |
+| Agent lifecycle | 2 | +40/−148 | 0/0 | recoverable session thread/runtime spawning |
+| Tools | 1 | +53/−6 | 0/0 | supporting tool behavior |
+| Other crates | 1 | +16/−3 | 0/0 | supporting shared crate changes |
+| Root / meta | 2 | +6/−5 | 0/0 | lockfile and SOURCE_REV |
+| Update / Version | 1 | +1/−1 | 0/0 | version metadata |
+| **Total** | **138** | **+7283/−5796** | **8/1** | |
+
+### Added
+
+- Raise the Linux file-descriptor soft limit and log effective limits at startup.
+- Embed the deployment-config signing public key.
+- Parse hooks from configuration files.
+- Add a remote kill-switch for managed-config signature verification.
+
+### Changed
+
+- Keep completed terminal output when the gateway connection is lost.
+- Show duration-only detail for single-task task output.
+- Prevent a stale registry turn counter from hiding local sessions.
+- Make HTTP client construction failures non-fatal.
+- Make session-thread and runtime-spawn failures recoverable.
+- Fire `SessionEnd` hooks on `/exit` and headless quit.
+
+### Fixed
+
+- Report invalid MCP server configuration instead of failing startup.
+- Restore main-prompt paste parity in the question freeform input.
+- Repaint paste-chip backgrounds on inline panel inputs.
+- Security: prevent `acceptEdits` from auto-approving writes into the always-trusted global hook root.
+- Render stacked “Worked for” markers correctly so parks appear as status and turns close with exactly one marker.
+- Security: keep workspace file-reference resolution inside workspace filesystem confinement.
+
+### Merge risk for grok-pi
+
+- Pager changes span 69 files and overlap Pi-Grok `app/`, modal/input, task-output, session and external-profile seams.
+- Hook/config changes must preserve `.grok-pi` product isolation and `project_config_dir()` routing while absorbing upstream security fixes.
+- Runtime recovery and gateway-loss behavior must not transfer agent/session ownership away from Pi or make the adapter stateful/UI-owning.
+- Managed-config signing changes may alter verifier baselines and root metadata; `SOURCE_REV`, `AGENTS.md` base and baselines change only after a verified merge.
+
 ## [6e38642] — 2026-07-25
 
 > **Status:** Merged into grok-pi `main` by ff-only through verified integration tip `92b7c3d` (two-parent upstream merge `963ccf5`).
