@@ -7,6 +7,10 @@ ADAPTER="$GROK_ROOT/crates/codegen/pi-grok-adapter"
 LOG_DIR="$ROOT/verification-logs"
 mkdir -p "$LOG_DIR"
 
+if command -v cargo >/dev/null 2>&1; then
+  "$ROOT/scripts/setup-shared-cargo-target.sh"
+fi
+
 python3 "$ADAPTER/scripts/verify_native_grok.py" \
   --workspace "$GROK_ROOT" \
   --pi-source "$PI_ROOT" \

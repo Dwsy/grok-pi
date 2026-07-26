@@ -2,7 +2,7 @@
 
 ## Project root and Git
 
-`grok-build-main/` is the project root and the **only** Git working tree.
+`grok-build-main/` is the primary project checkout. Isolated integration work may use linked Git worktrees that share this checkout's Git common directory.
 
 ```text
 origin   https://github.com/Dwsy/grok-pi.git
@@ -119,6 +119,8 @@ cargo check -p xai-grok-pager-bin --bin grok-pi
 ```
 
 `./build.sh` builds `grok-pi` (and optionally the `pi-main` submodule if present). Requires system Pi >= **0.80.10**, Node.js >= 22.19.0, and the repository Rust toolchain.
+
+All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-cargo-target`. `./build.sh` and `./verify.sh` initialize the root `target` symlink automatically. Before running Cargo directly in a newly-created worktree, run `./scripts/setup-shared-cargo-target.sh` once or use `./scripts/cargo-shared.sh <cargo-args>`. An explicit `CARGO_TARGET_DIR` remains authoritative for CI or one-off isolation. Never copy `target/` between worktrees.
 
 `./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known infrastructure blockers are documented in [`VERIFICATION.md`](VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and Pager focused lib tests have an upstream cross-crate test-helper configuration issue. Do not claim full verification is green unless those blockers are resolved.
 

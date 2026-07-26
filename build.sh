@@ -15,6 +15,8 @@ if [[ ! -e "$PI_BIN" ]] && ! command -v "$PI_BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
+"$ROOT/scripts/setup-shared-cargo-target.sh"
+
 # Optional: rebuild submodule pi-main coding-agent when present (dev only).
 if [[ -f "$GROK_ROOT/pi-main/packages/coding-agent/package.json" ]]; then
   echo "Building pi-main coding-agent (submodule, optional)..."
