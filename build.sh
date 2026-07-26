@@ -17,10 +17,17 @@ fi
 
 "$ROOT/scripts/setup-shared-cargo-target.sh"
 
-# Optional: rebuild submodule pi-main coding-agent when present (dev only).
-if [[ -f "$GROK_ROOT/pi-main/packages/coding-agent/package.json" ]]; then
-  echo "Building pi-main coding-agent (submodule, optional)..."
-  (cd "$GROK_ROOT/pi-main/packages/coding-agent" && npm run build)
+# Optional: rebuild the locked pi-main coding-agent checkout when its workspace
+# dependencies are provisioned. A freshly initialized submodule has no
+# node_modules and must not prevent the Rust composition binary from building.
+PI_MAIN_ROOT="$GROK_ROOT/pi-main"
+if [[ -f "$PI_MAIN_ROOT/packages/coding-agent/package.json" ]]; then
+  if [[ -x "$PI_MAIN_ROOT/node_modules/.bin/tsgo" ]]; then
+    echo "Building pi-main coding-agent (submodule, optional)..."
+    (cd "$PI_MAIN_ROOT/packages/coding-agent" && npm run build)
+  else
+    echo "Skipping optional pi-main build (run 'npm ci' in $PI_MAIN_ROOT to provision it)."
+  fi
 fi
 
 (cd "$GROK_ROOT" && cargo build -p xai-grok-pager-bin --bin grok-pi)

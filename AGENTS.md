@@ -118,7 +118,7 @@ cargo test -p xai-grok-pager-bin --bin grok-pi
 cargo check -p xai-grok-pager-bin --bin grok-pi
 ```
 
-`./build.sh` builds `grok-pi` (and optionally the `pi-main` submodule if present). Requires system Pi >= **0.80.10**, Node.js >= 22.19.0, and the repository Rust toolchain.
+`./build.sh` builds `grok-pi`. When the optional `pi-main` submodule has workspace dependencies installed (`pi-main/node_modules/.bin/tsgo`), it rebuilds the coding-agent checkout first; a freshly initialized, unprovisioned submodule is skipped. Requires system Pi >= **0.80.10**, Node.js >= 22.19.0, and the repository Rust toolchain.
 
 All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-cargo-target`. `./build.sh` and `./verify.sh` initialize the root `target` symlink automatically. Before running Cargo directly in a newly-created worktree, run `./scripts/setup-shared-cargo-target.sh` once or use `./scripts/cargo-shared.sh <cargo-args>`. An explicit `CARGO_TARGET_DIR` remains authoritative for CI or one-off isolation. Never copy `target/` between worktrees.
 
