@@ -20,6 +20,8 @@ mod context_extension;
 mod export_extension;
 #[path = "grok_pi/goal_extension.rs"]
 mod goal_extension;
+#[path = "grok_pi/herdr_extension.rs"]
+mod herdr_extension;
 #[path = "grok_pi/home.rs"]
 mod home;
 #[path = "grok_pi/loop_extension.rs"]
@@ -50,10 +52,15 @@ mod shortcut_manager_extension;
 mod subagent_extension;
 #[path = "grok_pi/tools_extension.rs"]
 mod tools_extension;
+#[path = "grok_pi/tutorial_profile.rs"]
+mod tutorial_profile;
 #[path = "grok_pi/tree_bridge.rs"]
 mod tree_bridge;
 #[path = "grok_pi/workflow_extension.rs"]
 mod workflow_extension;
+#[cfg(test)]
+#[path = "grok_pi/model_manager_tests.rs"]
+mod model_manager_tests;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -77,6 +84,7 @@ use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_fl
 use context_extension::write_context_extension;
 use export_extension::write_export_extension;
 use goal_extension::write_goal_extension;
+use herdr_extension::{is_managed_pi_integration, write_herdr_extension};
 use loop_extension::write_loop_extension;
 use native_commands_extension::write_native_commands_extension;
 use pi_version::ensure_compatible_pi_host;
@@ -106,6 +114,8 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "help",
     // Pi `/hotkeys` → native ShortcutsHelp modal (Ctrl+. surface).
     "hotkeys",
+    // Upstream Pager-native onboarding modal; aliases `/tour` and `/onboarding`.
+    "tutorial",
     // ACP operations with an explicit Pi implementation.
     "new",
     "compact",
@@ -157,8 +167,12 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "voice",
     // Pager-native terminal diagnostics (`/doctor` + terminal-setup aliases).
     "doctor",
+    // Pager debug overlays: `/debug [scroll|fps|log]`.
+    "debug",
     // Pager-native Pi resource manager (`/pi-config`, `/pi-resources`).
     "pi-config",
+    // Pager-native Pi provider/model manager with live reload.
+    "pi-models",
     // Native Pi extension-shortcut manager (independent of remote-tui).
     "pi-shortcut-manager",
 ];
@@ -283,6 +297,12 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| write_navigate_tree_extension())
         .transpose()
         .context("failed to create Pi navigateTree bridge extension")?;
+    // F2 `[ui].pi_herdr` (default off). Outside Herdr the extension is a silent no-op.
+    let herdr_extension = if bridge_extensions_enabled && herdr_enabled() {
+        Some(write_herdr_extension().context("failed to create Pi Herdr extension")?)
+    } else {
+        None
+    };
     let bash_extension = if bridge_extensions_enabled && env_flag_default_on("PI_GROK_BASH") {
         Some(write_bash_extension().context("failed to create Pi Bash extension")?)
     } else {
@@ -476,6 +496,9 @@ async fn run(mut args: Args) -> Result<()> {
         rpc_compat_extension
             .as_ref()
             .map(|extension| extension.path()),
+        herdr_extension
+            .as_ref()
+            .map(|extension| extension.path()),
         remote_tui_extension
             .as_ref()
             .map(|extension| extension.path()),
@@ -507,6 +530,12 @@ async fn run(mut args: Args) -> Result<()> {
     if !has_no_extensions {
         pi_args.push("--no-extensions".to_string());
         for path in &launch_plan.extensions {
+            // The built-in bridge owns Herdr's authoritative `herdr:pi` source.
+            // Skip only Herdr-managed auto-discovery; explicit --extension paths
+            // were already preserved above and remain user-authoritative.
+            if herdr_extension.is_some() && is_managed_pi_integration(path) {
+                continue;
+            }
             pi_args.extend([
                 "--extension".to_string(),
                 path.to_string_lossy().into_owned(),
@@ -834,6 +863,9 @@ let bash_control_meta = bash_extension
         .iter()
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
+    // Keep the upstream tutorial UI/state machine, but install grok-pi product
+    // copy before the Pager constructs its slash registry or first modal.
+    tutorial_profile::install();
     // External ACP skips shell `initialize`, so recap must be enabled here.
     // Adapter still implements initialize.meta.sessionRecap for non-external
     // paths; `/recap` stays hidden until this flag is true.
@@ -1269,6 +1301,21 @@ fn read_one_key_raw_unix() -> Option<char> {
     }
 }
 
+/// F2 `[ui].pi_herdr` — report lifecycle state to Herdr for this process.
+/// Missing/invalid config defaults off; outside Herdr the extension is inert.
+fn herdr_enabled() -> bool {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    herdr_enabled_from_config(config.as_ref())
+}
+
+fn herdr_enabled_from_config(config: Option<&toml::Value>) -> bool {
+    config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_herdr"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// F2 `[ui].pi_workflows` — enable upstream Rhai workflows for this process.
 fn workflows_enabled() -> bool {
     let Ok(config) = xai_grok_shell::config::load_effective_config() else {
@@ -1446,8 +1493,27 @@ async fn probe_extensions_ok(
 
 #[cfg(test)]
 mod env_flag_tests {
-    use super::{Args, PI_GROK_NATIVE_COMMANDS, env_flag_default_off, env_flag_default_on};
+    use super::{
+        Args, PI_GROK_NATIVE_COMMANDS, env_flag_default_off, env_flag_default_on,
+        herdr_enabled_from_config,
+    };
     use clap::Parser;
+
+    #[test]
+    fn herdr_integration_defaults_off_and_honors_explicit_true() {
+        assert!(!herdr_enabled_from_config(None));
+
+        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
+        assert!(!herdr_enabled_from_config(Some(&missing)));
+
+        let enabled: toml::Value =
+            toml::from_str("[ui]\npi_herdr = true\n").expect("parse enabled config");
+        assert!(herdr_enabled_from_config(Some(&enabled)));
+
+        let disabled: toml::Value =
+            toml::from_str("[ui]\npi_herdr = false\n").expect("parse disabled config");
+        assert!(!herdr_enabled_from_config(Some(&disabled)));
+    }
 
     #[test]
     fn default_on_when_unset() {
@@ -1465,7 +1531,9 @@ mod env_flag_tests {
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"review-message"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"voice"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"doctor"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"debug"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"hotkeys"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"tutorial"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"session-info"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"tree"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"fork"));

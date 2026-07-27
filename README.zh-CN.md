@@ -85,7 +85,9 @@ grok-pi update
 | 领域 | 能力 |
 |---|---|
 | Agent Runtime | Pi 模型、Provider、工具、扩展、skills、会话、重试和压缩 |
+| 模型管理 | `/pi-models` 提供原生 Provider → Model → Details 编辑器，含安全 `models.json` 事务、备份/恢复、Pi 热重载和 typed 激活；`/model` 保留为快速切换器 |
 | 终端 UI | Grok Pager 输入、斜杠补全、Markdown、工具卡片、diff、对话框和 scrollback |
+| 产品教程 | `/tutorial`（别名 `/tour`、`/onboarding`）展示 18 个 grok-pi 能力域：Pager 原生工作流、Pi Provider/模型/工具/会话、扩展/Skill/Package 生态、产品桥接、可选自动化与明确边界 |
 | **Remote TUI 桥接** | Pi `ctx.ui.custom` 组件通过 Grok Build 原生 Pager 渲染，不创建第二套 TUI |
 | Shell 执行 | Bash 集成、后台任务、输出限制、超时和进程树清理 |
 | 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图 |
@@ -128,6 +130,8 @@ flowchart LR
 | `GROK_PI_NO_AUTO_UPDATE` | 未设置 | 禁用后台更新检查 |
 
 Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后需**整进程重启**）。细节见 [功能矩阵](FEATURE_MATRIX.zh-CN.md)、[AGENTS.md 产品态隔离](AGENTS.md#product-state-isolation)。
+
+Herdr 生命周期上报**默认关闭**。可在 F2 → Agent → **Pi Herdr integration** 中开启，然后重启。详见 [Herdr 设置指南](docs/usage/grok-pi-herdr.zh-CN.md)。
 
 使用 `--no-extensions` 可关闭所有内置桥接扩展。Pi 启动参数可放在 `--` 之后直接传递：
 

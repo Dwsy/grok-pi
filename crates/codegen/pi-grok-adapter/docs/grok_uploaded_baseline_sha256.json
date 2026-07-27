@@ -2772,7 +2772,10 @@
     "crates/codegen/xai-grok-pager/src/app/dispatch/mod.rs",
     "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
     "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
-    "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs"
+    "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs",
+    "crates/codegen/xai-grok-pager/src/tutorial_docs.rs",
+    "crates/codegen/xai-grok-pager/src/views/tutorial.rs",
+    "crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs"
   ],
   "allowedAddedPrefixes": [
     "crates/codegen/pi-grok-adapter/"
@@ -2780,15 +2783,38 @@
   "allowedAddedFiles": [
     "crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/plan_mode_extension.rs",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/model_manager_tests.rs",
     "extensions/pi-grok-plan-mode/index.ts",
     "crates/codegen/xai-grok-pager/src/app/dispatch/session/tree.rs",
     "crates/codegen/xai-grok-pager/src/slash/commands/tree.rs",
     "crates/codegen/xai-grok-pager/src/views/session_tree.rs",
     "crates/codegen/xai-grok-pager/src/views/pi_config.rs",
+    "crates/codegen/xai-grok-pager/src/views/pi_models.rs",
+    "crates/codegen/xai-grok-pager/src/slash/commands/pi_models.rs",
+    "crates/codegen/xai-grok-pager/src/pi_model_config.rs",
     "crates/codegen/xai-grok-pager/src/pi_resource_config.rs",
     "crates/codegen/xai-grok-pager/src/pi_resource_policy.rs",
     "crates/codegen/xai-grok-update/src/pi_update.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/notifications.rs",
-    "crates/codegen/xai-grok-pager/src/slash/commands/notify.rs"
+    "crates/codegen/xai-grok-pager/src/slash/commands/notify.rs",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial_profile.rs",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/01-what-is-grok-pi.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/02-terminal-input.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/03-providers-models-thinking.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/04-tools-diffs-streaming.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/05-context-cache-compaction.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/06-queue-turn-control.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/07-sessions-resume.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/08-tree-branching.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/09-review-timeline-rollback.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/10-plan-todo.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/11-extensions-dynamic-commands.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/12-extension-ui-remote-tui.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/13-skills-prompts-context-files.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/14-themes-packages-resources.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/15-background-bash-tasks.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/16-subagents-dashboard.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/17-optional-automation.md",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tutorial/18-operations-isolation-diagnostics.md"
   ]
 }

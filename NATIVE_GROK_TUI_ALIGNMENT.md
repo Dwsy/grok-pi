@@ -43,6 +43,7 @@ The ACP standard does not cover all of Pi's UI/command semantics, so narrow seam
 7. `/compact <instructions>`: passes the optional text from the native Grok command to Pi `customInstructions`.
 8. screen-mode boundary: Grok's native minimal/fullscreen renderer is retained, but the original slash re-exec would rebuild Grok's own `--resume` argv and cannot carry `grok-pi`'s Pi startup arguments, so only the startup option is exposed, not the broken `/minimal`/`/fullscreen` re-exec.
 9. voice dictation: the Pi external profile explicitly opts into the existing Pager-only `/voice` / Ctrl+Space/F8 flow. Its STT bearer comes from the local Grok login or API key; it inserts transcript text into PromptWidget and never changes Pi's model, session, or agent ownership.
+10. tutorial copy profile: stock Grok retains its default onboarding content; grok-pi installs 18 static product-specific capability topics while reusing the native `TutorialState`, modal, picker, Markdown renderer and input routing.
 
 These seams do not create a new renderer, nor copy the PromptWidget, QuestionView, Markdown, tool, or diff components.
 

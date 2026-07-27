@@ -15,6 +15,7 @@
 | Welcome / minimal logo | 原生+适配 | 默认进 Welcome（与 stock `grok` 一致）；`ExternalUiProfile.logo` 注入 π block art（行宽 pad 防居中错位）；仅 `grok-pi -c/--continue` 跳过 Welcome 直接 Resume |
 | Welcome 菜单（Pi） | 原生+适配 | Resume/Ctrl+S ≡ `/resume`（Pi catalog）；隐藏 New worktree；Changelog 打开 `https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD` |
 | Welcome session 预热（Pi） | 适配 | 进入 Welcome 即后台 `new_session`；首字输入 attach 预热 agent，避免冷启动 “Starting session…” |
+| grok-pi 产品教程（`/tutorial`） | 原生+适配 | 复用上游 `TutorialState`、`ModalWindow`、picker、Markdown/doc viewer、命令别名（`/tour`、`/onboarding`）与键鼠路由；grok-pi composition 注入 18 主题 `TutorialProfile`，覆盖原生终端/输入；Pi 多 Provider 模型、thinking、工具、context、session/tree；review/rollback/Plan；extensions、Remote TUI、Skills、Prompt Templates、Packages、theme 与资源 Trust；后台任务、subagent/dashboard、可选自动化、export/update、状态隔离与 diagnostics。正文明确标注默认开启、F2 可选、重启、实验性和边界。stock Grok 保持默认正文；minimal 模式仍保持门控。 |
 | 更新检查/安装 | 适配 | **仅 GitHub** `Dwsy/grok-pi` releases JSON + install.sh/ps1；`grok-pi update` / `--check` / Welcome **Ctrl+U**；`GROK_PI_NO_AUTO_UPDATE=1` 关后台检查 |
 | Agent Dashboard | 原生+适配 | 原生 `/dashboard` · Ctrl+\\ · 列表/peek/dispatch；idle 行经 `pi/session/list` → `pi/ui/session_catalog` 投影到 dormant roster；不接 Grok leader FleetView |
 | Prompt editing | 原生 | PromptWidget |
@@ -56,7 +57,7 @@
 
 | 功能 | 状态 | 说明 |
 |---|---|---|
-| Model catalog | 适配 | `get_available_models` → Grok native model selector；裸 `/model` 直接打开 picker，当前激活模型置顶 |
+| Provider/模型目录 | 原生+适配 | Pi 负责多 Provider registry、凭据、`models.json` 本地/自定义 endpoint 与 extension `registerProvider`；`get_available_models` → Grok 原生 model selector，裸 `/model` 打开且当前模型置顶。默认开启的 Pi auth bridge 在 Remote TUI 可用时提供 `/login`/`/logout`。 |
 | Thinking effort | 适配 | Pi levels → Grok effort selector；xhigh/max 做能力归一化 |
 | New session | 适配 | Grok `/new` → Pi `new_session` |
 | Rename | 适配 | Grok `/rename` → Pi `set_session_name` |
@@ -67,6 +68,7 @@
 | 启动资源、提示词与会话选项 | 适配 | `grok-pi` 一等转发：模型（`--provider`/`--model`/`--models`/`--thinking`）、会话（`--session`/`--session-id`/`--session-dir`/`--fork`/`--no-session`/`--name`）、提示词（`--system-prompt`/`--append-system-prompt`）、资源（`--extension`/`--no-extensions`/`--no-skills`/`--no-context-files`）、工具（`--tools`/`--exclude-tools`/`--no-tools`/`--no-builtin-tools`）、trust/网络（`--approve`/`--no-approve`/`--offline`）；`--` 后参数仍透传。不暴露 `--resume`（Welcome/`/resume`） |
 | Pi extension/prompt/skill commands | 原生+适配 | `get_commands` → Grok slash registry；`source=extension` 经私有 ACP metadata 直达 Pi command handler，不进入 Pager 本地或 Pi steering/follow-up 队列；prompt/skill 保持 prompt 语义 |
 | Pi Config 资源管理 | 原生+Rust 兼容 | F2 或 `/pi-config`（别名 `/pi-resources`）→ Pi resources；Rust 读取 Pi `settings.json`/`trust.json`，管理 extensions/skills/prompts/themes 的 global 与 trusted-project 覆盖。按 Pi 自动扩展入口规则发现资源；来源树默认折叠，GitHub/npm/local 身份清晰可见，搜索仅展开命中来源。原生双栏支持树展开/折叠、搜索、键盘分页/滚动、点击与滚轮；右栏预览 package.json 关键字段与 README；切换后提示重启或 Pi `/reload`；不含 `install/remove/update`。 |
+| Pi 模型管理中心 | 原生+Rust 兼容 | `/pi-models`（别名 `/model-config`、`/models-config`）打开响应式 Provider → Model → Details 原生弹窗，信息层级参考 PSM。键盘和鼠标支持搜索、新建/克隆/编辑/删除、可选布尔循环、脏状态、二次确认、空态/错误态和当前模型激活。Rust 保留 `models.json` 未知字段，并使用目录锁、外部修改冲突检测、原始字节备份、私有同目录原子替换和最近备份恢复。保存/恢复复用 Pi 官方 `/reload`（`ctx.reload()`），无需重启即可刷新运行中模型目录；可用性仍遵循 Pi 认证（`apiKey`、`/login` 或 CLI），激活走 typed ACP `session/set_model`。 |
 | Grok cloud/session history picker | 边界 | 依赖 Grok session store，Pi profile 不暴露 `/history` |
 | Pi session tree (`/tree`) | 适配 | 原生 `SessionTree` modal：筛选/搜索/折叠/详情/复制/标签；Enter/`Shift+Enter` 经注入 extension 调 `ctx.navigateTree`（可 summarize）；`session/load` 回放；TreeX 风格详情面板；不改 Pi 源码 |
 | 会话代码审查（`/review-session`、`/review-message`） | 原生 | 参考 PSM code-review → 原生 Pager 双栏：左文件列表（flat/tree）、右 BlockViewer 预览（默认仅 changes）。F2 `review_file_tree` **默认关**并持久化；弹窗内 `t` 切换树形（按 cwd 省略前缀，折叠 Java 连续包路径为 `com.example.app`）。`/review-message` 复用 jump。不走 Pi custom UI。 |
@@ -100,12 +102,12 @@
 
 ### 保留的 Grok 原生命令
 
-`exit`、`help`、`hotkeys`（别名 `shortcuts`/`keys`）、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`session-info`（别名 `session`）、`dashboard`、`copy`、`find`、`transcript`、`export`、`expand`、`queue`、`notify`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`toggle-mouse-reporting`。
+`exit`、`help`、`hotkeys`（别名 `shortcuts`/`keys`）、`tutorial`（别名 `tour`/`onboarding`）、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`session-info`（别名 `session`）、`tree`、`tree-map`、`fork`、`clone`、`reload`、`notify`、`dashboard`、`recap`、`btw`、`copy`、`find`、`jump`、`review-session`、`review-message`、`transcript`、`export`、`expand`、`queue`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`timeline`、`toggle-mouse-reporting`、`voice`、`doctor`、`debug`、`pi-config`、`pi-models`、`pi-shortcut-manager`。各命令仍遵循自身 visibility/capability 门控。
 
 ### 动态 Pi 命令
 
-Pi 返回的 extension、prompt 和 skill 命令不硬编码在 Rust 中。它们通过 ACP command catalog 进入 Grok 原生 slash suggestion/dropdown；名称冲突由 Grok registry 去重。
+Pi 返回的 extension、Prompt Template 和 Skill 命令不硬编码在 Rust 中。它们通过 ACP command catalog 进入 Grok 原生 slash suggestion/dropdown；名称冲突由 Grok registry 去重。内置 bridge extension 还可提供 Pi Provider 登录（`/login`、`/logout`）、Pi HTML 导出/分享（`/export-html`、`/pi-share`）以及受 F2 门控的 workflow/automation 命令。
 
 ### 刻意排除
 
-Grok 产品或本地 session-store 命令，包括 `history`、`login`、`logout`、`usage`、`plugins`、`mcp`、`memory`、`workspace`、`share`、`voice`、`debug`。同时不暴露原版 `/minimal`、`/fullscreen` re-exec 命令：renderer 仍是 Grok 原生，但切换应使用启动参数，避免丢失 Pi 进程参数。
+stock Grok 产品或本地 session-store 命令——包括 Grok `/history`、Grok 账户 `/login`/`/logout`、`usage`、`plugins`、`mcp`、`memory`、`workspace`、`share`——均排除。同名 `/login`/`/logout` 可由 grok-pi 的 Pi auth extension 提供，此时认证的是 Pi 模型 Provider，而不是 Grok.com。原版 `/minimal`、`/fullscreen` re-exec 也不暴露；screen mode 应在启动时选择，以保留 Pi 进程参数。

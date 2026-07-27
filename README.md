@@ -85,7 +85,9 @@ grok-pi update
 | Area | Included |
 |---|---|
 | Agent runtime | Pi models, providers, tools, extensions, skills, sessions, retries, and compaction |
+| Model management | `/pi-models` provides a native Provider → Model → Details editor with safe `models.json` transactions, backup/restore, live Pi reload, and typed activation; `/model` remains the fast switcher |
 | Terminal UI | Grok Pager input, slash completion, Markdown, tool cards, diffs, dialogs, and scrollback |
+| Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
 | **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |
 | Shell execution | Bash integration, background tasks, output limits, timeouts, and process-tree cleanup |
 | Parallel work | Pi sub-agents with foreground/background execution and native task views |
@@ -128,6 +130,8 @@ Bundled bridge extensions are enabled by default where stable. Experimental nati
 | `GROK_PI_NO_AUTO_UPDATE` | unset | Disable background update checks |
 
 Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
+
+Herdr lifecycle reporting is **off by default**. Enable it with F2 → Agent → **Pi Herdr integration**, then restart. See the [Herdr setup guide](docs/usage/grok-pi-herdr.md).
 
 Use `--no-extensions` to disable bundled bridge extensions. Pi startup options can be passed directly after `--`.
 

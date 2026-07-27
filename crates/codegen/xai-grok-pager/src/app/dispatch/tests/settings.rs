@@ -1442,6 +1442,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
                 app,
             );
         }
+        "pi_herdr" => {
+            let _ = dispatch(Action::SetPiHerdr(false), app);
+        }
         other => {
             panic!(
                 "move_setting_away_from_default: no arm for `{other}`. \

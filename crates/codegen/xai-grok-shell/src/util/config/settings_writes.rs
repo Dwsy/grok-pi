@@ -242,6 +242,11 @@ pub async fn set_pi_tree_file_rollback(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_tree_file_rollback = value).await
 }
 
+/// Persist `[ui].pi_herdr` via `update_config`.
+pub async fn set_pi_herdr(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_herdr = value).await
+}
+
 /// Persist `[ui].pi_workflows` via `update_config`.
 pub async fn set_pi_workflows(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_workflows = value).await

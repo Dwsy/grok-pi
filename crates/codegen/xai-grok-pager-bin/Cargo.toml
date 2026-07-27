@@ -87,6 +87,8 @@ tikv-jemalloc-sys = { workspace = true, optional = true }
 tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats", "use_std"] }
 
 [dev-dependencies]
+crossterm = { workspace = true }
+ratatui = { workspace = true }
 serial_test = { workspace = true }
 
 [features]

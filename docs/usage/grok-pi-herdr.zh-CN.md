@@ -1,0 +1,75 @@
+# grok-pi 的 Herdr 集成
+
+`grok-pi` 现在内置一个可选的无界面 Herdr 生命周期桥接。不需要单独安装 Pi 集成；当进程不在 Herdr 中运行时，它会静默不做任何事。
+
+桥接通过 Herdr 本地 socket 上报原生 Pi 会话标识，以及权威的 `working`、`blocked`、`idle` 状态。它不会创建第二套终端 UI，也不会修改用户目录中的 Pi 或 Herdr 文件。
+
+## 安装与启动 Herdr
+
+1. 安装 Herdr：
+
+   ```bash
+   curl -fsSL https://herdr.dev/install.sh | sh
+   ```
+
+2. 启动 Herdr：
+
+   ```bash
+   herdr
+   ```
+
+3. 创建或选择 workspace，并为项目打开一个 pane。
+
+4. 在该 pane 内运行 `grok-pi`：
+
+   ```bash
+   cd /path/to/project
+   grok-pi
+   ```
+
+   如果环境中已经有 `HERDR_ENV=1`，说明当前就在 Herdr 内，不要再嵌套启动一个 Herdr。
+
+5. 可在另一个 shell 或 Herdr 命令 pane 中验证：
+
+   ```bash
+   herdr agent get "$HERDR_PANE_ID"
+   ```
+
+   Agent 应识别为 `pi`；执行回合时显示 `working`，根交互会话稳定后显示 `idle`。
+
+## 在 F2 中开启或关闭
+
+打开 **F2 → Agent → Pi Herdr integration**。
+
+- 默认值是 `off`。
+- 在 Herdr 中运行时改为 `on` 会开启内置桥接。
+- 修改后需要完整重启 `grok-pi` 进程。
+
+等价配置为：
+
+```toml
+[ui]
+pi_herdr = true
+```
+
+改为 `false` 或删除该键即可关闭。`grok-pi --no-extensions` 也会在当前进程中跳过它以及所有其他内置桥接扩展。
+
+## 与 Herdr 官方 Pi 集成的关系
+
+Herdr 可通过 `herdr integration install pi` 安装面向 stock Pi 的托管扩展，但 `grok-pi` 不依赖它。内置桥接开启时，宿主只会跳过自动发现的 Herdr 托管 Pi 文件，避免两个扩展争用同一个权威 `herdr:pi` 生命周期来源；用户显式传入的 `--extension` 不会被修改。
+
+系统不会删除或重写全局集成，因此在 `grok-pi` 之外运行 stock `pi` 时，仍可继续使用 Herdr 的托管集成。
+
+## 排查
+
+- 查看 Herdr 与集成状态：
+
+  ```bash
+  herdr --version
+  herdr integration status
+  ```
+
+- 确认 pane 环境包含 `HERDR_ENV=1`、`HERDR_SOCKET_PATH`、`HERDR_PANE_ID`。
+- 修改 F2 设置后重启 `grok-pi`。
+- 如果使用了 `--no-extensions`，去掉该参数后重试。
+- 桥接采用失败关闭策略：本地 socket 不存在或不可用时，`grok-pi` 会继续正常运行，只是不再上报生命周期。

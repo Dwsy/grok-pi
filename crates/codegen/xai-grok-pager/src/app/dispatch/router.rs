@@ -90,7 +90,8 @@ use super::settings::setters::{
     set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
     set_model_slot, set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question,
     set_pi_bash_run_display, set_pi_btw, set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal,
-    set_pi_loop, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt, set_pi_workflows,
+    set_pi_herdr, set_pi_loop, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt,
+    set_pi_workflows,
     set_progress_bar, set_prompt_suggestions, set_psm_resume_index, set_recap_mermaid,
     set_recap_model, set_remember_tool_approvals, set_remote_tui_footer, set_render_mermaid,
     set_respect_manual_folds, set_review_file_tree, set_review_include_reads, set_screen_mode,
@@ -101,8 +102,9 @@ use super::settings::setters::{
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
-    dispatch_open_model_picker, dispatch_open_pi_config, dispatch_open_pi_shortcut_manager,
-    dispatch_open_recap_model_picker, dispatch_open_reset_confirm, dispatch_open_settings,
+    dispatch_open_model_picker, dispatch_open_pi_config, dispatch_open_pi_models,
+    dispatch_open_pi_shortcut_manager, dispatch_open_recap_model_picker,
+    dispatch_open_reset_confirm, dispatch_open_settings,
     dispatch_open_shortcuts_help, dispatch_toggle_compact_mode, dispatch_toggle_mouse_capture,
     dispatch_toggle_multiline, dispatch_toggle_timestamps, dispatch_toggle_vim_mode,
 };
@@ -1118,6 +1120,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetPiTreeSkipSummaryPrompt(enabled) => {
             set_pi_tree_skip_summary_prompt(app, enabled)
         }
+        Action::SetPiHerdr(enabled) => set_pi_herdr(app, enabled),
         Action::SetPiWorkflows(enabled) => set_pi_workflows(app, enabled),
         Action::SetPiGoal(enabled) => set_pi_goal(app, enabled),
         Action::SetPiLoop(enabled) => set_pi_loop(app, enabled),
@@ -1139,6 +1142,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PrivacyBannerAccept => dispatch_privacy_banner_accept(app),
         Action::PrivacyBannerCustomize => dispatch_privacy_banner_customize(app),
         Action::OpenPiConfig => dispatch_open_pi_config(app),
+        Action::OpenPiModels => dispatch_open_pi_models(app),
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
         Action::OpenShortcutsHelp => dispatch_open_shortcuts_help(app),
         Action::OpenPiShortcutManager => dispatch_open_pi_shortcut_manager(app),

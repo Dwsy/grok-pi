@@ -737,6 +737,8 @@ pub enum Action {
     SetPiTreeFileRollback(bool),
     /// Skip the "Summarize branch?" prompt when navigating the session tree.
     SetPiTreeSkipSummaryPrompt(bool),
+    /// Enable the built-in Herdr lifecycle bridge for grok-pi (restart required).
+    SetPiHerdr(bool),
     /// Enable upstream Rhai workflows for grok-pi (restart required).
     SetPiWorkflows(bool),
     /// Enable Grok-style /goal for grok-pi (restart required).
@@ -775,6 +777,8 @@ pub enum Action {
     OpenSettings,
     /// Open the native Pi resource-configuration modal from F2 settings.
     OpenPiConfig,
+    /// Open the native Pi provider/model management center.
+    OpenPiModels,
     /// Open settings focused on a registry key (e.g. privacy banner Customize).
     OpenSettingsFocus {
         key: &'static str,

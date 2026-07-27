@@ -19,7 +19,7 @@ impl SlashCommand for TutorialCommand {
     }
 
     fn description(&self) -> &str {
-        "Quick tips to get the most out of Grok Build"
+        crate::tutorial_docs::tutorial_profile().command_description
     }
 
     fn usage(&self) -> &str {

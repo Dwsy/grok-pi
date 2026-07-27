@@ -41,6 +41,7 @@ ACP 标准没有覆盖 Pi 的全部 UI/命令语义，因此需要窄接缝：
 6. slash profile：只选择对 Pi 有意义且在外部 ACP 组合下可完整工作的现有 Grok 命令；Pi 动态命令仍由原生 registry 管理。
 7. `/compact <instructions>`：把 Grok 原生命令中的可选文本传到 Pi `customInstructions`。
 8. screen-mode 边界：Grok 原生 minimal/fullscreen renderer 保留，但原版 slash re-exec 会重建 Grok 自有 `--resume` argv，无法携带 `grok-pi` 的 Pi 启动参数，因此仅保留启动选项，不暴露失效的 `/minimal`、`/fullscreen`。
+9. 教程内容 profile：stock Grok 保留默认 onboarding；grok-pi 只注入 18 个静态产品能力主题，继续复用原生 `TutorialState`、modal、picker、Markdown renderer 与输入路由。
 
 这些接缝没有新建 renderer，也没有复制 PromptWidget、QuestionView、Markdown、tool 或 diff 组件。
 

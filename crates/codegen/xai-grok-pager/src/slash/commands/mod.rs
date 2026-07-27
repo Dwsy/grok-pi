@@ -47,6 +47,7 @@ pub mod new;
 pub mod notify;
 pub mod personas;
 pub mod pi_config;
+pub mod pi_models;
 pub mod pi_shortcut_manager;
 pub mod plan;
 pub mod plan_mode;
@@ -152,6 +153,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(timeline::TimelineCommand),
         Arc::new(toggle_mouse_reporting::ToggleMouseReportingCommand),
         Arc::new(pi_config::PiConfigCommand),
+        Arc::new(pi_models::PiModelsCommand),
         Arc::new(pi_shortcut_manager::PiShortcutManagerCommand),
         Arc::new(settings_cmd::SettingsCommand),
         Arc::new(privacy::PrivacyCommand),

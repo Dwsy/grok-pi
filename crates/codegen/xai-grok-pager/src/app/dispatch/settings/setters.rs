@@ -2208,6 +2208,24 @@ pub(in crate::app::dispatch) fn set_pi_tree_skip_summary_prompt(
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_herdr(app: &mut AppView, enabled: bool) -> Vec<Effect> {
+    let previous = app.current_ui.pi_herdr;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_herdr = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} Pi Herdr integration: {value} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_herdr",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_pi_workflows(app: &mut AppView, enabled: bool) -> Vec<Effect> {
     let previous = app.current_ui.pi_workflows;
     if previous == enabled {

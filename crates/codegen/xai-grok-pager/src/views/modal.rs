@@ -435,6 +435,10 @@ pub enum ActiveModal {
     PiConfig {
         state: Box<crate::views::pi_config::PiConfigModalState>,
     },
+    /// Native provider/model management center for Pi's models.json.
+    PiModels {
+        state: Box<crate::views::pi_models::PiModelsModalState>,
+    },
     /// Reset-settings confirmation, stacked above Settings.
     ///
     /// The underlying `SettingsModalState` is moved in/out so cancel
@@ -605,6 +609,11 @@ pub(crate) fn default_palette_entries(
             label: "Switch Model".into(),
             shortcut: "/model".into(),
             command: PaletteCommand::SlashCommand("/model ".into()),
+        },
+        PaletteEntry {
+            label: "Manage Pi Models".into(),
+            shortcut: "/pi-models".into(),
+            command: PaletteCommand::SlashCommand("/pi-models".into()),
         },
         PaletteEntry {
             label: "Always Approve Mode".into(),
@@ -787,6 +796,7 @@ impl ActiveModal {
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::PiConfig { .. }
+            | ActiveModal::PiModels { .. }
             | ActiveModal::RememberNoteReview { .. } => vec![],
         }
     }
@@ -821,6 +831,7 @@ impl ActiveModal {
             ActiveModal::MemoryBrowser { .. } => "Memory",
             ActiveModal::Settings { .. } => crate::views::settings_modal::MODAL_TITLE,
             ActiveModal::PiConfig { .. } => "Pi resources",
+            ActiveModal::PiModels { .. } => "Pi models",
             ActiveModal::ResetSettingsConfirm { .. } => "Reset setting?",
             ActiveModal::RememberNoteReview { .. } => "Memory Note",
         }

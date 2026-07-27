@@ -13514,11 +13514,13 @@ version = "0.2.112"
 dependencies = [
  "anyhow",
  "clap",
+ "crossterm",
  "cryptify",
  "dunce",
  "libc",
  "obfstr",
  "pi-grok-adapter",
+ "ratatui",
  "rustls",
  "semver",
  "serde_json",

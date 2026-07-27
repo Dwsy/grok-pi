@@ -593,7 +593,7 @@ pub fn set_scroll_lines(lines: u8) {
 
 thread_local! {
     static EXECUTE_HEADER_CONTENT_CURRENT: Cell<ExecuteHeaderContent> =
-        const { Cell::new(ExecuteHeaderContent::TaskName) };
+        const { Cell::new(ExecuteHeaderContent::TaskNameAndCommand) };
     static EXECUTE_HEADER_CONTENT_LOADED: Cell<bool> = const { Cell::new(false) };
 }
 

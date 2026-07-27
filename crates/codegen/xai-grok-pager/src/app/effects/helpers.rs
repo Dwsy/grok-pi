@@ -1274,6 +1274,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_herdr" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_herdr", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_herdr(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "pi_workflows" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("pi_workflows", "Bool", &value));

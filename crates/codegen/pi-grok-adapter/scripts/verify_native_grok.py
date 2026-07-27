@@ -231,6 +231,9 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs",
+        # Product-copy seam only: the upstream tutorial modal/state/input remain
+        # native while external compositions select their own static topics.
+        "crates/codegen/xai-grok-pager/src/views/tutorial.rs",
     }
     renderer_mismatches = [
         rel
@@ -241,7 +244,7 @@ def main() -> int:
     check(
         "message_animation_renderer_seams_are_declared",
         renderer_declared_seams <= allowed_modified,
-        "three exact native message-animation renderer/state seams are declared"
+        f"{len(renderer_declared_seams)} exact native renderer/state seams are declared"
         if renderer_declared_seams <= allowed_modified
         else f"missing message-animation seams: {sorted(renderer_declared_seams - allowed_modified)}",
     )
@@ -304,7 +307,12 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/slash/acp_command.rs",
         "crates/codegen/xai-grok-pager/src/slash/command.rs",
         "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs",
         "crates/codegen/xai-grok-pager/src/slash/mod.rs",
+        # Tutorial product-copy seam: stock Grok retains the default profile;
+        # grok-pi supplies only static title/description/topics while reusing UI.
+        "crates/codegen/xai-grok-pager/src/tutorial_docs.rs",
+        "crates/codegen/xai-grok-pager/src/views/tutorial.rs",
         # Native message chrome policy: user and agent message bodies may stream,
         # but their left accent remains static and does not drive animation ticks.
         "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
@@ -322,7 +330,7 @@ def main() -> int:
     check(
         "modified_surface_is_exact_and_semantic",
         allowed_modified == expected_modified,
-        f"exactly {len(expected_modified)} workspace/ACP/state/dispatch/slash/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
+        f"exactly {len(expected_modified)} workspace/ACP/state/dispatch/slash/tutorial/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
         if allowed_modified == expected_modified
         else f"declared seam mismatch: {sorted(allowed_modified ^ expected_modified)}",
     )
@@ -384,6 +392,7 @@ def main() -> int:
         "timeline",
         "toggle-mouse-reporting",
         "pi-config",
+        "pi-models",
     ]
     # Product/session-store commands must not leak into the Pi composition.
     # Pi extension/prompt/skill commands arrive dynamically over get_commands.

@@ -155,9 +155,8 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
     None
 }
 
-/// One row per logical model, aligned with Pi interactive `/model` autocomplete:
-/// - label (`display`) = bare model id
-/// - description = provider
+/// One row per logical model, with a human-readable model name and provider:
+/// - label (`display`) = model name + provider
 /// - value (`insert_text`) = `provider/id`
 /// - search (`match_text`) = Pi `getModelSearchText`
 ///
@@ -172,16 +171,24 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
         let (provider, model_id) = split_provider_model_id(id, info);
         let token = model_completion_token(id, info);
 
-        // Pi interactive autocomplete label is bare `item.id`.
-        let mut display = model_id.to_string();
+        let provider = provider
+            .filter(|provider| !provider.is_empty())
+            .unwrap_or("");
+        let label = if info.name.trim().is_empty() {
+            model_id
+        } else {
+            info.name.as_str()
+        };
+        let mut display = if provider.is_empty() {
+            label.to_string()
+        } else {
+            format!("{label} · {provider}")
+        };
         if is_current {
             display.push_str(" (current)");
         }
 
-        let description = provider
-            .filter(|p| !p.is_empty())
-            .unwrap_or("")
-            .to_string();
+        let description = provider.to_string();
 
         // Trailing space on reasoning models: signals "more input
         // expected" to the prompt widget so Enter advances to effort
@@ -609,7 +616,7 @@ mod tests {
             .find(|i| i.insert_text.starts_with("test/reasoning-x"))
             .unwrap();
         assert_eq!(reasoning.insert_text, "test/reasoning-x ");
-        assert_eq!(reasoning.display, "reasoning-x");
+        assert_eq!(reasoning.display, "Reasoning X · test");
         assert_eq!(reasoning.description, "test");
 
         // Plain model has no trailing space -- Enter commits immediately.
@@ -671,12 +678,12 @@ mod tests {
         let items = cmd.suggest_args(&ctx, "").unwrap();
         assert_eq!(items.len(), 2);
 
-        // Pi interactive autocomplete: label=id, description=provider, value=provider/id.
+        // The picker label combines the model name and provider; value stays provider/id.
         let anthropic = items
             .iter()
             .find(|i| i.description == "anthropic")
             .unwrap();
-        assert_eq!(anthropic.display, "claude-haiku-4-5");
+        assert_eq!(anthropic.display, "Claude Haiku 4.5 · anthropic");
         assert_eq!(anthropic.description, "anthropic");
         assert_eq!(anthropic.insert_text, "anthropic/claude-haiku-4-5");
 
@@ -684,7 +691,7 @@ mod tests {
             .iter()
             .find(|i| i.description == "openrouter")
             .unwrap();
-        assert_eq!(openrouter.display, "claude-haiku-4-5");
+        assert_eq!(openrouter.display, "Claude Haiku 4.5 · openrouter");
         assert_eq!(openrouter.insert_text, "openrouter/claude-haiku-4-5");
 
         let detail = model_picker_detail_lines(&a_info);

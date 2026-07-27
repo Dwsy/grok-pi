@@ -26,6 +26,10 @@ pub struct UiConfig {
     /// When true, Enter navigates immediately without summarization.
     #[serde(default)]
     pub pi_tree_skip_summary_prompt: bool,
+    /// Report authoritative Pi lifecycle and session state to Herdr.
+    /// Default off; takes effect for new sessions only.
+    #[serde(default)]
+    pub pi_herdr: bool,
     /// Enable upstream-compatible Rhai workflows in grok-pi (xai-workflow + Pi spawn).
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
@@ -388,6 +392,7 @@ impl Default for UiConfig {
             psm_resume_index: false,
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,
+            pi_herdr: true,
             pi_workflows: false,
             pi_goal: false,
             pi_loop: false,

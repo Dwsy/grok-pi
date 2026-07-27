@@ -5,6 +5,8 @@
 //! guides): these pages are bite-size intros that point at the guides for
 //! depth.
 
+use std::sync::{OnceLock, RwLock};
+
 /// A compile-time tutorial topic. All fields are `&'static str`.
 #[derive(Debug)]
 pub struct TutorialTopic {
@@ -17,6 +19,18 @@ pub struct TutorialTopic {
     /// Title of the primary how-to guide this page's "Go deeper" points at
     /// (must match a [`crate::docs`] title); `d` opens it in the overlay.
     pub go_deeper: Option<&'static str>,
+}
+
+/// Product copy supplied to the native tutorial UI.
+///
+/// The Pager owns the modal, picker, Markdown renderer and input state machine;
+/// an external composition may replace only these static strings and topics.
+#[derive(Debug, Clone, Copy)]
+pub struct TutorialProfile {
+    pub title: &'static str,
+    pub command_description: &'static str,
+    pub intro_lines: &'static [&'static str],
+    pub topics: &'static [TutorialTopic],
 }
 
 macro_rules! topic {
@@ -91,9 +105,57 @@ pub static TUTORIAL_TOPICS: &[TutorialTopic] = &[
     ),
 ];
 
+static DEFAULT_INTRO_LINES: &[&str] = &[
+    "Quick tips to get the most out of Grok Build.",
+    "Pick a topic. Esc when you're done.",
+];
+
+pub static DEFAULT_TUTORIAL_PROFILE: TutorialProfile = TutorialProfile {
+    title: "Welcome to Grok Build",
+    command_description: "Quick tips to get the most out of Grok Build",
+    intro_lines: DEFAULT_INTRO_LINES,
+    topics: TUTORIAL_TOPICS,
+};
+
+fn tutorial_profile_cell() -> &'static RwLock<Option<&'static TutorialProfile>> {
+    static CELL: OnceLock<RwLock<Option<&'static TutorialProfile>>> = OnceLock::new();
+    CELL.get_or_init(|| RwLock::new(None))
+}
+
+/// Install or clear product-specific tutorial copy for this Pager process.
+///
+/// The Pager hosts one backend per process, so the composition installs this
+/// before constructing the first prompt surface, just like the logo and slash
+/// command profile overrides.
+pub fn set_tutorial_profile(profile: Option<&'static TutorialProfile>) {
+    *tutorial_profile_cell()
+        .write()
+        .expect("tutorial profile lock poisoned") = profile;
+}
+
+pub fn tutorial_profile() -> &'static TutorialProfile {
+    (*tutorial_profile_cell()
+        .read()
+        .expect("tutorial profile lock poisoned"))
+    .unwrap_or(&DEFAULT_TUTORIAL_PROFILE)
+}
+
+pub fn tutorial_topics() -> &'static [TutorialTopic] {
+    tutorial_profile().topics
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_profile_keeps_stock_product_copy() {
+        assert_eq!(DEFAULT_TUTORIAL_PROFILE.title, "Welcome to Grok Build");
+        assert!(std::ptr::eq(
+            DEFAULT_TUTORIAL_PROFILE.topics,
+            TUTORIAL_TOPICS
+        ));
+    }
 
     #[test]
     fn topics_are_valid() {

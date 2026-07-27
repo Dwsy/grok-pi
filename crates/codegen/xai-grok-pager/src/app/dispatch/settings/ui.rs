@@ -430,6 +430,33 @@ pub(in crate::app::dispatch) fn dispatch_open_pi_config(app: &mut AppView) -> Ve
     vec![]
 }
 
+/// Open the native Pi provider/model management center.
+pub(in crate::app::dispatch) fn dispatch_open_pi_models(app: &mut AppView) -> Vec<Effect> {
+    use crate::views::modal::ActiveModal;
+
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let current_model = app
+        .agents
+        .get(&id)
+        .and_then(|agent| agent.session.models.current_model_id_str())
+        .map(str::to_owned);
+    match crate::views::pi_models::PiModelsModalState::open(current_model) {
+        Ok(state) => {
+            if let Some(agent) = app.agents.get_mut(&id) {
+                agent.active_modal = Some(ActiveModal::PiModels {
+                    state: Box::new(state),
+                });
+            }
+        }
+        Err(error) => {
+            app.show_toast(&format!("Pi models unavailable: {error:#}"));
+        }
+    }
+    vec![]
+}
+
 /// Open the reset-settings confirmation modal.
 ///
 /// **Modal stack contract.** The current `ActiveModal::Settings`
@@ -940,6 +967,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("pi_tree_skip_summary_prompt", SettingValue::Bool(b)) => {
             Some(Action::SetPiTreeSkipSummaryPrompt(*b))
         }
+        ("pi_herdr", SettingValue::Bool(b)) => Some(Action::SetPiHerdr(*b)),
         ("pi_workflows", SettingValue::Bool(b)) => Some(Action::SetPiWorkflows(*b)),
         ("pi_goal", SettingValue::Bool(b)) => Some(Action::SetPiGoal(*b)),
         ("pi_loop", SettingValue::Bool(b)) => Some(Action::SetPiLoop(*b)),
@@ -1179,6 +1207,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         ("pi_tree_skip_summary_prompt", SettingValue::Bool(b)) => {
             app.current_ui.pi_tree_skip_summary_prompt = *b
         }
+        ("pi_herdr", SettingValue::Bool(b)) => app.current_ui.pi_herdr = *b,
         ("pi_workflows", SettingValue::Bool(b)) => app.current_ui.pi_workflows = *b,
         ("pi_goal", SettingValue::Bool(b)) => app.current_ui.pi_goal = *b,
         ("pi_loop", SettingValue::Bool(b)) => app.current_ui.pi_loop = *b,

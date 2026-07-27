@@ -6,9 +6,9 @@ pub enum ExecuteHeaderContent {
     /// Render the syntax-highlighted command and suppress the task name.
     CommandOnly,
     /// Render the task name, falling back to the command when absent.
-    #[default]
     TaskName,
     /// Render the task name followed by the syntax-highlighted command.
+    #[default]
     TaskNameAndCommand,
 }
 
@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(ExecuteHeaderContent::from_canonical("unknown"), None);
         assert_eq!(
             ExecuteHeaderContent::default(),
-            ExecuteHeaderContent::TaskName
+            ExecuteHeaderContent::TaskNameAndCommand
         );
     }
 }

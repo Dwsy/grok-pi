@@ -756,6 +756,36 @@ fn session_failed_orphan_on_welcome_with_survivor_uses_startup_warning() {
     );
 }
 #[test]
+fn successful_model_switch_refreshes_context_window() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("test::large-context"));
+    let model = acp::ModelInfo::new(model_id.clone(), "Large Context".into()).meta(
+        serde_json::json!({ "totalContextTokens": 200_000 })
+            .as_object()
+            .cloned(),
+    );
+    {
+        let agent = app.agents.get_mut(&id).expect("test agent");
+        agent
+            .session
+            .models
+            .available
+            .insert(model_id.clone(), model);
+        agent.apply_context_used(12_345, 32_000);
+    }
+
+    handle_switch_model_complete(&mut app, id, model_id, None, Ok(()), None);
+
+    let context = app.agents[&id]
+        .context_state
+        .as_ref()
+        .expect("context state");
+    assert_eq!(context.used, 12_345);
+    assert_eq!(context.total, 200_000);
+}
+
+#[test]
 fn switch_model_without_session_does_nothing() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);

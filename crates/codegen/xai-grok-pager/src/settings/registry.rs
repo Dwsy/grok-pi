@@ -519,6 +519,7 @@ pub fn current_value_for(
         "psm_resume_index" => Some(SettingValue::Bool(ui.psm_resume_index)),
         "pi_tree_file_rollback" => Some(SettingValue::Bool(ui.pi_tree_file_rollback)),
         "pi_tree_skip_summary_prompt" => Some(SettingValue::Bool(ui.pi_tree_skip_summary_prompt)),
+        "pi_herdr" => Some(SettingValue::Bool(ui.pi_herdr)),
         "pi_workflows" => Some(SettingValue::Bool(ui.pi_workflows)),
         "pi_goal" => Some(SettingValue::Bool(ui.pi_goal)),
         "pi_loop" => Some(SettingValue::Bool(ui.pi_loop)),
@@ -1291,6 +1292,13 @@ mod tests {
                         "pi_tree_skip_summary_prompt default drifts from UiConfig::default()"
                     );
                     assert!(!*default, "pi_tree_skip_summary_prompt must default OFF");
+                }
+                ("pi_herdr", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_herdr,
+                        "pi_herdr default drifts from UiConfig::default()"
+                    );
+                    assert!(!*default, "pi_herdr must default OFF");
                 }
                 ("pi_workflows", SettingKind::Bool { default }) => {
                     assert_eq!(

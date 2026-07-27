@@ -562,6 +562,31 @@ impl AgentView {
             };
         }
 
+        if let ActiveModal::PiModels { state } = modal {
+            return match state.handle_key(key) {
+                crate::views::pi_models::PiModelsOutcome::Close => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                crate::views::pi_models::PiModelsOutcome::Changed => InputOutcome::Changed,
+                crate::views::pi_models::PiModelsOutcome::Reload => {
+                    InputOutcome::Action(Action::PiReload)
+                }
+                crate::views::pi_models::PiModelsOutcome::Activate(query) => {
+                    let Some(model_id) = self.session.models.resolve_by_name_or_id(&query) else {
+                        state.set_error(format!(
+                            "Model '{query}' is not in the live catalog. Save/reload, then try again."
+                        ));
+                        return InputOutcome::Changed;
+                    };
+                    InputOutcome::Action(Action::SwitchModel {
+                        model_id,
+                        effort: None,
+                    })
+                }
+            };
+        }
+
         // ResetSettingsConfirm: y/n routing. Handled before generic
         // char-match so Esc/F2/Ctrl+, route to Cancel (not modal close).
         if let Some(ActiveModal::ResetSettingsConfirm { modal, .. }) = self.active_modal.as_ref() {
@@ -617,6 +642,7 @@ impl AgentView {
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::PiConfig { .. }
+            | ActiveModal::PiModels { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
             | ActiveModal::RememberNoteReview { .. } => unreachable!(),
         }
@@ -654,6 +680,10 @@ impl AgentView {
         }
         if let Some(ActiveModal::MemoryBrowser { state }) = self.active_modal.as_mut() {
             return crate::views::memory_modal::handle_memory_paste(state, text);
+        }
+        if let Some(ActiveModal::PiModels { state }) = self.active_modal.as_mut() {
+            state.handle_paste(text);
+            return InputOutcome::Changed;
         }
         let settings_outcome = match self.active_modal.as_mut() {
             Some(ActiveModal::Settings { state }) => Some(
@@ -1375,7 +1405,7 @@ impl AgentView {
                             *preview_scroll = 0;
                             return InputOutcome::Changed;
                         }
-                        crossterm::event::KeyCode::Left
+                        crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Left
                             if *preview_mode && key.kind == KeyEventKind::Press =>
                         {
                             *preview_mode = false;
@@ -2256,6 +2286,31 @@ impl AgentView {
             };
         }
 
+        // Pi models: modal chrome owns the frame; the model center owns
+        // dirty-close confirmation and content hit testing.
+        if let Some(ActiveModal::PiModels { state }) = &mut self.active_modal {
+            let outcome =
+                mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
+            return match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+                    match state.handle_key(&key) {
+                        crate::views::pi_models::PiModelsOutcome::Close => {
+                            self.active_modal = None;
+                            InputOutcome::Changed
+                        }
+                        _ => InputOutcome::Changed,
+                    }
+                }
+                ModalWindowOutcome::Handled => InputOutcome::Changed,
+                ModalWindowOutcome::Unhandled => {
+                    state.handle_mouse(mouse);
+                    InputOutcome::Changed
+                }
+                _ => InputOutcome::Changed,
+            };
+        }
+
         // ResetSettingsConfirm: route mouse events through the
         // modal-window chrome.
         if let Some(ActiveModal::ResetSettingsConfirm { settings_state, .. }) =
@@ -2457,7 +2512,7 @@ impl AgentView {
                     "theme" | "t" => "Pick theme",
                     _ => "Pick option",
                 };
-                // Model list rows are Pi-style `id [provider]` only. Metadata for
+                // Model list rows show the model name and provider. Metadata for
                 // the hovered/selected model is rendered in a bottom detail pane
                 // (pi-model-selector-x), not as a right-column label.
                 let is_model_list =
@@ -3562,6 +3617,14 @@ impl AgentView {
                 crate::views::memory_modal::render_memory_modal(buf, area, mem_state, compact);
             } else if let modal::ActiveModal::PiConfig { state } = active_modal {
                 crate::views::pi_config::render_pi_config_modal(buf, area, state, compact);
+            } else if let modal::ActiveModal::PiModels { state } = active_modal {
+                state.set_current_model(
+                    self.session
+                        .models
+                        .current_model_id_str()
+                        .map(str::to_owned),
+                );
+                crate::views::pi_models::render_pi_models_modal(buf, area, state, compact);
             } else if let modal::ActiveModal::Settings {
                 state: settings_state,
             } = active_modal
@@ -4846,6 +4909,47 @@ mod session_picker_delete_tests {
                 .map(|(_, session_id, _)| session_id.clone()),
             _ => None,
         }
+    }
+
+    #[test]
+    fn escape_returns_external_preview_to_session_list() {
+        crate::appearance::cache::set_psm_resume_index(true);
+        let mut agent = make_agent();
+        let mut session = entry("pi-session");
+        session.source = "pi".into();
+        open_picker(&mut agent, vec![session]);
+        if let Some(ActiveModal::SessionPicker {
+            source_filter,
+            preview_mode,
+            preview_messages,
+            preview_scroll,
+            ..
+        }) = agent.active_modal.as_mut()
+        {
+            *source_filter = crate::views::session_picker::SourceFilter::External;
+            *preview_mode = true;
+            *preview_messages = Some(vec![crate::views::modal::SessionPreviewMessage {
+                role: "user".into(),
+                content: "preview".into(),
+            }]);
+            *preview_scroll = 2;
+        }
+
+        let outcome = agent.handle_modal_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(outcome, InputOutcome::Changed));
+        let Some(ActiveModal::SessionPicker {
+            preview_mode,
+            preview_messages,
+            preview_scroll,
+            ..
+        }) = agent.active_modal.as_ref()
+        else {
+            panic!("Esc must return to the session list, not close the modal");
+        };
+        assert!(!preview_mode);
+        assert!(preview_messages.is_none());
+        assert_eq!(*preview_scroll, 0);
+        crate::appearance::cache::set_psm_resume_index(false);
     }
 
     #[test]
