@@ -4,6 +4,43 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.12] - 2026-07-28
+
+Range: `v0.0.11` → `v0.0.12` (2026-07-25 → 2026-07-28).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Highlights
+
+- **Native Pi model manager** — manage `models.json` in a Pager modal, then hot-reload Pi without restarting the session.
+- **Product onboarding and Herdr** — a grok-pi-specific 18-part tutorial plus an opt-in native Herdr lifecycle bridge.
+- **Safer product boundaries** — recap capability is advertised only when its bridge is loaded; missing bridge commands now fail explicitly.
+
+### Added
+
+- **`/pi-models`** (also `/model-config`, `/models-config`): native Provider → Model → Detail management for Pi `models.json`, with search, create/clone/edit/delete, validation, external-change detection, backups and restore. Saving uses Pi's official reload path; activating a model continues to use typed ACP `session/set_model`.
+- **grok-pi tutorial profile**: `/tutorial`, `/tour`, and `/onboarding` now present 18 product-specific chapters covering native Pager surfaces, Pi capabilities, optional bridges, and their boundaries rather than reusing stock Grok copy.
+- **Herdr lifecycle integration**: an F2-controlled, restart-required **Pi Herdr integration** injects a host-owned extension to report root Pi session identity and working/blocked/idle state. It is inert outside Herdr and can be disabled with `[ui].pi_herdr = false`.
+- **Subagent session isolation**: subagent session files are created below the parent session directory's `subagent/` tree.
+
+### Fixed
+
+- **Recap and bridge commands** — only advertise session recap when its injected extension is present; reject requests for unloaded bridge commands and prevent concurrent recap requests.
+- **Thinking stream rendering** — strip complete ANSI control sequences while retaining incomplete sequences across chunks, so terminal escapes do not leak into thinking text or Rust code fences.
+- **Startup noise** — no longer print a successful Pi host version check to stderr.
+
+### Changed
+
+- Integrated Grok Build `47348d1` through the documented changelog-first, isolated sync workflow; retained the narrow Pi-Grok seams and shared Cargo-target setup for linked worktrees.
+- README, feature matrix, architecture notes, and bilingual Herdr usage guides now document the new product surfaces and opt-in policy.
+
+### Notes
+
+- The model manager deliberately does not introduce a synthetic enabled/disabled model state: model availability and authentication remain Pi-owned.
+- Herdr and recap bridges require a full restart after their extension admission settings change.
+
+---
+
 ## [0.0.11] - 2026-07-25
 
 Range: `v0.0.10` → `v0.0.11` (2026-07-25).

@@ -7,6 +7,41 @@
 
 ---
 
+## [0.0.12] - 2026-07-28
+
+范围：`v0.0.11` → `v0.0.12`（2026-07-25 → 2026-07-28）。
+
+### 亮点
+
+- **原生 Pi 模型管理中心** — 在 Pager 弹窗内管理 `models.json`，保存后热更新 Pi，无需重启会话。
+- **产品导览与 Herdr** — grok-pi 专属 18 篇导览，以及可选启用的原生 Herdr 生命周期桥接。
+- **更安全的产品边界** — 仅当 recap 桥接实际加载时才声明该能力；未加载的桥接命令会明确报错。
+
+### 新增
+
+- **`/pi-models`**（别名：`/model-config`、`/models-config`）：原生 Provider → Model → Detail 三栏管理 Pi `models.json`，支持搜索、新建/克隆/编辑/删除、校验、外部修改冲突检测、备份与恢复。保存复用 Pi 官方 reload；激活模型仍走 typed ACP `session/set_model`。
+- **grok-pi 教程 profile**：`/tutorial`、`/tour`、`/onboarding` 现在提供 18 篇产品专属内容，覆盖 Pager 原生表面、Pi 能力、可选桥接及边界，不再复用 stock Grok 文案。
+- **Herdr 生命周期集成**：F2 中可控制、需重启的 **Pi Herdr integration** 注入宿主拥有的扩展，上报根 Pi 会话身份及 working/blocked/idle 状态；在 Herdr 外无副作用，`[ui].pi_herdr = false` 可关闭。
+- **子代理会话隔离**：子代理 session 文件创建在父 session 目录下的 `subagent/` 树中。
+
+### 修复
+
+- **Recap 与桥接命令** — 仅当注入扩展存在时声明 session recap；拒绝调用未加载的桥接命令，并阻止并发 recap 请求。
+- **Thinking 流式渲染** — 剥离完整 ANSI 控制序列，并跨 chunk 保留未完成序列，避免终端转义码泄漏到 Thinking 文本或 Rust fence 中。
+- **启动噪声** — 不再向 stderr 打印成功的 Pi host 版本检查。
+
+### 变更
+
+- 依照“先 changelog、后隔离同步”的流程整合 Grok Build `47348d1`；保留 Pi-Grok 窄接缝，并为 linked worktree 复用 Cargo target。
+- README、功能矩阵、架构记录及中英文 Herdr 使用指南同步说明新产品表面与可选启用策略。
+
+### 说明
+
+- 模型管理中心刻意不伪造 enabled/disabled 状态：模型可用性和认证仍归 Pi 所有。
+- Herdr 与 recap 桥接的扩展准入设置变更后，需要完全重启才能生效。
+
+---
+
 ## [0.0.11] - 2026-07-25
 
 范围：`v0.0.10` → `v0.0.11`（2026-07-25）。
