@@ -241,6 +241,8 @@ struct AdapterState {
     pending_subagent_bridge: PendingSubagentBridge,
     /// In-flight `/btw` side questions keyed by requestId (extension custom message).
     pending_btw: HashMap<String, oneshot::Sender<Result<String, String>>>,
+    /// A recap command must finish before another recap can be requested.
+    recap_in_flight: bool,
     /// Plan mode lifecycle tracker. The adapter is the sole owner of plan mode
     /// state — Pi RPC has no mode concept, and the Pager only renders.
     plan_mode: crate::plan_mode::PiPlanTracker,
@@ -321,6 +323,7 @@ impl PiAgent {
                 subagent_bridge_sequences: HashMap::new(),
                 pending_subagent_bridge: PendingSubagentBridge::default(),
                 pending_btw: HashMap::new(),
+                recap_in_flight: false,
                 plan_mode,
                 plan_mode_control,
             })),
@@ -511,6 +514,7 @@ impl PiAgent {
         command: &str,
         args: &str,
     ) -> Result<(), acp::Error> {
+        self.require_bridge_command(command)?;
         let message = bridge_command_message(command, args);
         self.rpc
             .request(json!({ "type": "prompt", "message": message }))
@@ -522,6 +526,7 @@ impl PiAgent {
     /// Run a stateful hidden bridge extension command (`/__pi_*`) and wait for
     /// the non-agent preflight probe to complete.
     async fn run_bridge_command(&self, command: &str, args: &str) -> Result<(), acp::Error> {
+        self.require_bridge_command(command)?;
         let message = bridge_command_message(command, args);
         let (completion_tx, completion_rx) = oneshot::channel();
         let prompt_id = {
@@ -548,6 +553,15 @@ impl PiAgent {
         });
         let _ = completion_rx.await;
         Ok(())
+    }
+
+    fn require_bridge_command(&self, command: &str) -> Result<(), acp::Error> {
+        if bridge_command_is_registered(&self.state.borrow().bootstrap.commands, command) {
+            return Ok(());
+        }
+        Err(acp::Error::method_not_found().data(format!(
+            "Pi bridge command /{command} is unavailable because its extension is not loaded."
+        )))
     }
 
     /// True when F2 `[ui].pi_workflows` is on (and/or parent env set by grok-pi).
@@ -3242,9 +3256,10 @@ impl acp::Agent for PiAgent {
         &self,
         _arguments: acp::InitializeRequest,
     ) -> Result<acp::InitializeResponse, acp::Error> {
-        // Advertise session recap so Pager enables /recap + auto away-recap.
-        // Actual generation is handled by the injected Pi extension bridge.
-        let meta = json!({ "sessionRecap": true }).as_object().cloned();
+        // Only advertise recap when its injected bridge command is available.
+        let meta = json!({ "sessionRecap": recap_extension_enabled() })
+            .as_object()
+            .cloned();
         Ok(acp::InitializeResponse::new(acp::ProtocolVersion::V1)
             .agent_capabilities(
                 acp::AgentCapabilities::new()
@@ -4259,6 +4274,14 @@ impl PiAgent {
     async fn handle_recap_request(&self, params_raw: &str) -> Result<acp::ExtResponse, acp::Error> {
         let params: Value = serde_json::from_str(params_raw).unwrap_or_else(|_| json!({}));
         let auto = params.get("auto").and_then(Value::as_bool).unwrap_or(false);
+        let reserved = {
+            let mut state = self.state.borrow_mut();
+            reserve_recap_request(&mut state.recap_in_flight)
+        };
+        if !reserved {
+            return ext_response(json!({ "ok": true, "auto": auto, "skipped": "in_flight" }))
+                .map_err(acp_internal);
+        }
         let models = model_chain_from_params(&params);
         let model = models.first().cloned().or_else(|| {
             string(&params, &["model", "modelId", "recapModel"])
@@ -4300,7 +4323,9 @@ impl PiAgent {
         let args = payload.to_string();
         // Extension emits custom message asynchronously; adapter projects it.
         // Await preflight so extension errors surface before we ack.
-        self.run_bridge_command(RECAP_COMMAND, &args).await?;
+        let result = self.run_bridge_command(RECAP_COMMAND, &args).await;
+        self.state.borrow_mut().recap_in_flight = false;
+        result?;
         ext_response(json!({ "ok": true, "auto": auto })).map_err(acp_internal)
     }
 
@@ -4651,6 +4676,18 @@ fn model_chain_from_params(params: &Value) -> Vec<String> {
     out
 }
 
+fn recap_extension_enabled() -> bool {
+    env_flag_enabled(std::env::var("PI_GROK_RECAP").ok().as_deref())
+}
+
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    match value.map(str::trim) {
+        Some("1") => true,
+        Some(value) => value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("on"),
+        None => false,
+    }
+}
+
 fn btw_extension_enabled() -> bool {
     if let Ok(config) = xai_grok_shell::config::load_effective_config() {
         if config
@@ -4669,6 +4706,24 @@ fn btw_extension_enabled() -> bool {
         }
         Err(_) => false,
     }
+}
+
+fn bridge_command_is_registered(commands: &[PiCommand], command: &str) -> bool {
+    let command = command.trim_start_matches('/');
+    commands.iter().any(|available| {
+        available
+            .name
+            .trim_start_matches('/')
+            .eq_ignore_ascii_case(command)
+    })
+}
+
+fn reserve_recap_request(in_flight: &mut bool) -> bool {
+    if *in_flight {
+        return false;
+    }
+    *in_flight = true;
+    true
 }
 
 fn bridge_command_message(command: &str, args: &str) -> String {
@@ -5461,6 +5516,30 @@ mod tests {
     #[test]
     fn utc_now_ms_is_positive() {
         assert!(utc_now_ms() > 0);
+    }
+
+    #[test]
+    fn recap_capability_requires_an_enabled_bridge_extension() {
+        assert!(!env_flag_enabled(None));
+        assert!(!env_flag_enabled(Some("false")));
+        assert!(env_flag_enabled(Some("1")));
+        assert!(env_flag_enabled(Some("on")));
+    }
+
+    #[test]
+    fn bridge_commands_require_registration_and_recap_is_not_reentrant() {
+        let commands = vec![PiCommand {
+            name: RECAP_COMMAND.into(),
+            ..Default::default()
+        }];
+        assert!(bridge_command_is_registered(&commands, RECAP_COMMAND));
+        assert!(!bridge_command_is_registered(&commands, BTW_COMMAND));
+
+        let mut in_flight = false;
+        assert!(reserve_recap_request(&mut in_flight));
+        assert!(!reserve_recap_request(&mut in_flight));
+        in_flight = false;
+        assert!(reserve_recap_request(&mut in_flight));
     }
 
     #[test]

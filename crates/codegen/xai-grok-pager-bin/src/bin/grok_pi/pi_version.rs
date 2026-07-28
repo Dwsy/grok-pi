@@ -87,10 +87,7 @@ pub(super) fn check_pi_host(program: &str) -> PiHostCheck {
 /// Returns the resolved host program path that should be used for subsequent spawns.
 pub(super) fn ensure_compatible_pi_host(program: &str) -> Result<(Version, String)> {
     match check_pi_host(program) {
-        PiHostCheck::Ok { version, program } => {
-            eprintln!("Pi host: {program} {version} (min {MIN_PI_VERSION})");
-            Ok((version, program))
-        }
+        PiHostCheck::Ok { version, program } => Ok((version, program)),
         PiHostCheck::TooOld { version, program } => {
             print_upgrade_help(
                 &format!("Pi host too old: {program} {version} < required {MIN_PI_VERSION}"),

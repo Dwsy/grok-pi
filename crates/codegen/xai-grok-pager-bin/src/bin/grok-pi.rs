@@ -639,6 +639,18 @@ async fn run(mut args: Args) -> Result<()> {
     }
     // Identifies this Pi child as running under the grok-pi host for user extensions.
     let mut env = vec![("PI_GROK".to_string(), "1".to_string())];
+    if recap_extension.is_some() {
+        env.push(("PI_GROK_RECAP".to_string(), "1".to_string()));
+        // SAFETY: single-threaded startup; the adapter advertises this capability.
+        unsafe {
+            std::env::set_var("PI_GROK_RECAP", "1");
+        }
+    } else {
+        // Avoid advertising recap when --no-extensions omits its bridge command.
+        unsafe {
+            std::env::remove_var("PI_GROK_RECAP");
+        }
+    }
     if let Some(selected) = selected_builtin_tools {
         env.push(("PI_GROK_BUILTIN_TOOLS".to_string(), selected));
     }

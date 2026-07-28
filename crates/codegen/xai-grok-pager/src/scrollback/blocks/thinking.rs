@@ -23,6 +23,9 @@ use super::quote_bar::QuoteBarStrip;
 #[derive(Debug, Clone)]
 pub struct ThinkingBlock {
     content: MarkdownContent,
+    /// Unterminated ANSI escape retained across stream chunks so it never
+    /// reaches the terminal as literal content.
+    ansi_tail: String,
 
     /// Optional elapsed time in milliseconds (from server).
     /// When set, collapsed view shows "Thought for Xs".
@@ -34,7 +37,8 @@ impl ThinkingBlock {
     /// Create a new thinking block with complete text.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
-            content: MarkdownContent::new(text),
+            content: MarkdownContent::new(strip_complete_ansi(&text.into())),
+            ansi_tail: String::new(),
             elapsed_time_ms: None,
             started_at: None,
         }
@@ -44,6 +48,7 @@ impl ThinkingBlock {
     pub fn streaming() -> Self {
         Self {
             content: MarkdownContent::streaming(),
+            ansi_tail: String::new(),
             elapsed_time_ms: None,
             started_at: Some(std::time::Instant::now()),
         }
@@ -62,6 +67,7 @@ impl ThinkingBlock {
     pub fn streaming_replay() -> Self {
         Self {
             content: MarkdownContent::streaming(),
+            ansi_tail: String::new(),
             elapsed_time_ms: None,
             started_at: None,
         }
@@ -69,12 +75,18 @@ impl ThinkingBlock {
 
     /// Push a streaming chunk of markdown text.
     pub fn push_chunk(&mut self, chunk: &str) {
-        self.content.push_chunk(chunk);
+        let clean = self.take_clean_ansi_chunk(chunk);
+        if !clean.is_empty() {
+            self.content.push_chunk(&clean);
+        }
     }
 
     /// Push a chunk without rendering immediately.
     pub fn push_chunk_deferred(&mut self, chunk: &str) {
-        self.content.push_chunk_deferred(chunk);
+        let clean = self.take_clean_ansi_chunk(chunk);
+        if !clean.is_empty() {
+            self.content.push_chunk_deferred(&clean);
+        }
     }
 
     /// Finish streaming and do a full re-render for safety.
@@ -83,6 +95,7 @@ impl ThinkingBlock {
     /// view shows the actual wall-clock duration the user experienced,
     /// not the server-reported delta.
     pub fn finish(&mut self) {
+        self.ansi_tail.clear();
         self.content.finish();
         // Freeze local elapsed if no server time has been set.
         // The local timer (started_at → now) captures the full duration
@@ -92,6 +105,16 @@ impl ThinkingBlock {
         {
             self.elapsed_time_ms = Some(start.elapsed().as_millis() as i64);
         }
+    }
+
+    /// Strip complete ANSI escapes while retaining an incomplete suffix for the
+    /// next streaming chunk. The suffix is dropped by [`Self::finish`].
+    fn take_clean_ansi_chunk(&mut self, chunk: &str) -> String {
+        self.ansi_tail.push_str(chunk);
+        let end = complete_ansi_prefix_len(&self.ansi_tail);
+        let clean = strip_complete_ansi(&self.ansi_tail[..end]);
+        self.ansi_tail.drain(..end);
+        clean
     }
 
     /// Get the source text.
@@ -353,6 +376,60 @@ impl ThinkingBlock {
     }
 }
 
+/// Return the byte position before an unfinished ANSI control sequence.
+///
+/// The input is UTF-8; every returned index is either the whole string or the
+/// byte where an ASCII ESC begins, so it is always a character boundary.
+fn complete_ansi_prefix_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] != 0x1b {
+            index += 1;
+            continue;
+        }
+        let Some(&kind) = bytes.get(index + 1) else {
+            return index;
+        };
+        match kind {
+            b'[' => {
+                let Some(final_offset) = bytes[index + 2..]
+                    .iter()
+                    .position(|byte| (0x40..=0x7e).contains(byte))
+                else {
+                    return index;
+                };
+                index += final_offset + 3;
+            }
+            b']' | b'P' | b'^' | b'_' => {
+                let mut cursor = index + 2;
+                loop {
+                    match bytes.get(cursor) {
+                        Some(0x07) => {
+                            index = cursor + 1;
+                            break;
+                        }
+                        Some(0x1b) if bytes.get(cursor + 1) == Some(&b'\\') => {
+                            index = cursor + 2;
+                            break;
+                        }
+                        Some(_) => cursor += 1,
+                        None => return index,
+                    }
+                }
+            }
+            _ => index += 2,
+        }
+    }
+
+    bytes.len()
+}
+
+fn strip_complete_ansi(text: &str) -> String {
+    strip_ansi_escapes::strip_str(text).replace('\x1b', "")
+}
+
 impl BlockContent for ThinkingBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
         match ctx.mode {
@@ -529,6 +606,26 @@ mod tests {
         let out = block.output(&ctx);
         assert!(out.lines.len() > 1);
         assert!(out.lines.iter().all(|line| line.selection_range == Some(0)));
+    }
+
+    #[test]
+    fn thinking_strips_ansi_without_changing_rust_fences() {
+        let mut block = ThinkingBlock::streaming();
+        block.push_chunk("\x1b[38;2;49;131;");
+        block.push_chunk("216mThinking: \x1b[39m\n```rust\nfn main() {}\n```\n");
+        block.finish();
+
+        assert_eq!(block.text(), "Thinking: \n```rust\nfn main() {}\n```\n");
+        assert!(!block.text().contains('\x1b'));
+    }
+
+    #[test]
+    fn thinking_drops_unterminated_ansi_tail() {
+        let mut block = ThinkingBlock::streaming();
+        block.push_chunk("safe\x1b[38;2");
+        block.finish();
+
+        assert_eq!(block.text(), "safe");
     }
 
     #[test]

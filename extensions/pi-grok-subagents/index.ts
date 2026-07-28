@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import {
   createAgentSession,
@@ -467,6 +468,9 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
     const model = ctx.model;
     if (!model) throw new Error("no Pi model is selected");
 
+    const parentSessionFile = ctx.sessionManager.getSessionFile();
+    if (!parentSessionFile) throw new Error("parent session persistence is unavailable");
+
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.create(ctx.cwd, agentDir);
     const resourceLoader = new DefaultResourceLoader({
@@ -485,7 +489,7 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
     const { session } = await createAgentSession({
       cwd: ctx.cwd,
       agentDir,
-      sessionManager: SessionManager.create(ctx.cwd),
+      sessionManager: SessionManager.create(ctx.cwd, join(dirname(parentSessionFile), "subagent")),
       settingsManager,
       modelRegistry: ctx.modelRegistry,
       model,
