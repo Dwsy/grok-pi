@@ -33,6 +33,85 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [5da6962] — 2026-07-29
+
+> **Status:** Pending — not yet merged into grok-pi.
+
+- **Sync range:** `47348d1..5da6962` (`47348d13ec4508dcfe440e34c6d511bb02998fb2` → `5da6962e4adb9c857f3def762542b52b4ec3e522`)
+- **Upstream commits:** 3 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `2a818575225183d8ca915f5632a09b8067b5156a` (was `d02693a856a54f1030695b36b91d276e96b30b23`)
+- **Diff size:** 315 files changed, +22006 / −7473
+
+### Summary
+
+This sync is dominated by Shell session-lifecycle and memory work, Pager startup/plan/terminal behavior, and broad tool cleanup. It bounds large-session and fork replay memory, reclaims session-owned child resources, makes startup and file search more resilient, expands terminal and subscription telemetry, and adds security hardening around the leader sandbox. The range overlaps Grok-Pi's highest-risk seams: Pager `app/`, external ACP/session lifecycle, plan and subagent projection, model/settings startup, tool definitions, MCP cleanup, and the local Herdr integration.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Shell (agent runtime) | 92 | +9702/−4596 | 20/0 | session memory/process reclamation, startup, search recovery, subagent scope |
+| Pager (TUI) | 98 | +6124/−2161 | 8/0 | instant startup, plan scrollback, terminal probing, settings and session UI |
+| Tools | 76 | +2848/−371 | 1/0 | session resource cleanup, schema/description fixes, shell wrapper correctness |
+| Workspace / Permission | 12 | +1736/−215 | 0/0 | task snapshots, file-search degradation, worker caps, git operations |
+| Other crates | 23 | +1127/−79 | 3/0 | HTTP, crash handling, test support, proxy/admin and shared infrastructure |
+| MCP | 1 | +142/−33 | 0/0 | CLI enable/disable and child-process cleanup |
+| Telemetry / Mixpanel | 4 | +98/−6 | 0/0 | terminal/source and subscription tier telemetry |
+| Other | 3 | +82/−0 | 1/0 | generated/protocol support outside mapped codegen areas |
+| Agent lifecycle | 1 | +58/−0 | 0/0 | agent builder lifecycle support |
+| Update / Version | 1 | +33/−9 | 0/0 | source-tagged terminal version reporting |
+| Root / meta | 2 | +28/−1 | 0/0 | lockfile and SOURCE_REV |
+| Sandbox | 1 | +22/−0 | 0/0 | leader-process sandbox profile enforcement |
+| Config | 1 | +6/−2 | 0/0 | configurable subagent nesting depth |
+| **Total** | **315** | **+22006/−7473** | **33/0** | |
+
+### Added
+
+- Detect the Herdr multiplexer.
+- Add a subagent lifecycle soak that bounds threads, file descriptors, and heap, and fail closed when soak metrics are absent.
+- Add source-tagged terminal version telemetry, DA2 terminal probing, and terminal-version feedback metadata.
+- Add reusable session test helpers and synthetic replay/round-trip coverage.
+- Add `computer_reason` to the `ConversationHistoryDone` trailer.
+- Make maximum subagent nesting depth configurable.
+- Allow `/loop` to store prompts that can terminate the loop.
+- Add SuperGrok Plus identity, CLI, and analytics tier surfaces.
+- Add team-scoped Grok Code managed-config admin routes to the CLI chat proxy.
+- Add CLI enable/disable controls for MCP servers.
+- Harden workspace git operations and add `git_sync_base`.
+- Add a feature-gated gRPC retry policy to the circuit breaker.
+
+### Changed
+
+- Bound peak memory while loading large sessions and stream inherited replay to bound fork memory.
+- Show the UI immediately while fetching models and settings in the background.
+- Copy the complete approved plan with `y`, keep the whole plan in scrollback, and separate reasoning from output in minimal mode.
+- Make workspace task snapshots list only incomplete background tasks.
+- Run plan-mode exit last in mixed tool batches.
+- Reclaim retained/resident session state and session-owned processes, LSP servers, MCP children, and subagents when a session closes.
+- Inherit the parent session process scope into subagents.
+- Build the `@` file-search matcher lazily and cap Shell/Workspace Tokio workers on many-core hosts.
+- Reuse spawn-time skill discovery for session telemetry.
+- Mark `/gboom` as non-production code and quiet routine auth, LSP, and config warnings.
+
+### Fixed
+
+- Prevent armed signature verification from deleting the managed-deny smoke policy.
+- Correct observability attributes for warm-store errors, restore setup, remote tools, and preview denials.
+- Security: apply the sandbox profile to the leader process that executes tools.
+- Withhold key-event types from affected Alacritty builds that otherwise double keys.
+- Degrade `@` file search instead of aborting when thread creation is exhausted.
+- Correct contradictions and defects in tool descriptions, schemas, outputs, and harness pools.
+- Stop leaking shell-wrapper positional parameters into sourced scripts, including persistent/static-shell Conda activation.
+- Self-heal a corrupt session-search SQLite cache.
+- Capture `SIGABRT` so panic-aborts leave crash reports.
+
+### Merge risk for grok-pi
+
+- Pager and Shell account for 190 changed files and overlap Grok-Pi `app/`, settings/model startup, plan/review scrollback, session lifecycle, subagent, external ACP, and event-loop seams.
+- Upstream Herdr detection must be reconciled with the fork's existing Herdr integration rather than replacing product-specific behavior.
+- Session-close resource reclamation spans Tools, MCP, subprocess scope, LSP, and subagents; Pi remains the owner of Pi child sessions and adapter lifecycle.
+- PR #3 (`xai-org/main` → `Dwsy/main`) is currently conflict-dirty; conflict resolution must happen in an isolated integration worktree before the verified result is delivered to `main`.
+
 ## [47348d1] — 2026-07-26
 
 > **Status:** Merged into local `main` by ff-only delivery (two-parent upstream merge `be91fe7`); 64-path concurrent WIP restored unstaged from verified safety tip `3d4278d`.
