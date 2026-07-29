@@ -3145,7 +3145,25 @@ impl PiAgent {
         let method = string(&event, &["method"])
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let title = string(&event, &["title", "message"]).unwrap_or("Pi extension");
+        let raw_title = string(&event, &["title", "message"]).unwrap_or("Pi extension");
+        // grok-pi's subagent configuration uses Pi's standard `ui.select`
+        // callback, but requests the existing native QuestionView multi-select
+        // affordance through a namespaced title envelope. Pi core remains
+        // unchanged and other extension selects keep their single-choice
+        // semantics.
+        let multi_select_title = (method == "select")
+            .then(|| extension_multi_select_title(raw_title))
+            .flatten();
+        let resource_picker = (method == "select")
+            .then(|| extension_resource_picker(raw_title))
+            .flatten();
+        let resource_picker_title = resource_picker
+            .as_ref()
+            .and_then(|picker| picker.get("title"))
+            .and_then(Value::as_str);
+        let title = resource_picker_title
+            .or(multi_select_title.as_deref())
+            .unwrap_or(raw_title);
         let mut options = Vec::new();
         if method == "select" {
             for option in event
@@ -3184,19 +3202,25 @@ impl PiAgent {
             ""
         };
         let tool_call_id = extension_tool_call_id(&id);
-        let params = json!({
+        let mut params = json!({
             "sessionId": self.session_id().0.to_string(),
             "toolCallId": tool_call_id.clone(),
             "questions": [{
                 "question": question,
                 "options": options,
-                "multiSelect": false,
+                "multiSelect": multi_select_title.is_some(),
                 "id": "pi-question",
             }],
             "mode": "default",
             "initialText": initial_text,
             "noFreeform": method == "select" || method == "confirm",
         });
+        if let Some(resource_picker) = resource_picker.clone() {
+            params
+                .as_object_mut()
+                .expect("extension question params must be an object")
+                .insert("piGrokResourcePicker".to_owned(), resource_picker);
+        }
         let raw = serde_json::value::to_raw_value(&params)?;
         let request = acp::ExtRequest::new("x.ai/ask_user_question", raw.into());
         let response = match extension_dialog_timeout(&event) {
@@ -3232,7 +3256,13 @@ impl PiAgent {
             }))?;
             return Ok(());
         }
-        let answer = extension_answer(&method, result).unwrap_or_default();
+        let answer = if resource_picker.is_some() {
+            extension_resource_picker_answer(result).unwrap_or_else(|| "[]".to_string())
+        } else if multi_select_title.is_some() {
+            extension_multi_select_answer(result).unwrap_or_else(|| "[]".to_string())
+        } else {
+            extension_answer(&method, result).unwrap_or_default()
+        };
         let response = match method.as_str() {
             "confirm" => json!({
                 "type": "extension_ui_response",
@@ -5279,6 +5309,40 @@ fn extension_dialog_timeout(event: &Value) -> Option<Duration> {
         .map(Duration::from_millis)
 }
 
+const PI_GROK_MULTI_SELECT_TITLE_PREFIX: &str = "__pi_grok_multi_select_v1__:";
+const PI_GROK_RESOURCE_PICKER_TITLE_PREFIX: &str = "__pi_grok_resource_picker_v1__:";
+
+/// Decode a narrow, product-owned request to render a normal Pi `ui.select`
+/// callback with QuestionView's native checkbox mode. The payload is not a new
+/// Pi RPC surface: it is an opt-in title envelope understood only by the
+/// injected grok-pi subagent extension.
+fn extension_multi_select_title(title: &str) -> Option<String> {
+    let encoded = title.strip_prefix(PI_GROK_MULTI_SELECT_TITLE_PREFIX)?;
+    serde_json::from_str::<Value>(encoded)
+        .ok()?
+        .get("title")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Decode the product-owned select envelope that opens the existing native Pi
+/// resource manager in selection mode. This travels over the ordinary
+/// extension UI and ACP question request; it does not extend Pi RPC.
+fn extension_resource_picker(title: &str) -> Option<Value> {
+    let encoded = title.strip_prefix(PI_GROK_RESOURCE_PICKER_TITLE_PREFIX)?;
+    let value = serde_json::from_str::<Value>(encoded).ok()?;
+    let object = value.as_object()?;
+    object
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())?;
+    let types = object.get("resourceTypes")?.as_array()?;
+    (!types.is_empty() && types.iter().all(Value::is_string)).then_some(value)
+}
+
 const ASK_USER_CANCEL_TEXT: &str = "User declined to answer the questions. Continue with the task using your best judgment, or ask different questions.";
 
 fn write_ask_user_response(tool_call_id: &str, payload: Value) {
@@ -5490,6 +5554,34 @@ fn extension_answer(method: &str, value: &Value) -> Option<String> {
             .or_else(|| annotated_answer(value))
             .or_else(direct),
     }
+}
+
+/// Pi's stock select callback accepts one string, so encode the native
+/// QuestionView multi-select labels as a JSON array for the product-owned
+/// callback envelope above. The TypeScript caller validates every label before
+/// using it as a configuration toggle.
+fn extension_multi_select_answer(value: &Value) -> Option<String> {
+    let answers = value.get("answers").and_then(Value::as_object)?;
+    let labels = answers.values().find_map(|answer| {
+        answer.as_array().map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+    })?;
+    serde_json::to_string(&labels).ok()
+}
+
+fn extension_resource_picker_answer(value: &Value) -> Option<String> {
+    let paths = value.get("paths")?.as_array()?;
+    let paths = paths
+        .iter()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    serde_json::to_string(&paths).ok()
 }
 
 fn ext_response(value: Value) -> Result<acp::ExtResponse> {
@@ -5911,6 +6003,39 @@ mod tests {
             "pi-extension-ui:dialog-7"
         );
         assert_eq!(extension_tool_call_id(&json!(17)), "pi-extension-ui:17");
+    }
+
+    #[test]
+    fn product_multi_select_envelope_uses_native_checkbox_answer_shape() {
+        assert_eq!(
+            extension_multi_select_title(
+                "__pi_grok_multi_select_v1__:{\"title\":\"Built-in tools\",\"maxSelections\":3}"
+            ),
+            Some("Built-in tools".into())
+        );
+        assert_eq!(extension_multi_select_title("ordinary select"), None);
+        assert_eq!(
+            extension_multi_select_answer(&json!({
+                "answers": { "pi-question": ["☐ read", "☑ bash"] }
+            })),
+            Some("[\"☐ read\",\"☑ bash\"]".into())
+        );
+    }
+
+    #[test]
+    fn product_resource_picker_envelope_round_trips_selected_paths() {
+        let picker = extension_resource_picker(
+            "__pi_grok_resource_picker_v1__:{\"title\":\"Extensions\",\"resourceTypes\":[\"extensions\"],\"initialPaths\":[\"/tmp/a.ts\"]}",
+        )
+        .expect("valid resource-picker envelope");
+        assert_eq!(picker["title"], "Extensions");
+        assert!(extension_resource_picker("ordinary select").is_none());
+        assert_eq!(
+            extension_resource_picker_answer(&json!({
+                "paths": ["/tmp/a.ts", "/tmp/b.ts"]
+            })),
+            Some("[\"/tmp/a.ts\",\"/tmp/b.ts\"]".into())
+        );
     }
 
     #[test]

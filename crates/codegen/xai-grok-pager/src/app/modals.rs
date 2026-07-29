@@ -555,6 +555,12 @@ impl AgentView {
         if let ActiveModal::PiConfig { state } = modal {
             return match crate::views::pi_config::PiConfigModalState::handle_key(state, key) {
                 crate::views::pi_config::PiConfigOutcome::Close => {
+                    state.complete_picker(false);
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                crate::views::pi_config::PiConfigOutcome::PickerSubmit => {
+                    state.complete_picker(true);
                     self.active_modal = None;
                     InputOutcome::Changed
                 }
@@ -1362,10 +1368,7 @@ impl AgentView {
                 if psm_features
                     && *source_filter == crate::views::session_picker::SourceFilter::External
                     && let crossterm::event::Event::Key(key) = ev
-                    && matches!(
-                        key.kind,
-                        KeyEventKind::Press | KeyEventKind::Repeat
-                    )
+                    && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                     && key.modifiers.is_empty()
                 {
                     match key.code {
@@ -1468,10 +1471,7 @@ impl AgentView {
                 // full-text search page (query input, Tab scope, nav, Esc).
                 if *search_mode {
                     if let crossterm::event::Event::Key(key) = ev
-                        && matches!(
-                            key.kind,
-                            KeyEventKind::Press | KeyEventKind::Repeat
-                        )
+                        && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                     {
                         use crossterm::event::KeyCode;
                         match key.code {
@@ -2267,6 +2267,7 @@ impl AgentView {
                 mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
             return match outcome {
                 ModalWindowOutcome::CloseRequested => {
+                    state.complete_picker(false);
                     self.active_modal = None;
                     InputOutcome::Changed
                 }
@@ -2277,6 +2278,12 @@ impl AgentView {
                 ModalWindowOutcome::Handled => InputOutcome::Changed,
                 ModalWindowOutcome::Unhandled => match state.handle_mouse(mouse) {
                     crate::views::pi_config::PiConfigOutcome::Close => {
+                        state.complete_picker(false);
+                        self.active_modal = None;
+                        InputOutcome::Changed
+                    }
+                    crate::views::pi_config::PiConfigOutcome::PickerSubmit => {
+                        state.complete_picker(true);
                         self.active_modal = None;
                         InputOutcome::Changed
                     }
@@ -2608,18 +2615,11 @@ impl AgentView {
                     .filtered_notifications()
                     .into_iter()
                     .map(|notification| {
-                        let kind = notification
-                            .kind
-                            .clone()
-                            .unwrap_or_else(|| "info".into());
+                        let kind = notification.kind.clone().unwrap_or_else(|| "info".into());
                         let body_lines: Vec<String> = if notification.message.is_empty() {
                             vec![String::new()]
                         } else {
-                            notification
-                                .message
-                                .lines()
-                                .map(str::to_owned)
-                                .collect()
+                            notification.message.lines().map(str::to_owned).collect()
                         };
                         let label = body_lines
                             .first()
@@ -2645,11 +2645,7 @@ impl AgentView {
                                     && index == state.picker.selected),
                             expanded: is_expanded,
                             fields: &[],
-                            description_lines: if is_expanded {
-                                &desc_lines[index]
-                            } else {
-                                &[]
-                            },
+                            description_lines: if is_expanded { &desc_lines[index] } else { &[] },
                             summary_lines: &[],
                             dimmed: false,
                             indent: 0,

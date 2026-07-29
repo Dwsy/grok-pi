@@ -33,6 +33,11 @@ mod tests {
         assert!(source.contains("process.env.PI_GROK_SUBAGENTS !== \"1\""));
         assert!(source.contains("name: \"spawn_subagent\""));
         assert!(source.contains("__pi_grok_subagent_cancel"));
+        assert!(source.contains("pi.registerCommand(\"subagents\""));
+        assert!(source.contains("PI_GROK_SUBAGENT_EXTENSION_CATALOG"));
+        assert!(source.contains("additionalExtensionPaths"));
+        assert!(source.contains("additionalSkillPaths"));
+        assert!(source.contains("MAX_AGENT_MODELS = 3"));
         assert_eq!(
             file.path().extension().and_then(|value| value.to_str()),
             Some("ts")

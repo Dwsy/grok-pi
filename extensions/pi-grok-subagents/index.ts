@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  parseFrontmatter,
   SessionManager,
   SettingsManager,
   type AgentSession,
   type AgentSessionEvent,
+  type ExtensionCommandContext,
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -19,12 +23,18 @@ const PROGRESS_INTERVAL_MS = 2_000;
 const MAX_BACKGROUND_CONCURRENCY = 4;
 const MAX_WAIT_MS = 600_000; // 10 minutes cap for blocking waits
 const POLL_INTERVAL_MS = 500;
+const MAX_AGENT_MODELS = 3;
+const MULTI_SELECT_TITLE_PREFIX = "__pi_grok_multi_select_v1__:";
+const RESOURCE_PICKER_TITLE_PREFIX = "__pi_grok_resource_picker_v1__:";
+
+const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+const BUILTIN_TOOL_SET = new Set<string>(BUILTIN_TOOL_NAMES);
 
 const CAPABILITY_TOOLS = {
-  "read-only": ["read"],
-  "read-write": ["read", "edit", "write"],
-  execute: ["read", "bash"],
-  all: ["read", "bash", "edit", "write"],
+  "read-only": ["read", "grep", "find", "ls"],
+  "read-write": ["read", "grep", "find", "ls", "edit", "write"],
+  execute: ["read", "bash", "grep", "find", "ls"],
+  all: [...BUILTIN_TOOL_NAMES],
 } as const;
 
 type CapabilityMode = keyof typeof CAPABILITY_TOOLS;
@@ -43,6 +53,518 @@ const AGENT_PROFILES: Record<string, { capabilityMode: CapabilityMode; systemPro
     systemPrompt: "You are a planning subagent. Inspect the codebase and return an implementation plan with risks and verification steps. Do not edit files.",
   },
 };
+
+type AgentDefinitionScope = "builtin" | "global" | "project";
+
+type AgentDefinition = {
+  name: string;
+  scope: AgentDefinitionScope;
+  builtin?: boolean;
+  enabled: boolean;
+  description: string;
+  systemPrompt: string;
+  tools?: string[];
+  models?: string[];
+  extensions?: string[];
+  skills?: string[];
+  maxTurns?: number;
+};
+
+type CatalogEntry = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
+type InjectedExtensionCatalogEntry = {
+  path: string;
+  label: string;
+  description?: string;
+};
+
+type ResourcePickerExtra = {
+  path: string;
+  label: string;
+  type: "extensions" | "skills";
+};
+
+function productProjectDir(cwd: string): string {
+  const configured = process.env.GROK_PROJECT_DIR?.trim() || ".grok-pi";
+  return isAbsolute(configured) ? configured : join(cwd, configured);
+}
+
+function productGlobalDir(): string {
+  return process.env.GROK_HOME?.trim() || join(homedir(), ".grok-pi");
+}
+
+function definitionDir(cwd: string, scope: AgentDefinitionScope): string {
+  if (scope === "builtin") throw new Error("Built-in subagents do not have a definition directory.");
+  return scope === "project" ? join(productProjectDir(cwd), "agents") : join(productGlobalDir(), "agents");
+}
+
+function definitionPath(cwd: string, scope: AgentDefinitionScope, name: string): string {
+  return join(definitionDir(cwd, scope), `${name}.md`);
+}
+
+function definitionName(value: string): string | undefined {
+  const name = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name) ? name : undefined;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalList(value: unknown): string[] | undefined {
+  if (value === undefined || value === null || value === false || value === "none") return undefined;
+  const raw = Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const values = [...new Set(raw.map((entry) => entry.trim()).filter(Boolean))];
+  return Array.isArray(value) ? values : values.length > 0 ? values : undefined;
+}
+
+function optionalMaxTurns(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function loadDefinitionsFromDir(
+  cwd: string,
+  scope: AgentDefinitionScope,
+  definitions: Map<string, AgentDefinition>,
+): void {
+  const dir = definitionDir(cwd, scope);
+  if (!existsSync(dir)) return;
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((file) => file.endsWith(".md")).sort();
+  } catch {
+    return;
+  }
+  for (const file of files) {
+    const name = definitionName(basename(file, ".md"));
+    if (!name) continue;
+    try {
+      const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(readFileSync(join(dir, file), "utf8"));
+      const models = optionalList(frontmatter.models ?? frontmatter.model)?.slice(0, MAX_AGENT_MODELS);
+      definitions.set(name.toLowerCase(), {
+        name,
+        scope,
+        builtin: Object.hasOwn(AGENT_PROFILES, name.toLowerCase()),
+        enabled: frontmatter.enabled !== false,
+        description: optionalString(frontmatter.description) ?? name,
+        systemPrompt: body.trim(),
+        tools: optionalList(frontmatter.tools),
+        models,
+        extensions: optionalList(frontmatter.extensions),
+        skills: optionalList(frontmatter.skills),
+        maxTurns: optionalMaxTurns(frontmatter.max_turns),
+      });
+    } catch {
+      // A malformed local definition must not stop unrelated agents from loading.
+    }
+  }
+}
+
+function loadAgentDefinitions(cwd: string): Map<string, AgentDefinition> {
+  const definitions = new Map<string, AgentDefinition>();
+  for (const [name, profile] of Object.entries(AGENT_PROFILES)) {
+    definitions.set(name, {
+      name,
+      scope: "builtin",
+      builtin: true,
+      enabled: true,
+      description: `Built-in ${name} subagent`,
+      systemPrompt: profile.systemPrompt,
+    });
+  }
+  loadDefinitionsFromDir(cwd, "global", definitions);
+  // A project definition, including `enabled: false`, deliberately overrides
+  // the same global name. This is the project-level global-off switch.
+  loadDefinitionsFromDir(cwd, "project", definitions);
+  return definitions;
+}
+
+function yamlList(values: string[] | undefined, includeEmpty = false): string | undefined {
+  return values && (includeEmpty || values.length > 0) ? JSON.stringify(values) : undefined;
+}
+
+function serializeDefinition(definition: AgentDefinition): string {
+  const fields = [
+    `description: ${JSON.stringify(definition.description)}`,
+    `enabled: ${definition.enabled ? "true" : "false"}`,
+    yamlList(definition.tools, true) && `tools: ${yamlList(definition.tools, true)}`,
+    yamlList(definition.models) && `models: ${yamlList(definition.models)}`,
+    yamlList(definition.extensions) && `extensions: ${yamlList(definition.extensions)}`,
+    yamlList(definition.skills) && `skills: ${yamlList(definition.skills)}`,
+    definition.maxTurns !== undefined && `max_turns: ${definition.maxTurns}`,
+  ].filter((field): field is string => Boolean(field));
+  return `---\n${fields.join("\n")}\n---\n\n${definition.systemPrompt.trim()}\n`;
+}
+
+function saveDefinition(cwd: string, definition: AgentDefinition): void {
+  if (definition.scope === "builtin") throw new Error("Choose project or global scope before saving a built-in subagent.");
+  const dir = definitionDir(cwd, definition.scope);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const destination = definitionPath(cwd, definition.scope, definition.name);
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, serializeDefinition(definition), { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, destination);
+}
+
+function deleteDefinition(cwd: string, definition: AgentDefinition): void {
+  if (definition.scope === "builtin") return;
+  const path = definitionPath(cwd, definition.scope, definition.name);
+  if (existsSync(path)) unlinkSync(path);
+}
+
+function cloneDefinition(definition: AgentDefinition): AgentDefinition {
+  return {
+    ...definition,
+    tools: definition.tools?.slice(),
+    models: definition.models?.slice(),
+    extensions: definition.extensions?.slice(),
+    skills: definition.skills?.slice(),
+  };
+}
+
+function profileFor(type: string, capabilityMode?: string): { type: string; capabilityMode: CapabilityMode; systemPrompt: string } {
+  return resolveProfile(type, capabilityMode);
+}
+
+function selectedDefinition(cwd: string, type: string): AgentDefinition | undefined {
+  return loadAgentDefinitions(cwd).get(type.trim().toLowerCase());
+}
+
+function catalogLabel(entry: CatalogEntry, selected: Set<string>): string {
+  return `${selected.has(entry.id) ? "☑" : "☐"} ${entry.label}`;
+}
+
+async function selectToggles(
+  ctx: ExtensionCommandContext,
+  title: string,
+  entries: CatalogEntry[],
+  selected: Set<string>,
+  maxSelections?: number,
+): Promise<Set<string> | undefined> {
+  if (entries.length === 0) {
+    ctx.ui.notify(`No ${title.toLowerCase()} are currently available.`, "warning");
+    return selected;
+  }
+  const labels = new Map<string, string>();
+  for (const entry of entries) labels.set(catalogLabel(entry, selected), entry.id);
+  const metadata = JSON.stringify({ title: `${title}: choose items to toggle (☑ selected)`, maxSelections });
+  const raw = await ctx.ui.select(`${MULTI_SELECT_TITLE_PREFIX}${metadata}`, [...labels.keys()]);
+  if (raw === undefined) return undefined;
+  let toggledLabels: unknown;
+  try {
+    toggledLabels = JSON.parse(raw);
+  } catch {
+    return selected;
+  }
+  if (!Array.isArray(toggledLabels) || !toggledLabels.every((label) => typeof label === "string")) return selected;
+  const next = new Set(selected);
+  for (const label of toggledLabels) {
+    const id = labels.get(label);
+    if (!id) continue;
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+  }
+  if (maxSelections !== undefined && next.size > maxSelections) {
+    ctx.ui.notify(`Select at most ${maxSelections} models.`, "warning");
+    return selected;
+  }
+  return next;
+}
+
+function toolCatalog(pi: ExtensionAPI): { builtin: CatalogEntry[]; plugin: CatalogEntry[] } {
+  const builtin: CatalogEntry[] = [];
+  const plugin: CatalogEntry[] = [];
+  for (const tool of pi.getAllTools()) {
+    const entry = { id: tool.name, label: tool.name, description: tool.description };
+    if (BUILTIN_TOOL_SET.has(tool.name)) builtin.push(entry);
+    else plugin.push(entry);
+  }
+  const sort = (left: CatalogEntry, right: CatalogEntry) => left.label.localeCompare(right.label);
+  return { builtin: builtin.sort(sort), plugin: plugin.sort(sort) };
+}
+
+function extensionCatalog(pi: ExtensionAPI): CatalogEntry[] {
+  const byPath = new Map<string, CatalogEntry>();
+  const injected = process.env.PI_GROK_SUBAGENT_EXTENSION_CATALOG;
+  if (injected) {
+    try {
+      const parsed: unknown = JSON.parse(injected);
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (
+            typeof entry === "object" &&
+            entry !== null &&
+            typeof (entry as InjectedExtensionCatalogEntry).path === "string" &&
+            typeof (entry as InjectedExtensionCatalogEntry).label === "string"
+          ) {
+            const catalogEntry = entry as InjectedExtensionCatalogEntry;
+            byPath.set(catalogEntry.path, {
+              id: catalogEntry.path,
+              label: catalogEntry.label,
+              description: catalogEntry.description ?? "Pi extension available in this Grok-Pi session",
+            });
+          }
+        }
+      }
+    } catch {
+      // A malformed host catalog must not prevent normal Pi tool discovery.
+    }
+  }
+  for (const tool of pi.getAllTools()) {
+    if (BUILTIN_TOOL_SET.has(tool.name)) continue;
+    const path = tool.sourceInfo.path;
+    if (!path || byPath.has(path)) continue;
+    byPath.set(path, {
+      id: path,
+      label: basename(path),
+      description: `${tool.sourceInfo.scope} extension; provides ${tool.name}`,
+    });
+  }
+  return [...byPath.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+async function selectResources(
+  ctx: ExtensionCommandContext,
+  title: string,
+  resourceType: "extensions" | "skills",
+  current: Set<string>,
+  extraResources: ResourcePickerExtra[] = [],
+): Promise<Set<string> | undefined> {
+  const extras = new Map<string, ResourcePickerExtra>();
+  for (const resource of extraResources) extras.set(resource.path, resource);
+  for (const path of current) {
+    if (!extras.has(path)) {
+      extras.set(path, { path, label: basename(path), type: resourceType });
+    }
+  }
+  const payload = JSON.stringify({
+    title: `${title} for this subagent`,
+    resourceTypes: [resourceType],
+    initialPaths: [...current],
+    extraResources: [...extras.values()],
+  });
+  const raw = await ctx.ui.select(`${RESOURCE_PICKER_TITLE_PREFIX}${payload}`, [
+    "Open Pi resource manager",
+    "Cancel",
+  ]);
+  if (raw === undefined) return undefined;
+  try {
+    const paths: unknown = JSON.parse(raw);
+    if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string")) return current;
+    return new Set(paths.map((path) => path.trim()).filter(Boolean));
+  } catch {
+    return current;
+  }
+}
+
+function modelCatalog(ctx: ExtensionCommandContext): CatalogEntry[] {
+  const models = ctx.modelRegistry.getAvailable?.() ?? ctx.modelRegistry.getAll();
+  return models
+    .map((model) => ({
+      id: `${model.provider}/${model.id}`,
+      label: `${model.provider}/${model.id}`,
+      description: model.name,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function updateSelection(
+  definition: AgentDefinition,
+  field: "tools" | "models" | "extensions" | "skills",
+  values: Set<string>,
+): void {
+  const next = [...values].sort();
+  if (field === "tools") {
+    definition.tools = next;
+  } else if (next.length === 0) {
+    delete definition[field];
+  } else {
+    definition[field] = next;
+  }
+}
+
+async function editDefinition(pi: ExtensionAPI, ctx: ExtensionCommandContext, definition: AgentDefinition): Promise<void> {
+  const isBuiltinOverride = definition.builtin === true && definition.scope !== "builtin";
+  const restoreChoice = definition.scope === "global" ? "Restore built-in defaults" : "Remove project override";
+  while (true) {
+    const choice = await ctx.ui.select(`Subagent ${definition.name} (${definition.scope})`, [
+      definition.enabled ? "Disable" : "Enable",
+      "Description",
+      "Instructions",
+      "Built-in tools",
+      "Plugin tools",
+      `Models (max ${MAX_AGENT_MODELS})`,
+      "Extensions",
+      "Skills",
+      "Max turns",
+      ...(isBuiltinOverride ? [restoreChoice] : ["Delete definition"]),
+      "Save and close",
+    ]);
+    if (!choice || choice === "Save and close") {
+      saveDefinition(ctx.cwd, definition);
+      ctx.ui.notify(`Saved ${definition.scope} subagent ${definition.name}.`, "info");
+      return;
+    }
+    if (choice === "Enable" || choice === "Disable") {
+      definition.enabled = choice === "Enable";
+      continue;
+    }
+    if (choice === restoreChoice || choice === "Delete definition") {
+      const confirmed = await ctx.ui.confirm(
+        choice === restoreChoice ? restoreChoice : "Delete subagent definition",
+        choice === "Restore built-in defaults"
+          ? `Remove the global override for ${definition.name} and restore the built-in profile?`
+          : choice === "Remove project override"
+            ? `Remove the project override for ${definition.name} and restore its inherited definition?`
+          : `Delete the ${definition.scope} subagent definition ${definition.name}?`,
+      );
+      if (confirmed) {
+        deleteDefinition(ctx.cwd, definition);
+        ctx.ui.notify(
+          choice === "Restore built-in defaults"
+            ? `Restored built-in subagent ${definition.name}.`
+            : choice === "Remove project override"
+              ? `Removed project override for ${definition.name}.`
+            : `Deleted ${definition.scope} subagent ${definition.name}.`,
+          "info",
+        );
+        return;
+      }
+      continue;
+    }
+    if (choice === "Description") {
+      const value = await ctx.ui.input("Subagent description", definition.description);
+      if (value?.trim()) definition.description = value.trim();
+      continue;
+    }
+    if (choice === "Instructions") {
+      const value = await ctx.ui.editor("Subagent instructions", definition.systemPrompt);
+      if (value !== undefined) definition.systemPrompt = value.trim();
+      continue;
+    }
+    if (choice === "Built-in tools" || choice === "Plugin tools") {
+      const catalog = toolCatalog(pi);
+      const entries = choice === "Built-in tools" ? catalog.builtin : catalog.plugin;
+      const allowed = new Set(entries.map((entry) => entry.id));
+      const current = new Set((definition.tools ?? []).filter((tool) => allowed.has(tool)));
+      const next = await selectToggles(ctx, choice, entries, current);
+      if (next) {
+        const preserved = (definition.tools ?? []).filter((tool) => !allowed.has(tool));
+        updateSelection(definition, "tools", new Set([...preserved, ...next]));
+      }
+      continue;
+    }
+    if (choice.startsWith("Models")) {
+      const entries = modelCatalog(ctx);
+      const current = new Set((definition.models ?? []).filter((model) => entries.some((entry) => entry.id === model)));
+      const next = await selectToggles(ctx, "Models", entries, current, MAX_AGENT_MODELS);
+      if (next) updateSelection(definition, "models", next);
+      continue;
+    }
+    if (choice === "Extensions") {
+      const entries = extensionCatalog(pi);
+      const current = new Set(definition.extensions ?? []);
+      const next = await selectResources(
+        ctx,
+        "Extensions",
+        "extensions",
+        current,
+        entries.map((entry) => ({ path: entry.id, label: entry.label, type: "extensions" })),
+      );
+      if (next) updateSelection(definition, "extensions", next);
+      continue;
+    }
+    if (choice === "Skills") {
+      const current = new Set(definition.skills ?? []);
+      const next = await selectResources(ctx, "Skills", "skills", current);
+      if (next) updateSelection(definition, "skills", next);
+      continue;
+    }
+    const raw = await ctx.ui.input("Maximum turns (0 = unlimited)", String(definition.maxTurns ?? 0));
+    if (raw === undefined) continue;
+    const value = Number(raw.trim());
+    if (!Number.isInteger(value) || value < 0) {
+      ctx.ui.notify("Maximum turns must be a non-negative integer.", "warning");
+    } else {
+      definition.maxTurns = value;
+    }
+  }
+}
+
+async function configureSubagents(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+  const definitions = [...loadAgentDefinitions(ctx.cwd).values()].sort((left, right) => left.name.localeCompare(right.name));
+  const choices = [
+    "New project subagent",
+    "New global subagent",
+    ...definitions.map((definition) => {
+      const source = definition.scope === "builtin" ? "built-in" : definition.scope;
+      const suffix = definition.scope === "builtin" ? " (default)" : definition.builtin ? " (built-in override)" : "";
+      return `${source}: ${definition.name}${definition.enabled ? suffix : " (disabled)"}`;
+    }),
+  ];
+  const choice = await ctx.ui.select("Subagent configuration", choices);
+  if (!choice) return;
+  if (choice.startsWith("New ")) {
+    const scope: AgentDefinitionScope = choice.includes("project") ? "project" : "global";
+    const rawName = await ctx.ui.input("Subagent name (letters, numbers, _ or -)");
+    const name = rawName && definitionName(rawName);
+    if (!name) {
+      ctx.ui.notify("Subagent name is invalid or cancelled.", "warning");
+      return;
+    }
+    await editDefinition(pi, ctx, {
+      name,
+      scope,
+      enabled: true,
+      description: name,
+      systemPrompt: profileFor("general-purpose").systemPrompt,
+    });
+    return;
+  }
+  const target = definitions.find((definition) => {
+    const source = definition.scope === "builtin" ? "built-in" : definition.scope;
+    return choice.startsWith(`${source}: ${definition.name}`);
+  });
+  if (!target) return;
+  if (target.scope === "builtin") {
+    const scopeChoice = await ctx.ui.select(`Create override for built-in ${target.name}`, [
+      "Project override",
+      "Global override",
+    ]);
+    if (!scopeChoice) return;
+    await editDefinition(pi, ctx, {
+      ...cloneDefinition(target),
+      scope: scopeChoice === "Project override" ? "project" : "global",
+      builtin: true,
+    });
+    return;
+  }
+  if (target.scope === "global") {
+    const action = await ctx.ui.select(`Global subagent ${target.name}`, [
+      "Edit global definition",
+      "Disable in this project",
+    ]);
+    if (action === "Disable in this project") {
+      saveDefinition(ctx.cwd, {
+        ...cloneDefinition(target),
+        scope: "project",
+        enabled: false,
+      });
+      ctx.ui.notify(`Disabled global subagent ${target.name} in this project.`, "info");
+      return;
+    }
+    if (action !== "Edit global definition") return;
+  }
+  await editDefinition(pi, ctx, cloneDefinition(target));
+}
 
 type ChildUpdate =
   | { type: "assistant_delta"; text: string }
@@ -454,9 +976,10 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
     params: {
       prompt: string;
       description: string;
-      subagent_type: string;
+      subagent_type?: string;
       background?: boolean;
       capability_mode?: string;
+      model?: string;
       max_turns?: number;
     },
     signal: AbortSignal | undefined,
@@ -464,8 +987,31 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
   ): Promise<SubagentRecord> {
     const prompt = requireText(params.prompt, "prompt");
     const description = requireText(params.description, "description");
-    const profile = resolveProfile(params.subagent_type || "general-purpose", params.capability_mode);
-    const model = ctx.model;
+    const requestedType = params.subagent_type || "general-purpose";
+    const definition = selectedDefinition(ctx.cwd, requestedType);
+    if (definition && !definition.enabled) {
+      throw new Error(`Subagent type \"${definition.name}\" is disabled by its ${definition.scope} Markdown definition.`);
+    }
+    const profile = profileFor(requestedType, params.capability_mode);
+    const configuredModels = definition?.models ?? [];
+    const requestedModel = params.model?.trim();
+    if (requestedModel && configuredModels.length > 0 && !configuredModels.includes(requestedModel)) {
+      throw new Error(
+        `Model \"${requestedModel}\" is not enabled for subagent \"${definition?.name ?? requestedType}\". ` +
+          `Choose one of: ${configuredModels.join(", ")}.`,
+      );
+    }
+    const modelKey = requestedModel ?? configuredModels[0];
+    const availableModels = ctx.modelRegistry.getAvailable?.() ?? ctx.modelRegistry.getAll();
+    const selectedModel = modelKey
+      ? availableModels.find((candidate) => `${candidate.provider}/${candidate.id}` === modelKey)
+      : undefined;
+    if (modelKey && !selectedModel) {
+      throw new Error(`Configured subagent model \"${modelKey}\" is not currently available in Pi.`);
+    }
+    const model = selectedModel
+      ? ctx.modelRegistry.find(selectedModel.provider, selectedModel.id)
+      : ctx.model;
     if (!model) throw new Error("no Pi model is selected");
 
     const parentSessionFile = ctx.sessionManager.getSessionFile();
@@ -476,12 +1022,17 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
     const resourceLoader = new DefaultResourceLoader({
       cwd: ctx.cwd,
       agentDir,
+      // Only resources explicitly selected in the product-isolated agent
+      // definition are loaded. This includes grok-pi's own injected extension
+      // temp files when the user selects them from the Pi-provided catalog.
       noExtensions: true,
       noSkills: true,
+      additionalExtensionPaths: definition?.extensions ?? [],
+      additionalSkillPaths: definition?.skills ?? [],
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: () => profile.systemPrompt,
+      systemPromptOverride: () => definition?.systemPrompt || profile.systemPrompt,
       appendSystemPromptOverride: () => [],
     });
     await resourceLoader.reload();
@@ -491,12 +1042,15 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
       agentDir,
       sessionManager: SessionManager.create(ctx.cwd, join(dirname(parentSessionFile), "subagent")),
       settingsManager,
-      modelRegistry: ctx.modelRegistry,
       model,
-      tools: [...CAPABILITY_TOOLS[profile.capabilityMode]],
+      tools: definition?.tools ?? [...CAPABILITY_TOOLS[profile.capabilityMode]],
       resourceLoader,
     });
     await session.bindExtensions({});
+    // `createAgentSession` retains this allowlist through extension binding;
+    // set it once more after dynamic extension tools are registered so an
+    // absent/removed configured plugin tool cannot leak into the child.
+    session.setActiveToolsByName(definition?.tools ?? [...CAPABILITY_TOOLS[profile.capabilityMode]]);
 
     const childSessionFile = session.sessionFile;
     if (!childSessionFile) throw new Error("child session persistence is unavailable");
@@ -526,7 +1080,7 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
       finished: false,
       terminalStatus: null,
       cancelRequested: false,
-      maxTurns: params.max_turns ?? 0,
+      maxTurns: definition?.maxTurns ?? params.max_turns ?? 0,
       turnLimitReached: false,
       donePromise,
       doneResolve,
@@ -617,6 +1171,65 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
       });
   }
 
+  type MessageDelivery = "steer" | "follow_up";
+
+  function runningSubagent(id: string): SubagentRecord {
+    const record = records.get(id);
+    if (!record) throw new Error(`unknown subagent: ${id}`);
+    if (record.finished) throw new Error(`subagent ${id} has already finished (${statusLabel(record)})`);
+    return record;
+  }
+
+  function sendMessage(record: SubagentRecord, message: string, delivery: MessageDelivery): void {
+    const streamingBehavior = delivery === "steer" ? "steer" : "followUp";
+    emit(record, "child_update", { update: { type: "user", text: message } });
+    void record.session.prompt(message, { streamingBehavior }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      record.lastError = `Message delivery failed: ${detail}`;
+      emitProgress(record);
+    });
+  }
+
+  async function sendMessageFromCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    const running = [...records.values()].filter((record) => !record.finished);
+    if (running.length === 0) {
+      ctx.ui.notify("No running subagents can receive a message.", "warning");
+      return;
+    }
+    const supplied = args.trim();
+    const [candidateId, ...candidateMessage] = supplied.split(/\s+/).filter(Boolean);
+    let record: SubagentRecord | undefined;
+    let message = supplied;
+    if (candidateId && records.has(candidateId)) {
+      record = records.get(candidateId);
+      message = candidateMessage.join(" ");
+    }
+    if (!record) {
+      const choices = running.map((item) => `${item.id} · ${item.description}`);
+      const selected = await ctx.ui.select("Send message to subagent", choices);
+      if (!selected) return;
+      record = running.find((item) => selected.startsWith(item.id));
+      if (!record) return;
+    }
+    if (record.finished) {
+      ctx.ui.notify(`Subagent ${record.id.slice(0, 8)}… has already finished.`, "warning");
+      return;
+    }
+    if (!message) {
+      const input = await ctx.ui.input("Message for subagent", "What should the subagent do next?");
+      if (!input?.trim()) return;
+      message = input.trim();
+    }
+    const deliveryChoice = await ctx.ui.select("Delivery mode", [
+      "Follow up (after current turn)",
+      "Steer (interrupt current turn)",
+    ]);
+    if (!deliveryChoice) return;
+    const delivery: MessageDelivery = deliveryChoice.startsWith("Steer") ? "steer" : "follow_up";
+    sendMessage(record, message, delivery);
+    ctx.ui.notify(`Sent ${delivery === "steer" ? "steer" : "follow-up"} message to ${record.description}.`, "info");
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers for output formatting
   // ---------------------------------------------------------------------------
@@ -668,6 +1281,24 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
   }
 
   // ---------------------------------------------------------------------------
+  // Native Pager configuration entry point
+  // ---------------------------------------------------------------------------
+
+  pi.registerCommand("subagents", {
+    description: "Configure project/global Pi subagents",
+    handler: async (_args, ctx) => {
+      await configureSubagents(pi, ctx);
+    },
+  });
+
+  pi.registerCommand("subagent-message", {
+    description: "Send a steer or follow-up message to a running Pi subagent",
+    handler: async (args, ctx) => {
+      await sendMessageFromCommand(args, ctx);
+    },
+  });
+
+  // ---------------------------------------------------------------------------
   // Tool: spawn_subagent
   // ---------------------------------------------------------------------------
 
@@ -687,6 +1318,8 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
       description: Type.String({ description: "Short 3-5 word task label shown in the subagent UI." }),
       subagent_type: Type.Optional(Type.String({ description: "Agent profile: general-purpose (default), explore (read-only research), or plan (planning only)." })),
       background: Type.Optional(Type.Boolean({ description: "Run asynchronously and return the child ID immediately. Use get_command_or_subagent_output(task_ids, timeout_ms) to collect results." })),
+      model: Type.Optional(Type.String({ description: "Optional Pi model callback. When the selected subagent Markdown definition has models, it must be one of its up-to-three enabled models." })),
+      max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Soft maximum child turns. At the limit Pi receives one end-and-summarize steering message; 0 means unlimited. A Markdown definition takes precedence." })),
       capability_mode: Type.Optional(
         Type.String({ description: "Tool access: read-only, read-write, execute, or all. Defaults to profile capability." }),
       ),
@@ -704,6 +1337,43 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
       return {
         content: [{ type: "text", text: output || "Subagent completed without text output." }],
         details: { subagentId: record.id, childSessionId: record.childSessionId, background: false },
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tool: send_message_to_subagent
+  // ---------------------------------------------------------------------------
+
+  pi.registerTool({
+    name: "send_message_to_subagent",
+    label: "Send Message to Subagent",
+    description:
+      "Send a message to a running Pi subagent. delivery=follow_up queues it after the current turn; " +
+      "delivery=steer interrupts the current turn and delivers it immediately.",
+    parameters: Type.Object({
+      task_id: Type.Optional(Type.String({ description: "Running subagent ID." })),
+      subagent_id: Type.Optional(Type.String({ description: "Running subagent ID (alternative to task_id)." })),
+      message: Type.String({ description: "Message or updated instruction for the child session." }),
+      delivery: Type.Optional(
+        Type.Union([
+          Type.Literal("follow_up"),
+          Type.Literal("steer"),
+        ], { description: "follow_up queues after the current turn; steer interrupts it. Defaults to follow_up." }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const id = requireText(params.task_id ?? params.subagent_id, "task_id or subagent_id");
+      const message = requireText(params.message, "message");
+      const delivery: MessageDelivery = params.delivery === "steer" ? "steer" : "follow_up";
+      const record = runningSubagent(id);
+      sendMessage(record, message, delivery);
+      return {
+        content: [{
+          type: "text",
+          text: `Queued ${delivery === "steer" ? "steer" : "follow-up"} message for subagent ${record.id.slice(0, 8)}….`,
+        }],
+        details: { subagentId: record.id, delivery, accepted: true },
       };
     },
   });
@@ -790,11 +1460,17 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
       const record = records.get(id);
       if (!record) throw new Error(`unknown subagent: ${id}`);
       if (record.finished) {
-        return { content: [{ type: "text", text: `Subagent ${id.slice(0, 8)}… already finished (${statusLabel(record)}).` }] };
+        return {
+          content: [{ type: "text", text: `Subagent ${id.slice(0, 8)}… already finished (${statusLabel(record)}).` }],
+          details: { subagentId: id, finished: true },
+        };
       }
       record.cancelRequested = true;
       record.session.abort();
-      return { content: [{ type: "text", text: `Cancelled subagent ${id.slice(0, 8)}… (${record.description}).` }] };
+      return {
+        content: [{ type: "text", text: `Cancelled subagent ${id.slice(0, 8)}… (${record.description}).` }],
+        details: { subagentId: id, finished: false },
+      };
     },
   });
 
@@ -809,7 +1485,10 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
     parameters: Type.Object({}),
     async execute() {
       if (records.size === 0) {
-        return { content: [{ type: "text", text: "No subagents have been spawned in this session." }] };
+        return {
+          content: [{ type: "text", text: "No subagents have been spawned in this session." }],
+          details: { subagents: [] },
+        };
       }
       const lines = [...records.values()]
         .sort((a, b) => a.startedAt - b.startedAt)
@@ -819,7 +1498,16 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
           const bg = r.background ? "bg" : "fg";
           return `• [${status}] ${r.id.slice(0, 8)}… "${r.description}" (${bg}, ${r.type}) — ${elapsed}, ${r.turnCount} turns, ${r.toolCallCount} tools`;
         });
-      return { content: [{ type: "text", text: `Subagents (${records.size}):\n${lines.join("\n")}` }] };
+      return {
+        content: [{ type: "text", text: `Subagents (${records.size}):\n${lines.join("\n")}` }],
+        details: {
+          subagents: [...records.values()].map((record) => ({
+            subagentId: record.id,
+            finished: record.finished,
+            status: statusLabel(record),
+          })),
+        },
+      };
     },
   });
 

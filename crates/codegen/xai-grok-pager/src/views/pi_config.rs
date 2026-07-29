@@ -17,6 +17,7 @@ use ratatui::text::Line;
 
 use crate::pi_resource_config::{
     PiProjectOverride, PiResource, PiResourceCatalog, PiResourceOrigin, PiResourceScope,
+    PiResourceType,
 };
 use crate::pi_resource_policy::ResourcePolicy;
 use crate::scrollback::blocks::markdown_content::MarkdownContent;
@@ -110,6 +111,77 @@ const SHORTCUTS: [Shortcut<'static>; 9] = [
     },
 ];
 
+const PICKER_SHORTCUTS: [Shortcut<'static>; 8] = [
+    Shortcut {
+        label: "↑/↓ navigate",
+        clickable: false,
+        id: 0,
+    },
+    Shortcut {
+        label: "←/→ fold",
+        clickable: false,
+        id: 0,
+    },
+    Shortcut {
+        label: "Space select",
+        clickable: false,
+        id: 0,
+    },
+    Shortcut {
+        label: "Enter apply",
+        clickable: false,
+        id: 0,
+    },
+    Shortcut {
+        label: "/ search",
+        clickable: false,
+        id: 0,
+    },
+    Shortcut {
+        label: "Tab/⇧Tab scope",
+        clickable: false,
+        id: 0,
+    },
+    Shortcut {
+        label: "r refresh",
+        clickable: false,
+        id: 0,
+    },
+    Shortcut {
+        label: "Esc cancel",
+        clickable: false,
+        id: 0,
+    },
+];
+
+type PickerResponseTx =
+    tokio::sync::oneshot::Sender<xai_acp_lib::AcpResult<agent_client_protocol::ExtResponse>>;
+
+/// A product-owned selection request rendered with the existing Pi resource
+/// manager. It does not mutate Pi's global/project resource enablement.
+pub struct PiResourcePickerRequest {
+    pub title: String,
+    pub resource_types: Vec<PiResourceType>,
+    pub initial_paths: Vec<PathBuf>,
+    pub extra_resources: Vec<PiResourcePickerExtra>,
+}
+
+/// A transient grok-pi bridge resource (typically an injected extension) that
+/// Pi's durable settings catalog cannot discover by itself.
+pub struct PiResourcePickerExtra {
+    pub path: PathBuf,
+    pub label: String,
+    pub resource_type: PiResourceType,
+}
+
+struct PiResourcePickerState {
+    title: String,
+    resource_types: HashSet<PiResourceType>,
+    selected_paths: HashSet<PathBuf>,
+    extra_resources: Vec<PiResource>,
+    response_tx: Option<PickerResponseTx>,
+}
+
 #[derive(Clone)]
 enum PiConfigRow {
     Source {
@@ -135,7 +207,10 @@ enum PiConfigRow {
 
 impl PiConfigRow {
     fn is_group(&self) -> bool {
-        matches!(self, Self::Root { .. } | Self::Source { .. } | Self::ResourceType { .. })
+        matches!(
+            self,
+            Self::Root { .. } | Self::Source { .. } | Self::ResourceType { .. }
+        )
     }
 
     fn group_id(&self) -> Option<&str> {
@@ -183,10 +258,12 @@ pub struct PiConfigModalState {
     preview_scroll: usize,
     preview: PackagePreview,
     notice: Option<String>,
+    picker: Option<PiResourcePickerState>,
 }
 
 pub enum PiConfigOutcome {
     Close,
+    PickerSubmit,
     Changed,
 }
 
@@ -212,10 +289,79 @@ impl PiConfigModalState {
             preview_scroll: 0,
             preview: PackagePreview::default(),
             notice: None,
+            picker: None,
         };
         state.fold_all_sources();
         state.refresh_preview();
         Ok(state)
+    }
+
+    /// Open the normal Pi resource manager in multi-select mode for a
+    /// subagent definition. Selection lives only in the caller's Markdown;
+    /// Space never changes Pi's own resource enablement in this mode.
+    pub fn open_picker(
+        cwd: PathBuf,
+        request: PiResourcePickerRequest,
+        response_tx: PickerResponseTx,
+    ) -> Result<Self> {
+        let mut state = Self::open(cwd)?;
+        let extra_resources = request
+            .extra_resources
+            .into_iter()
+            .map(|extra| PiResource {
+                path: extra.path.clone(),
+                resource_type: extra.resource_type,
+                scope: PiResourceScope::User,
+                origin: PiResourceOrigin::Settings,
+                source: format!("grok-pi:{}", extra.label),
+                base_dir: extra
+                    .path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from(".")),
+                enabled: true,
+                inherited_enabled: true,
+                project_override: PiProjectOverride::Inherit,
+            })
+            .collect::<Vec<_>>();
+        let selected_paths = request.initial_paths.into_iter().collect();
+        state.picker = Some(PiResourcePickerState {
+            title: request.title,
+            resource_types: request.resource_types.into_iter().collect(),
+            selected_paths,
+            extra_resources,
+            response_tx: Some(response_tx),
+        });
+        state.merge_picker_resources();
+        state.fold_all_sources();
+        state.refresh_preview();
+        Ok(state)
+    }
+
+    pub fn complete_picker(&mut self, accepted: bool) {
+        let Some(mut picker) = self.picker.take() else {
+            return;
+        };
+        let payload = if accepted {
+            let mut paths = picker
+                .selected_paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            paths.sort();
+            serde_json::json!({ "outcome": "accepted", "paths": paths })
+        } else {
+            serde_json::json!({ "outcome": "cancelled" })
+        };
+        let raw = serde_json::value::to_raw_value(&payload)
+            .expect("Pi resource picker response should be serializable");
+        if let Some(tx) = picker.response_tx.take() {
+            let _ = tx.send(Ok(agent_client_protocol::ExtResponse::new(raw.into())));
+        }
+    }
+
+    pub fn is_picker(&self) -> bool {
+        self.picker.is_some()
     }
 
     pub fn select_tab(&mut self, index: usize) {
@@ -292,6 +438,9 @@ impl PiConfigModalState {
                 self.set_selected_source_folded(false);
                 PiConfigOutcome::Changed
             }
+            KeyCode::Enter if key.modifiers.is_empty() && self.is_picker() => {
+                PiConfigOutcome::PickerSubmit
+            }
             KeyCode::Char(' ') | KeyCode::Enter if key.modifiers.is_empty() => {
                 self.activate_selected();
                 PiConfigOutcome::Changed
@@ -306,7 +455,9 @@ impl PiConfigModalState {
                 PiConfigOutcome::Changed
             }
             KeyCode::Char('a') if key.modifiers.is_empty() => {
-                self.toggle_policy();
+                if !self.is_picker() {
+                    self.toggle_policy();
+                }
                 PiConfigOutcome::Changed
             }
             KeyCode::Char(character) if key.modifiers.is_empty() => {
@@ -467,7 +618,10 @@ impl PiConfigModalState {
                 continue;
             }
 
-            if resources.iter().all(|resource| resource.origin == PiResourceOrigin::Package) {
+            if resources
+                .iter()
+                .all(|resource| resource.origin == PiResourceOrigin::Package)
+            {
                 let mut packages: BTreeMap<String, (String, Vec<PiResource>)> = BTreeMap::new();
                 for resource in resources {
                     let id = source_id(&resource);
@@ -530,6 +684,11 @@ impl PiConfigModalState {
     }
 
     fn matches_resource(&self, resource: &PiResource) -> bool {
+        if let Some(picker) = &self.picker
+            && !picker.resource_types.contains(&resource.resource_type)
+        {
+            return false;
+        }
         if !self.filter.matches(resource.enabled) {
             return false;
         }
@@ -564,7 +723,15 @@ impl PiConfigModalState {
     }
 
     fn scope_resource_count(&self) -> usize {
-        self.catalog.resources_for_scope(self.scope).len()
+        self.catalog
+            .resources_for_scope(self.scope)
+            .into_iter()
+            .filter(|resource| {
+                self.picker
+                    .as_ref()
+                    .is_none_or(|picker| picker.resource_types.contains(&resource.resource_type))
+            })
+            .count()
     }
 
     fn matching_resource_count(&self) -> usize {
@@ -627,6 +794,16 @@ impl PiConfigModalState {
         else {
             return;
         };
+        if let Some(picker) = &mut self.picker {
+            if !picker.selected_paths.insert(resource.path.clone()) {
+                picker.selected_paths.remove(&resource.path);
+            }
+            self.notice = Some(format!(
+                "{} selected for this subagent",
+                resource.display_name()
+            ));
+            return;
+        }
         let result = match self.scope {
             PiResourceScope::User => self
                 .catalog
@@ -745,6 +922,7 @@ impl PiConfigModalState {
         match PiResourceCatalog::load(self.catalog.cwd.clone()) {
             Ok(catalog) => {
                 self.catalog = catalog;
+                self.merge_picker_resources();
                 if self.scope == PiResourceScope::Project && !self.catalog.project_trusted {
                     self.scope = PiResourceScope::User;
                 }
@@ -776,6 +954,25 @@ impl PiConfigModalState {
         self.preview_scroll = 0;
         self.preview = package_preview(resource, key);
     }
+
+    fn merge_picker_resources(&mut self) {
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        for extra in &picker.extra_resources {
+            if !self.catalog.resources.iter().any(|resource| {
+                resource.path == extra.path && resource.resource_type == extra.resource_type
+            }) {
+                self.catalog.resources.push(extra.clone());
+            }
+        }
+    }
+
+    fn picker_selected(&self, resource: &PiResource) -> bool {
+        self.picker
+            .as_ref()
+            .is_some_and(|picker| picker.selected_paths.contains(&resource.path))
+    }
 }
 
 fn next_override(current: PiProjectOverride, inherited_enabled: bool) -> PiProjectOverride {
@@ -804,10 +1001,9 @@ fn root_group(resource: &PiResource) -> (String, String) {
         }
         PiResourceOrigin::Auto => ("manual".to_owned(), "Manual paths".to_owned()),
         PiResourceOrigin::Settings => ("settings".to_owned(), "Settings paths".to_owned()),
-        PiResourceOrigin::Package if github_repo(&resource.source).is_some() => (
-            "github".to_owned(),
-            "GitHub".to_owned(),
-        ),
+        PiResourceOrigin::Package if github_repo(&resource.source).is_some() => {
+            ("github".to_owned(), "GitHub".to_owned())
+        }
         PiResourceOrigin::Package if resource.source.starts_with("npm:") => {
             ("npm".to_owned(), "npm".to_owned())
         }
@@ -981,10 +1177,15 @@ pub fn render_pi_config_modal(
         PiResourceScope::User => 0,
         PiResourceScope::Project => 1,
     };
+    let (title, shortcuts) = if let Some(picker) = &state.picker {
+        (picker.title.as_str(), &PICKER_SHORTCUTS[..])
+    } else {
+        ("Pi resources", &SHORTCUTS[..])
+    };
     let config = ModalWindowConfig {
-        title: "Pi resources",
+        title,
         tabs: state.catalog.project_trusted.then_some(&TABS),
-        shortcuts: &SHORTCUTS,
+        shortcuts,
         sizing: ModalSizing::large().with_compact(compact),
         fold_info: None,
     };
@@ -1028,10 +1229,15 @@ fn render_resource_tree(
     let width = area.width as usize;
     let mut y = area.y;
     let bottom = area.y.saturating_add(area.height);
-    let scope_description = match (state.scope, state.catalog.project_trusted) {
-        (PiResourceScope::User, true) => "Global · sources collapsed by default",
-        (PiResourceScope::User, false) => "Global · project is not trusted",
-        (PiResourceScope::Project, _) => "Project overrides · inherit/load/unload",
+    let scope_description = match (
+        state.scope,
+        state.catalog.project_trusted,
+        state.is_picker(),
+    ) {
+        (_, _, true) => "Selection only · Pi resource settings are unchanged",
+        (PiResourceScope::User, true, false) => "Global · sources collapsed by default",
+        (PiResourceScope::User, false, false) => "Global · project is not trusted",
+        (PiResourceScope::Project, _, false) => "Project overrides · inherit/load/unload",
     };
     let matching_resources = state.matching_resource_count();
     let scope_resources = state.scope_resource_count();
@@ -1140,10 +1346,16 @@ fn render_resource_tree(
                         "▾"
                     };
                     let indent = matches!(row, PiConfigRow::Source { .. });
-                    format!("{} {fold} {label} · {resource_count}", if indent { "  " } else { "" })
+                    format!(
+                        "{} {fold} {label} · {resource_count}",
+                        if indent { "  " } else { "" }
+                    )
                 }
-                PiConfigRow::ResourceType { id, label, depth, .. } => {
-                    let fold = if state.folded_sources.contains(id) && state.search_query.is_empty() {
+                PiConfigRow::ResourceType {
+                    id, label, depth, ..
+                } => {
+                    let fold = if state.folded_sources.contains(id) && state.search_query.is_empty()
+                    {
                         "▸"
                     } else {
                         "▾"
@@ -1154,7 +1366,11 @@ fn render_resource_tree(
                     let policy_tag = policy_marker(&state.policy, resource);
                     format!(
                         "      {} {}{}",
-                        marker_for(resource, state.scope),
+                        if state.is_picker() {
+                            picker_marker(state.picker_selected(resource))
+                        } else {
+                            marker_for(resource, state.scope)
+                        },
                         resource.display_name(),
                         policy_tag,
                     )
@@ -1170,23 +1386,45 @@ fn render_resource_tree(
         || "No resource selected".to_owned(),
         |row| match row {
             PiConfigRow::Root { label, .. } | PiConfigRow::Source { label, .. } => {
-                format!("{label} · Space/Enter toggles")
-            }
-            PiConfigRow::ResourceType { label, .. } => format!("{label} · Space/Enter toggles"),
-            PiConfigRow::Resource(resource) => {
-                let key = policy_key(resource);
-                let pol = if state.policy.allow.iter().any(|entry| entry == &key) {
-                    " · policy: allow"
-                } else if state.policy.block.iter().any(|entry| entry == &key) {
-                    " · policy: block"
+                if state.is_picker() {
+                    format!("{label} · Space expands or collapses")
                 } else {
-                    ""
-                };
-                format!(
-                    "{} · {}{pol}",
-                    resource.path.display(),
-                    resource.scope.label()
-                )
+                    format!("{label} · Space/Enter toggles")
+                }
+            }
+            PiConfigRow::ResourceType { label, .. } => {
+                if state.is_picker() {
+                    format!("{label} · Space expands or collapses")
+                } else {
+                    format!("{label} · Space/Enter toggles")
+                }
+            }
+            PiConfigRow::Resource(resource) => {
+                if state.is_picker() {
+                    format!(
+                        "{} · {} · Space select · Enter apply",
+                        resource.path.display(),
+                        if state.picker_selected(resource) {
+                            "selected"
+                        } else {
+                            "not selected"
+                        },
+                    )
+                } else {
+                    let key = policy_key(resource);
+                    let pol = if state.policy.allow.iter().any(|entry| entry == &key) {
+                        " · policy: allow"
+                    } else if state.policy.block.iter().any(|entry| entry == &key) {
+                        " · policy: block"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "{} · {}{pol}",
+                        resource.path.display(),
+                        resource.scope.label()
+                    )
+                }
             }
         },
     );
@@ -1200,6 +1438,8 @@ fn render_resource_tree(
     );
     let hint = if state.search_active {
         "Enter finish · Esc clear"
+    } else if state.is_picker() {
+        "Space select · Enter apply · Esc cancel"
     } else {
         "click select · wheel scroll"
     };
@@ -1313,6 +1553,10 @@ fn marker_for(resource: &PiResource, scope: PiResourceScope) -> &'static str {
     if resource.enabled { "[x]" } else { "[ ]" }
 }
 
+fn picker_marker(selected: bool) -> &'static str {
+    if selected { "[x]" } else { "[ ]" }
+}
+
 /// Policy tag shown next to a resource name in the tree.
 /// Returns a short suffix like " ⛔ blocked" or " ✅ forced" or empty string.
 fn policy_marker(policy: &ResourcePolicy, resource: &PiResource) -> String {
@@ -1382,6 +1626,7 @@ mod tests {
             preview_scroll: 0,
             preview: PackagePreview::default(),
             notice: None,
+            picker: None,
         };
         state.fold_all_sources();
         state.refresh_preview();
@@ -1433,6 +1678,34 @@ mod tests {
         state.handle_key(&key);
         assert_eq!(state.filter, ResourceFilter::All);
         assert_eq!(state.matching_resource_count(), 2);
+    }
+
+    #[test]
+    fn picker_toggles_its_local_selection_without_changing_pi_enablement() {
+        let mut state = state();
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        state.picker = Some(PiResourcePickerState {
+            title: "Subagent extensions".to_owned(),
+            resource_types: [PiResourceType::Extensions].into_iter().collect(),
+            selected_paths: HashSet::new(),
+            extra_resources: Vec::new(),
+            response_tx: Some(response_tx),
+        });
+        // Search expands the source/type tree: root, type, then alpha.
+        state.search_query = "alpha".to_owned();
+        state.selected = 2;
+        state.toggle_selected_resource();
+
+        let path = state.catalog.resources[0].path.clone();
+        assert!(state.picker_selected(&state.catalog.resources[0]));
+        assert!(
+            state.catalog.resources[0].enabled,
+            "picker must not mutate Pi settings"
+        );
+        assert_eq!(
+            state.picker.as_ref().unwrap().selected_paths,
+            HashSet::from([path])
+        );
     }
 
     #[test]
@@ -1504,7 +1777,10 @@ mod tests {
         let query_before = state.search_query.clone();
         state.handle_key(&space);
         assert!(!state.search_active);
-        assert_eq!(state.search_query, query_before, "Space must not type after list focus");
+        assert_eq!(
+            state.search_query, query_before,
+            "Space must not type after list focus"
+        );
     }
 
     #[test]

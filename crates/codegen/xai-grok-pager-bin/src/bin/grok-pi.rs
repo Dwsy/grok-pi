@@ -591,6 +591,155 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| rollback_extension::write_rollback_extension())
         .transpose()
         .context("failed to create Pi rollback extension")?;
+    // The subagent configuration screen needs a static catalog for extensions
+    // that do not register a tool (for example, host-only Pi-Grok bridges).
+    // Keep this strictly to extensions admitted for this process; a child only
+    // loads an entry if its Markdown definition explicitly selects it.
+    let mut subagent_extension_catalog = Vec::new();
+    let mut add_subagent_extension = |label: &str, path: Option<std::path::PathBuf>| {
+        if let Some(path) = path {
+            if !subagent_extension_catalog
+                .iter()
+                .any(|entry: &serde_json::Value| entry["path"] == path.to_string_lossy().as_ref())
+            {
+                subagent_extension_catalog.push(serde_json::json!({
+                    "path": path,
+                    "label": label,
+                    "description": "Pi-Grok extension admitted for this session",
+                }));
+            }
+        }
+    };
+    add_subagent_extension(
+        "grok-pi: navigate tree",
+        navigate_tree_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: RPC compatibility",
+        rpc_compat_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: Herdr",
+        herdr_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: remote TUI",
+        remote_tui_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: shortcut manager",
+        shortcut_manager_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: Rust TUI bridge",
+        rust_tui_bridge_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: subagents",
+        subagent_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: workflows",
+        workflow_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: goal",
+        goal_extension
+            .as_ref()
+            .map(|extension| extension.source_path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: loop",
+        loop_extension
+            .as_ref()
+            .map(|extension| extension.source_path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: ask user",
+        ask_user_extension
+            .as_ref()
+            .map(|extension| extension.source_path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: btw",
+        btw_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: recap",
+        recap_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: context breakdown",
+        context_extension
+            .as_ref()
+            .map(|extension| extension.source_path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: auth",
+        auth_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: export",
+        export_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: native commands",
+        native_commands_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: bash",
+        bash_extension
+            .as_ref()
+            .map(|extension| extension.source_path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: tools",
+        tools_extension
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: rollback",
+        rollback_ext
+            .as_ref()
+            .map(|extension| extension.path().to_path_buf()),
+    );
+    add_subagent_extension(
+        "grok-pi: plan mode",
+        plan_mode_extension
+            .as_ref()
+            .map(|extension| extension.source_path().to_path_buf()),
+    );
+    for path in &launch_plan.extensions {
+        let label = format!("Pi extension: {}", path.display());
+        add_subagent_extension(&label, Some(path.to_path_buf()));
+    }
     // remote_tui before auth/native-commands so custom() host exists first.
     for path in [
         subagent_extension
@@ -659,6 +808,11 @@ async fn run(mut args: Args) -> Result<()> {
     }
     if subagent_extension.is_some() {
         env.push(("PI_GROK_SUBAGENTS".to_string(), "1".to_string()));
+        env.push((
+            "PI_GROK_SUBAGENT_EXTENSION_CATALOG".to_string(),
+            serde_json::to_string(&subagent_extension_catalog)
+                .expect("Pi-Grok extension catalog must be serializable"),
+        ));
     }
     if workflow_extension.is_some() {
         // Pi child reads this for extension factory; adapter also checks it

@@ -1,5 +1,82 @@
 use super::*;
 
+/// Decode the product-owned selection envelope emitted by the grok-pi
+/// subagent extension.  The extension still uses the normal
+/// `x.ai/ask_user_question` reverse request; this envelope only selects the
+/// existing Pi resource manager as its native presentation.
+fn pi_grok_resource_picker_request(
+    raw_params: &serde_json::Value,
+) -> Result<Option<crate::views::pi_config::PiResourcePickerRequest>, String> {
+    use crate::pi_resource_config::PiResourceType;
+    use crate::views::pi_config::{PiResourcePickerExtra, PiResourcePickerRequest};
+
+    let Some(value) = raw_params.get("piGrokResourcePicker") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| "piGrokResourcePicker must be an object".to_owned())?;
+    let title = object
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .ok_or_else(|| "piGrokResourcePicker.title is required".to_owned())?
+        .to_owned();
+    let parse_type = |value: &str| match value.to_ascii_lowercase().as_str() {
+        "extensions" | "extension" => Ok(PiResourceType::Extensions),
+        "skills" | "skill" => Ok(PiResourceType::Skills),
+        _ => Err(format!("unsupported Pi resource type: {value}")),
+    };
+    let resource_types = object
+        .get("resourceTypes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "piGrokResourcePicker.resourceTypes is required".to_owned())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "piGrokResourcePicker.resourceTypes must contain strings".to_owned())
+                .and_then(parse_type)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if resource_types.is_empty() {
+        return Err("piGrokResourcePicker.resourceTypes must not be empty".to_owned());
+    }
+    let initial_paths = object
+        .get("initialPaths")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+    let extra_resources = object
+        .get("extraResources")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let object = entry.as_object()?;
+            let path = object.get("path")?.as_str()?.trim();
+            let label = object.get("label")?.as_str()?.trim();
+            let resource_type = parse_type(object.get("type")?.as_str()?).ok()?;
+            (!path.is_empty() && !label.is_empty()).then(|| PiResourcePickerExtra {
+                path: std::path::PathBuf::from(path),
+                label: label.to_owned(),
+                resource_type,
+            })
+        })
+        .collect();
+    Ok(Some(PiResourcePickerRequest {
+        title,
+        resource_types,
+        initial_paths,
+        extra_resources,
+    }))
+}
+
 /// Handle `x.ai/ask_user_question` ext-method.
 ///
 /// Parses the typed request, creates a `QuestionViewState` with the
@@ -39,8 +116,17 @@ pub(crate) fn handle_ask_user_question(
         .get("noFreeform")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let resource_picker_request = match pi_grok_resource_picker_request(&raw_params) {
+        Ok(request) => request,
+        Err(error) => {
+            ext.response_tx
+                .send(Err(acp::Error::new(-32602, error)))
+                .ok();
+            return false;
+        }
+    };
 
-    let ext_req: AskUserQuestionExtRequest = match serde_json::from_value(raw_params) {
+    let ext_req: AskUserQuestionExtRequest = match serde_json::from_value(raw_params.clone()) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "Failed to parse AskUserQuestionExtRequest");
@@ -74,6 +160,32 @@ pub(crate) fn handle_ask_user_question(
         drop(ext.response_tx);
         return false;
     };
+
+    if let Some(request) = resource_picker_request {
+        let cwd = agent.session.cwd.clone();
+        match crate::views::pi_config::PiConfigModalState::open_picker(
+            cwd,
+            request,
+            ext.response_tx,
+        ) {
+            Ok(state) => {
+                if let Some(crate::views::modal::ActiveModal::PiConfig { state }) =
+                    agent.active_modal.as_mut()
+                {
+                    state.complete_picker(false);
+                }
+                agent.active_modal = Some(crate::views::modal::ActiveModal::PiConfig {
+                    state: Box::new(state),
+                });
+                agent.last_active_at = Some(std::time::Instant::now());
+                return is_active;
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to open Pi resource picker");
+                return false;
+            }
+        }
+    }
 
     // If a question is already active, cancel it before replacing.
     if let Some(mut old_qv) = agent.question_view.take() {
