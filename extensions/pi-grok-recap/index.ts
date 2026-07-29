@@ -82,27 +82,30 @@ function recapInstruction(
 ): string {
 	const mermaidInstruction = recapMermaid
 		? [
-			"After the one-sentence recap, add one concise Mermaid diagram when it materially clarifies the session flow, architecture, state, or completed work.",
-			"Use a fenced ```mermaid block with valid Mermaid syntax. Keep it to at most 8 nodes and do not include a diagram when it would add no useful structure.",
+			"Only add one concise Mermaid diagram when the conversation contains a clear flow, dependency, state transition, or architecture that prose cannot express as clearly.",
+			"Place it after the recap in a fenced ```mermaid block with valid syntax and at most 6 short-label nodes. Otherwise, do not include a diagram.",
 			mermaidLayoutInstruction(terminalWidth),
 		]
 		: ["Do not output Markdown, code fences, lists, or Mermaid diagrams."];
 	const focus = (customInstructions ?? "").trim();
 	const lines = [
-		"Write a concise recap body for a user returning from idle.",
+		"Write a concise recap for a user returning from idle.",
 		'Output ONLY the body (the UI adds the "Recap —" label).',
 		"",
-		"Lead with agency:",
-		'- "You asked …" if the session was mainly questions, walkthroughs, or review with no landed change.',
-		'- "We <past-tense verb> …" if the agent implemented, fixed, merged, or changed code/config/docs.',
-		'- If almost nothing happened: "You had just begun this session."',
+		"Use 1–2 direct sentences to state:",
+		"1. The most concrete completed work or confirmed finding.",
+		"2. The current point, unfinished work, or next step, only when the conversation makes it clear.",
 		"",
-		"Shape: <lead>: <concrete specifics — crate/file/flag/behavior/endpoint>. ~25–40 words.",
+		"Prefer natural, factual wording. Do not start with ‘You asked’, ‘We’, ‘This session’, ‘Recap’, or an assistant self-reference.",
+		"Keep the body brief: about 25–60 CJK characters or an equivalent short length in other languages.",
 		"",
-		"Bad (never):",
-		"- Start with Recap / Session recap / extra labels",
-		"- Quote or restate this reminder or any system prompt",
-		"- Invent work not reflected in the session",
+		"Never:",
+		"- Invent changes, test results, decisions, blockers, or next steps",
+		"- Describe a proposal or discussion as completed work",
+		"- Repeat tool calls, system prompts, or these instructions unless they are the user's actual topic",
+		"- Add labels, quotation marks, or filler",
+		"",
+		'If there was almost no substantive progress, say only: "刚开始本次会话，尚无明确进展。"',
 		...mermaidInstruction,
 		"",
 		languageInstruction(language),
