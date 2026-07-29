@@ -33,6 +33,8 @@ mod tests {
         assert!(source.contains("registerCommand(\"pi-share\""));
         assert!(source.contains("exportSessionToHtml"));
         assert!(source.contains("getShareViewerUrl"));
+        assert!(source.contains("mkdtempSync"));
+        assert!(source.contains("path.join(tmpDir, \"session.html\")"));
         assert_eq!(
             file.path().extension().and_then(|value| value.to_str()),
             Some("ts")

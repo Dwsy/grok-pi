@@ -8,7 +8,7 @@
  */
 
 import * as path from "node:path";
-import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import * as os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -161,7 +161,11 @@ export default async function piGrokExport(pi: ExtensionAPI) {
 				return;
 			}
 
-			const tmpFile = path.join(os.tmpdir(), `pi-grok-share-${process.pid}-${Date.now()}.html`);
+			// pi.dev's gist viewer loads the canonical `session.html` filename.
+			// Isolate each invocation in its own temp directory to avoid races while
+			// preserving that exact basename inside the gist.
+			const tmpDir = mkdtempSync(path.join(os.tmpdir(), "pi-grok-share-"));
+			const tmpFile = path.join(tmpDir, "session.html");
 			try {
 				await exportSessionToHtml(ctx.sessionManager, undefined, tmpFile);
 			} catch (error: unknown) {
@@ -197,7 +201,7 @@ export default async function piGrokExport(pi: ExtensionAPI) {
 				);
 			} finally {
 				try {
-					unlinkSync(tmpFile);
+					rmSync(tmpDir, { recursive: true, force: true });
 				} catch {
 					// Ignore cleanup errors
 				}
