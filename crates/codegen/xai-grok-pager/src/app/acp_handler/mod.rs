@@ -698,6 +698,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "pi/ui/status" => handle_pi_ui_status(notif, app),
         "pi/ui/widget" => handle_pi_ui_widget(notif, app),
         "pi/ui/title" => handle_pi_ui_title(notif, app),
+        "pi/ui/reset_extension_ui" => handle_pi_ui_reset_extension_ui(app),
         "pi/ui/editor_text" => handle_pi_ui_editor_text(notif, app),
         "pi/ui/session_catalog" => handle_pi_ui_session_catalog(notif, app),
         "pi/ui/cancel_interaction" => handle_pi_ui_cancel_interaction(notif, app),
@@ -886,8 +887,24 @@ fn handle_pi_ui_title(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
         return false;
     };
     super::set_terminal_title(title);
-    // Also surface Pi's session name in the native prompt-border inline title.
-    app.set_external_session_title(title);
+    // Bootstrap/rename session metadata is durable and owns the prompt-border
+    // title. An extension's `ctx.ui.setTitle()` is temporary terminal UI and
+    // must be undone by Pi's reload reset without renaming the session.
+    if params.get("source").and_then(serde_json::Value::as_str) != Some("extension") {
+        app.set_external_session_title(title);
+    }
+    true
+}
+
+/// Pi interactive invokes `resetExtensionUI()` just before replacing its
+/// extension runner during reload. The adapter emits this only after Pi's
+/// streaming/compaction gates pass; clear the equivalent Pager projections
+/// and restore the durable Pi session title.
+fn handle_pi_ui_reset_extension_ui(app: &mut AppView) -> bool {
+    let Some(session_title) = app.reset_external_extension_ui() else {
+        return false;
+    };
+    super::set_terminal_title(&session_title);
     true
 }
 

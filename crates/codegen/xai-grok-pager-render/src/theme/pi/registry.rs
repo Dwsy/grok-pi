@@ -1,6 +1,6 @@
 //! In-process catalog of discoverable Pi themes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -195,6 +195,11 @@ fn scan_discovered_locations(cwd: &Path, report: &mut DiscoveryReport) {
 }
 
 fn rescan_discovered_locations(cwd: &Path, report: &mut DiscoveryReport) {
+    // Pi reload replaces its resource loader rather than incrementally adding
+    // to it. Drop all file-backed themes first so edits take effect, deleted
+    // themes disappear, and normal first-source-wins ordering is rebuilt.
+    clear_custom_file_themes();
+
     if let Some(home) = dirs::home_dir() {
         let global = home.join(".pi").join("agent").join("themes");
         scan_dir(&global, report);
@@ -214,15 +219,27 @@ fn rescan_discovered_locations(cwd: &Path, report: &mut DiscoveryReport) {
     }
 }
 
+/// Keep embedded builtins but discard every file-backed registration before a
+/// Pi reload discovery pass. Rebuilding from disk is both simpler and more
+/// faithful than mutating cached entries: it handles edits, deletions, and
+/// priority changes in one operation.
+fn clear_custom_file_themes() {
+    let mut guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    let builtin_names: HashSet<String> = guard
+        .by_name
+        .iter()
+        .filter(|(_, meta)| meta.builtin)
+        .map(|(name, _)| name.clone())
+        .collect();
+    guard.by_name.retain(|name, _| builtin_names.contains(name));
+    guard
+        .palettes
+        .retain(|name, _| builtin_names.contains(name));
+}
+
 fn scan_dir(dir: &Path, report: &mut DiscoveryReport) {
     for path in theme_json_paths(dir) {
         try_register_file(&path, report);
-    }
-}
-
-fn rescan_dir(dir: &Path, report: &mut DiscoveryReport) {
-    for path in theme_json_paths(dir) {
-        try_reregister_file(&path, report);
     }
 }
 
@@ -284,44 +301,6 @@ fn try_register_file(path: &Path, report: &mut DiscoveryReport) {
     }
 }
 
-/// Register or refresh a theme file. Used by `/reload` rediscovery so edits to
-/// existing theme JSON replace the cached palette instead of being skipped.
-fn try_reregister_file(path: &Path, report: &mut DiscoveryReport) {
-    match load_from_path(path) {
-        Ok(doc) => match map_pi_theme(&doc) {
-            Ok(palette) => {
-                let mut guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(existing) = guard.by_name.get(&doc.name) {
-                    // Never overwrite embedded builtins with a file of the same name.
-                    if existing.builtin {
-                        report.skipped += 1;
-                        return;
-                    }
-                }
-                let name = doc.name.clone();
-                let id = theme_id(&name);
-                guard.by_name.insert(
-                    name.clone(),
-                    PiThemeMeta {
-                        name: name.clone(),
-                        id,
-                        path: Some(path.to_path_buf()),
-                        builtin: false,
-                    },
-                );
-                guard.palettes.insert(name, palette);
-                report.loaded += 1;
-            }
-            Err(e) => {
-                report.errors.push(format!("{}: {e}", path.display()));
-            }
-        },
-        Err(e) => {
-            report.errors.push(format!("{}: {e}", path.display()));
-        }
-    }
-}
-
 /// List all registered Pi themes (sorted by name).
 pub fn list_themes() -> Vec<PiThemeMeta> {
     ensure_builtins();
@@ -374,8 +353,19 @@ pub fn reset_for_test() {
 mod tests {
     use super::*;
 
+    // Registry state is process-global and these tests intentionally reset it.
+    // Share the renderer-wide theme lock so parallel tests cannot erase a
+    // sibling test's discovered palette between `list_themes` and
+    // `load_palette`.
+    fn registry_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::theme::cache::test_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
     #[test]
     fn builtins_registered() {
+        let _guard = registry_test_guard();
         reset_registry();
         ensure_builtins();
         let list = list_themes();
@@ -391,6 +381,7 @@ mod tests {
 
     #[test]
     fn discover_custom_file() {
+        let _guard = registry_test_guard();
         reset_registry();
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".pi").join("themes");
@@ -409,6 +400,7 @@ mod tests {
 
     #[test]
     fn parse_id() {
+        let _guard = registry_test_guard();
         assert_eq!(parse_pi_theme_id("pi:dark").as_deref(), Some("dark"));
         assert_eq!(parse_pi_theme_id("pi:").as_deref(), None);
         assert_eq!(parse_pi_theme_id("dark").as_deref(), None);
@@ -416,6 +408,7 @@ mod tests {
 
     #[test]
     fn rediscover_picks_up_new_theme_files() {
+        let _guard = registry_test_guard();
         reset_registry();
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".pi").join("themes");
@@ -434,5 +427,41 @@ mod tests {
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(list_themes().iter().any(|t| t.name == "reload-new"));
         let (_id, _) = load_palette("pi:reload-new").unwrap();
+    }
+
+    #[test]
+    fn rediscover_replaces_edited_files_and_removes_deleted_files() {
+        let _guard = registry_test_guard();
+        reset_registry();
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join(".pi").join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        let path = themes.join("reload-refresh.json");
+
+        let mut initial = include_str!("../../../assets/pi-themes/dark.json").to_string();
+        initial = initial.replacen("\"dark\"", "\"reload-refresh\"", 1);
+        std::fs::write(&path, initial).unwrap();
+        let report = init_discovery(dir.path());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let (_, before) = load_palette("pi:reload-refresh").unwrap();
+
+        let mut edited = include_str!("../../../assets/pi-themes/dark.json").to_string();
+        edited = edited.replacen("\"dark\"", "\"reload-refresh\"", 1);
+        edited = edited.replacen("\"#d4d4d4\"", "\"#010203\"", 1);
+        std::fs::write(&path, edited).unwrap();
+        let report = rediscover(dir.path());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let (_, after) = load_palette("pi:reload-refresh").unwrap();
+        assert_ne!(before.text_primary, after.text_primary);
+
+        std::fs::remove_file(&path).unwrap();
+        let report = rediscover(dir.path());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            !list_themes()
+                .iter()
+                .any(|theme| theme.name == "reload-refresh")
+        );
+        assert!(load_palette("pi:reload-refresh").is_err());
     }
 }

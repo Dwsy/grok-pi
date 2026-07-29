@@ -111,6 +111,10 @@ impl NewWorktreeDialogState {
 #[derive(Debug, Default)]
 pub struct ExternalUiState {
     pub statuses: std::collections::BTreeMap<String, String>,
+    /// Pi-owned session title from bootstrap / rename. `ctx.ui.setTitle()` is
+    /// temporary extension UI and deliberately does not overwrite this value:
+    /// Pi restores the session title during `resetExtensionUI()` on reload.
+    pub session_title: Option<String>,
     /// Pi extension notifications retained by active session for `/notify`.
     /// This is process-local UI state and deliberately not persisted to Pi.
     pub notifications: std::collections::HashMap<String, Vec<ExternalNotification>>,
@@ -2322,6 +2326,7 @@ impl AppView {
     pub fn set_external_session_title(&mut self, title: &str) -> bool {
         let clean = crate::views::session_title::sanitize_display_text(title.trim());
         let next = (!clean.trim().is_empty()).then(|| clean.into_owned());
+        self.external_ui.session_title = next.clone();
         match self.active_agent_mut() {
             Some(agent) if agent.display_name != next => {
                 agent.display_name = next;
@@ -2329,6 +2334,39 @@ impl AppView {
             }
             _ => false,
         }
+    }
+
+    /// Mirror Pi interactive's `resetExtensionUI()` for the subset of
+    /// extension state that Grok Pager projects onto its native surfaces.
+    ///
+    /// Pi calls this before replacing the extension runner during reload, so
+    /// do not wait for the new runner to send individual clear events: an
+    /// extension can be unloaded and never get a chance to emit them. Returns
+    /// the Pi-owned session title that must replace a temporary extension
+    /// terminal title.
+    pub fn reset_external_extension_ui(&mut self) -> Option<String> {
+        if !self.external_agent {
+            return None;
+        }
+
+        self.external_ui.statuses.clear();
+        self.external_ui.widgets.clear();
+        self.external_ui.remote_tui_id = None;
+        self.external_ui.remote_tui_overlays.clear();
+        self.external_ui.extension_shortcuts = Default::default();
+        self.pending_effects
+            .retain(|effect| !matches!(effect, crate::app::actions::Effect::RemoteTuiInput { .. }));
+        for agent in self.agents.values_mut() {
+            agent.pi_shortcut_manager = None;
+        }
+        self.refresh_external_ui_surface();
+
+        Some(
+            self.external_ui
+                .session_title
+                .clone()
+                .unwrap_or_else(|| "Pi".to_string()),
+        )
     }
 
     /// Set or clear one Pi extension widget. The content remains owned and
@@ -6937,6 +6975,67 @@ pub(crate) mod tests {
             agent.external_widgets_below_editor,
             ["\x1b[2m────\x1b[0m", "Footer widget · 2 capability(s)"]
         );
+    }
+
+    #[test]
+    fn reload_reset_discards_projected_extension_ui_and_keeps_session_title() {
+        let mut app = test_app_with_agent();
+        let id = super::super::agent::AgentId(0);
+        app.external_agent = true;
+        app.set_external_session_title("Pi session");
+        app.set_external_status("old-status".to_string(), Some("stale".to_string()));
+        app.set_external_widget(
+            "old-widget".to_string(),
+            Some(vec!["stale widget".to_string()]),
+            ExternalWidgetPlacement::BelowEditor,
+        );
+        app.apply_remote_tui(
+            "open",
+            Some("old-remote".to_string()),
+            Some(vec!["old frame".to_string()]),
+            None,
+        );
+        app.external_ui.extension_shortcuts.set_shortcuts(vec![
+            crate::app::extension_shortcuts::ExtensionShortcut {
+                key: "alt+r".to_string(),
+                description: "stale shortcut".to_string(),
+                extension: "old-extension".to_string(),
+                enabled: true,
+                remapped_to: None,
+            },
+        ]);
+        let shortcut_modal = crate::views::shortcut_manager::ShortcutManagerModal::new(
+            &app.external_ui.extension_shortcuts,
+        );
+        app.agents.get_mut(&id).unwrap().pi_shortcut_manager = Some(shortcut_modal);
+        app.pending_effects
+            .push(crate::app::actions::Effect::RemoteTuiInput {
+                id: "old-remote".to_string(),
+                data: "x".to_string(),
+            });
+
+        assert_eq!(
+            app.reset_external_extension_ui().as_deref(),
+            Some("Pi session")
+        );
+        assert!(app.external_ui.statuses.is_empty());
+        assert!(app.external_ui.widgets.is_empty());
+        assert!(app.external_ui.remote_tui_id.is_none());
+        assert!(app.external_ui.remote_tui_overlays.is_empty());
+        assert!(app.external_ui.extension_shortcuts.all().is_empty());
+        assert!(
+            app.pending_effects.iter().all(|effect| !matches!(
+                effect,
+                crate::app::actions::Effect::RemoteTuiInput { .. }
+            ))
+        );
+
+        let agent = &app.agents[&id];
+        assert_eq!(agent.display_name.as_deref(), Some("Pi session"));
+        assert!(agent.external_statuses.is_empty());
+        assert!(agent.external_widgets_above_editor.is_empty());
+        assert!(agent.external_widgets_below_editor.is_empty());
+        assert!(agent.pi_shortcut_manager.is_none());
     }
 
     #[test]

@@ -243,6 +243,10 @@ struct AdapterState {
     pending_btw: HashMap<String, oneshot::Sender<Result<String, String>>>,
     /// A recap command must finish before another recap can be requested.
     recap_in_flight: bool,
+    /// Pi interactive replaces its editor while reloading, so a second reload
+    /// cannot overlap the first. Keep the same session-level exclusion here
+    /// for RPC callers that do not have that editor lifecycle.
+    reload_in_flight: bool,
     /// Plan mode lifecycle tracker. The adapter is the sole owner of plan mode
     /// state — Pi RPC has no mode concept, and the Pager only renders.
     plan_mode: crate::plan_mode::PiPlanTracker,
@@ -324,6 +328,7 @@ impl PiAgent {
                 pending_subagent_bridge: PendingSubagentBridge::default(),
                 pending_btw: HashMap::new(),
                 recap_in_flight: false,
+                reload_in_flight: false,
                 plan_mode,
                 plan_mode_control,
             })),
@@ -1083,6 +1088,19 @@ impl PiAgent {
     /// `reload` command). Refreshes adapter bootstrap so command/model catalogs
     /// match the reloaded runtime.
     async fn reload_session_resources(&self) -> Result<Value, acp::Error> {
+        {
+            let mut adapter_state = self.state.borrow_mut();
+            if !reserve_reload_request(&mut adapter_state.reload_in_flight) {
+                return Err(acp::Error::internal_error().data("Reload is already in progress."));
+            }
+        }
+
+        let result = self.reload_session_resources_inner().await;
+        self.state.borrow_mut().reload_in_flight = false;
+        result
+    }
+
+    async fn reload_session_resources_inner(&self) -> Result<Value, acp::Error> {
         let state = parse_state(
             &self
                 .rpc
@@ -1098,6 +1116,13 @@ impl PiAgent {
             return Err(acp::Error::internal_error()
                 .data("Wait for compaction to finish before reloading."));
         }
+        // Pi interactive calls `resetExtensionUI()` after the same gates and
+        // before `session.reload()`. Its extension runner is about to be
+        // replaced, so Pager must not retain widgets/statuses/shortcuts from
+        // extensions that may no longer be loaded. Keep this as a narrow UI
+        // notification; the adapter remains headless.
+        self.send_ext_notification("pi/ui/reset_extension_ui", json!({}))
+            .await;
         self.run_bridge_command(RELOAD_COMMAND, "").await?;
         let bootstrap = self.refresh().await.map_err(acp_internal)?;
         self.publish_bootstrap(&bootstrap).await;
@@ -1972,12 +1997,28 @@ impl PiAgent {
         true
     }
 
-    async fn send_title(&self, title: Option<&str>) {
+    /// Publish Pi-owned session metadata title. This is distinct from an
+    /// extension's temporary `ctx.ui.setTitle()`: Pager needs the durable
+    /// session value to restore the native terminal title when Pi reloads and
+    /// clears extension UI state.
+    async fn send_session_title(&self, title: Option<&str>) {
         let title = title
             .filter(|title| !title.trim().is_empty())
             .unwrap_or("Pi");
-        self.send_ext_notification("pi/ui/title", json!({ "title": title }))
-            .await;
+        self.send_ext_notification(
+            "pi/ui/title",
+            json!({ "title": title, "source": "session" }),
+        )
+        .await;
+    }
+
+    /// Publish an extension-owned temporary terminal title.
+    async fn send_extension_title(&self, title: &str) {
+        self.send_ext_notification(
+            "pi/ui/title",
+            json!({ "title": title, "source": "extension" }),
+        )
+        .await;
     }
 
     async fn send_commands(&self, commands: &[PiCommand]) {
@@ -2003,7 +2044,7 @@ impl PiAgent {
     async fn publish_bootstrap(&self, bootstrap: &PiBootstrap) {
         self.send_commands(&bootstrap.commands).await;
         self.send_models(bootstrap).await;
-        self.send_title(bootstrap.state.session_name.as_deref())
+        self.send_session_title(bootstrap.state.session_name.as_deref())
             .await;
     }
 
@@ -3072,7 +3113,7 @@ impl PiAgent {
             }
             "settitle" => {
                 if let Some(title) = string(&event, &["title"]) {
-                    self.send_title(Some(title)).await;
+                    self.send_extension_title(title).await;
                 }
             }
             "set_editor_text" | "seteditortext" => {
@@ -4010,7 +4051,7 @@ impl acp::Agent for PiAgent {
                 if let Ok(bootstrap) = self.refresh().await {
                     self.publish_bootstrap(&bootstrap).await;
                 } else {
-                    self.send_title(Some(title)).await;
+                    self.send_session_title(Some(title)).await;
                 }
                 ext_response(json!({})).map_err(acp_internal)
             }
@@ -4758,6 +4799,14 @@ fn bridge_command_is_registered(commands: &[PiCommand], command: &str) -> bool {
 }
 
 fn reserve_recap_request(in_flight: &mut bool) -> bool {
+    if *in_flight {
+        return false;
+    }
+    *in_flight = true;
+    true
+}
+
+fn reserve_reload_request(in_flight: &mut bool) -> bool {
     if *in_flight {
         return false;
     }
@@ -5641,6 +5690,12 @@ mod tests {
         assert!(!reserve_recap_request(&mut in_flight));
         in_flight = false;
         assert!(reserve_recap_request(&mut in_flight));
+
+        let mut reload_in_flight = false;
+        assert!(reserve_reload_request(&mut reload_in_flight));
+        assert!(!reserve_reload_request(&mut reload_in_flight));
+        reload_in_flight = false;
+        assert!(reserve_reload_request(&mut reload_in_flight));
     }
 
     #[test]
