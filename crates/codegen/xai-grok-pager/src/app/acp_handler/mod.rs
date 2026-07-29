@@ -668,6 +668,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
             handle_session_notification(notif, app)
         }
         "x.ai/follow_ups" => handle_follow_ups(notif, app),
+        "x.ai/review_ask_delta" => handle_review_ask_delta(notif, app),
         "x.ai/task_backgrounded" => handle_task_backgrounded(notif, app),
         "x.ai/task_completed" => handle_task_completed(notif, app),
         "x.ai/models/update" => handle_models_update(notif, app),
@@ -707,6 +708,30 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "pi/ui/shortcuts" => handle_pi_ui_shortcuts(notif, app),
         _ => false,
     }
+}
+
+fn handle_review_ask_delta(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(delta) = serde_json::from_str::<serde_json::Value>(notif.params.get())
+        .ok()
+        .and_then(|params| {
+            params
+                .get("delta")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|delta| !delta.is_empty())
+    else {
+        return false;
+    };
+    for agent in app.agents.values_mut() {
+        if let Some(review) = agent.review_state.as_mut()
+            && review.ask.is_loading()
+        {
+            review.ask.append_delta(&delta);
+            return true;
+        }
+    }
+    false
 }
 
 fn handle_pi_ui_shortcuts(notif: &acp::ExtNotification, app: &mut AppView) -> bool {

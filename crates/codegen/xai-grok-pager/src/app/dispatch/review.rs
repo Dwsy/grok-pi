@@ -204,7 +204,7 @@ pub(super) fn dispatch_review_ask(app: &mut AppView, question: String) -> Vec<Ef
 
     // Mark the review ask as pending so handle_btw_response routes here.
     if let Some(state) = agent.review_state.as_mut() {
-        state.ask.response = Some(crate::views::review::ReviewAskResponse::Loading);
+        state.ask.start_loading();
     }
 
     vec![Effect::SendBtw {

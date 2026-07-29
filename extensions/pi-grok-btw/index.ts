@@ -1,14 +1,14 @@
 /**
  * Headless /btw bridge for grok-pi.
  *
- * Single-turn side question via pi-ai `complete()` — does not mutate the main
- * session conversation. Results are emitted as custom messages
- * (`pi-grok-btw/v1`, display:false) that the adapter projects to ACP x.ai/btw.
+ * Single-turn side question via pi-ai `streamSimple()` — does not mutate the main
+ * session conversation. Stream deltas and the final result are emitted as custom
+ * messages (`pi-grok-btw/v1`, display:false) for the native review Q&A panel.
  *
  * Invoked only via `/__pi_grok_btw` (hidden from slash UI by adapter filter).
  * Args JSON: `{ requestId, question, models?: string[], thinkingLevel? }`.
  */
-import { complete, type Message } from "@earendil-works/pi-ai/compat";
+import { streamSimple, type Message } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_TYPE = "pi-grok-btw/v1";
@@ -215,6 +215,8 @@ export default function (pi: ExtensionAPI) {
 		requestId: string,
 		payload: {
 			ok: boolean;
+			phase?: "delta" | "complete";
+			delta?: string;
 			answer?: string;
 			error?: string;
 			modelUsed?: string;
@@ -284,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 						continue;
 					}
 					try {
-						const response = await complete(
+						const stream = streamSimple(
 							model,
 							{ messages: [userMessage] },
 							{
@@ -299,6 +301,12 @@ export default function (pi: ExtensionAPI) {
 											: undefined,
 							},
 						);
+						for await (const event of stream) {
+							if (event.type === "text_delta" && event.delta) {
+								emit(requestId, { ok: true, phase: "delta", delta: event.delta });
+							}
+						}
+						const response = await stream.result();
 						if (response.stopReason === "aborted" || response.stopReason === "error") {
 							errors.push(`${modelRef}: ${response.stopReason}`);
 							continue;
@@ -314,6 +322,7 @@ export default function (pi: ExtensionAPI) {
 						}
 						emit(requestId, {
 							ok: true,
+							phase: "complete",
 							answer,
 							modelUsed: `${model.provider}::${model.id}`,
 						});

@@ -815,18 +815,15 @@ mod tests {
     }
 
     #[test]
-    fn review_session_bound_to_ctrl_shift_r_on_agent_screen() {
+    fn review_session_bound_to_alt_shift_r_on_agent_screen() {
         let registry = ActionRegistry::defaults();
         let def = registry
             .find(ActionId::ReviewSession)
             .expect("ReviewSession must be registered");
         assert_eq!(def.context, When::AgentScreen);
-        assert_eq!(def.hint_key_display, Some("Ctrl+Shift+R"));
+        assert_eq!(def.hint_key_display, Some("Opt/Alt+Shift+R"));
 
-        let chord = KeyEvent::new(
-            KeyCode::Char('r'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        );
+        let chord = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT | KeyModifiers::SHIFT);
         assert_eq!(
             registry.lookup(&chord, When::AgentScreen),
             Some(ActionId::ReviewSession)
@@ -835,10 +832,12 @@ mod tests {
         assert_eq!(registry.lookup(&chord, When::ScrollbackFocused), None);
         assert_eq!(registry.lookup(&chord, When::Always), None);
 
-        // Distinct from scrollback-only Ctrl+R (mouse reporting, opt-in).
-        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        let ctrl_shift_r = KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
         assert_ne!(
-            registry.lookup(&ctrl_r, When::AgentScreen),
+            registry.lookup(&ctrl_shift_r, When::AgentScreen),
             Some(ActionId::ReviewSession)
         );
     }

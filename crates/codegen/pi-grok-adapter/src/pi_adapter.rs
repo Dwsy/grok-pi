@@ -1344,22 +1344,31 @@ impl PiAgent {
         Ok(true)
     }
 
-    fn handle_btw_bridge_message(&self, event: &Value) -> bool {
+    async fn handle_btw_bridge_message(&self, event: &Value) -> bool {
         let Some(projection) = parse_btw_message(event) else {
             return false;
         };
-        let sender = self
-            .state
-            .borrow_mut()
-            .pending_btw
-            .remove(&projection.request_id);
-        if let Some(tx) = sender {
-            let _ = tx.send(projection.result);
-        } else {
-            tracing::debug!(
-                request_id = %projection.request_id,
-                "btw bridge message with no pending waiter"
-            );
+        match projection {
+            crate::btw_bridge::BtwProjection::Delta { request_id, delta } => {
+                self.send_ext_notification(
+                    "x.ai/review_ask_delta",
+                    json!({ "requestId": request_id, "delta": delta }),
+                )
+                .await;
+            }
+            crate::btw_bridge::BtwProjection::Complete {
+                request_id, result, ..
+            } => {
+                let sender = self.state.borrow_mut().pending_btw.remove(&request_id);
+                if let Some(tx) = sender {
+                    let _ = tx.send(result);
+                } else {
+                    tracing::debug!(
+                        request_id = %request_id,
+                        "btw bridge message with no pending waiter"
+                    );
+                }
+            }
         }
         true
     }
@@ -2216,7 +2225,7 @@ impl PiAgent {
             "message_start" => self.handle_message_start(&event),
             "message_update" => self.handle_message_update(&event).await,
             "message_end" => {
-                if self.handle_btw_bridge_message(&event)
+                if self.handle_btw_bridge_message(&event).await
                     || self.handle_recap_bridge_message(&event).await?
                     || self.handle_background_bash_bridge_message(&event).await?
                     || self.handle_workflow_bridge_message(&event).await?
@@ -2232,7 +2241,7 @@ impl PiAgent {
             // cannot enter Pi's steering/follow-up queues while the parent is
             // streaming. RPC exposes that append as entry_appended.
             "entry_appended" => {
-                if self.handle_btw_bridge_message(&event) {
+                if self.handle_btw_bridge_message(&event).await {
                     // /btw answer may arrive via appendEntry when parent is streaming.
                 } else if !self.handle_workflow_bridge_message(&event).await?
                     && !self.handle_goal_bridge_message(&event).await?

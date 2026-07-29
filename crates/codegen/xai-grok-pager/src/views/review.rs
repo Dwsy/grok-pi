@@ -1,7 +1,7 @@
 //! Session / message code-review modal (PSM code-review → native Pager).
 //!
 //! Left: filterable file list. Center: embedded [`BlockViewerPane`] (same TUI as
-//! Enter-on-edit). Optional right panel: review-scoped Ask using the /btw model chain.
+//! Enter-on-edit). Optional lower Q&A panel: review-scoped Ask using the /btw model chain.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -99,8 +99,11 @@ pub struct ReviewTreeRow {
 /// QA response state inside the review modal.
 #[derive(Debug, Clone)]
 pub enum ReviewAskResponse {
-    /// Waiting for the btw model to respond.
-    Loading,
+    /// Streaming or waiting for the btw model to respond.
+    Loading {
+        content: Box<crate::scrollback::blocks::markdown_content::MarkdownContent>,
+        scroll_offset: usize,
+    },
     /// Response received — scrollable markdown.
     Done {
         content: Box<crate::scrollback::blocks::markdown_content::MarkdownContent>,
@@ -137,18 +140,35 @@ impl Default for ReviewAskState {
 impl ReviewAskState {
     /// True when a request is in-flight.
     pub fn is_loading(&self) -> bool {
-        matches!(self.response, Some(ReviewAskResponse::Loading))
+        matches!(self.response, Some(ReviewAskResponse::Loading { .. }))
     }
 
-    /// True when there is a completed response to display.
+    /// True when there is a response or an in-flight streamed answer to display.
     pub fn has_response(&self) -> bool {
-        matches!(
-            self.response,
-            Some(ReviewAskResponse::Done { .. }) | Some(ReviewAskResponse::Error { .. })
-        )
+        self.response.is_some()
     }
 
-    /// Set the response from a btw result.
+    /// Begin a fresh streamed answer for the current review question.
+    pub fn start_loading(&mut self) {
+        self.response = Some(ReviewAskResponse::Loading {
+            content: Box::new(
+                crate::scrollback::blocks::markdown_content::MarkdownContent::new(String::new()),
+            ),
+            scroll_offset: 0,
+        });
+    }
+
+    /// Append a streamed answer delta for the current review question.
+    pub fn append_delta(&mut self, delta: &str) {
+        if let Some(ReviewAskResponse::Loading { content, .. }) = self.response.as_mut() {
+            let next = format!("{}{}", content.text(), delta);
+            *content = Box::new(
+                crate::scrollback::blocks::markdown_content::MarkdownContent::new(next),
+            );
+        }
+    }
+
+    /// Set the final response from the btw result.
     pub fn set_response(&mut self, result: Result<String, String>) {
         match result {
             Ok(text) => {
@@ -165,26 +185,29 @@ impl ReviewAskState {
         }
     }
 
-    /// Scroll the Done response.
+    /// Scroll the current streamed or completed response.
     pub fn scroll_response(&mut self, delta: i32, max_offset: usize) {
-        if let Some(ReviewAskResponse::Done { scroll_offset, .. }) = self.response.as_mut() {
-            if delta < 0 {
-                *scroll_offset = scroll_offset.saturating_sub((-delta) as usize);
-            } else {
-                *scroll_offset = (*scroll_offset + delta as usize).min(max_offset);
-            }
+        let scroll_offset = match self.response.as_mut() {
+            Some(ReviewAskResponse::Loading { scroll_offset, .. })
+            | Some(ReviewAskResponse::Done { scroll_offset, .. }) => scroll_offset,
+            _ => return,
+        };
+        if delta < 0 {
+            *scroll_offset = scroll_offset.saturating_sub((-delta) as usize);
+        } else {
+            *scroll_offset = (*scroll_offset + delta as usize).min(max_offset);
         }
     }
 
-    /// Max scroll offset for the response at given content width and visible lines.
+    /// Max scroll offset for the streamed or completed response at given dimensions.
     pub fn max_response_scroll(&self, content_width: usize, visible_lines: usize) -> usize {
-        match &self.response {
-            Some(ReviewAskResponse::Done { content, .. }) if content_width > 0 => {
-                let total = content.with_wrapped_lines(content_width, |w| w.lines.len());
-                total.saturating_sub(visible_lines)
-            }
-            _ => 0,
-        }
+        let content = match &self.response {
+            Some(ReviewAskResponse::Loading { content, .. })
+            | Some(ReviewAskResponse::Done { content, .. }) if content_width > 0 => content,
+            _ => return 0,
+        };
+        let total = content.with_wrapped_lines(content_width, |w| w.lines.len());
+        total.saturating_sub(visible_lines)
     }
 
     /// Clear the response panel (Esc when not typing).
@@ -247,7 +270,7 @@ pub struct ReviewState {
     pub list_view_start: usize,
     pub preview_area: Rect,
     pub popup_area: Rect,
-    /// Ask bar area (for mouse hit-testing).
+    /// Lower Q&A panel area (for mouse hit-testing).
     pub ask_area: Rect,
 }
 
@@ -704,7 +727,7 @@ pub fn handle_review_ask_key(state: &mut ReviewState, key: &KeyEvent) -> ReviewI
             ask.last_question = q.clone();
             ask.input.clear();
             ask.cursor = 0;
-            ask.response = Some(ReviewAskResponse::Loading);
+            ask.start_loading();
             ReviewInput::AskSubmit(q)
         }
         KeyCode::Backspace => {
@@ -738,8 +761,11 @@ pub fn handle_review_ask_key(state: &mut ReviewState, key: &KeyEvent) -> ReviewI
             ReviewInput::Changed
         }
         KeyCode::Up => {
-            // Scroll response up.
-            if let Some(ReviewAskResponse::Done { .. }) = &ask.response {
+            // Scroll streamed or completed response up.
+            if matches!(
+                &ask.response,
+                Some(ReviewAskResponse::Loading { .. }) | Some(ReviewAskResponse::Done { .. })
+            ) {
                 let max = ask.max_response_scroll(
                     state.ask_area.width.saturating_sub(2) as usize,
                     state.ask_area.height.saturating_sub(2) as usize,
@@ -749,8 +775,11 @@ pub fn handle_review_ask_key(state: &mut ReviewState, key: &KeyEvent) -> ReviewI
             ReviewInput::Changed
         }
         KeyCode::Down => {
-            // Scroll response down.
-            if let Some(ReviewAskResponse::Done { .. }) = &ask.response {
+            // Scroll streamed or completed response down.
+            if matches!(
+                &ask.response,
+                Some(ReviewAskResponse::Loading { .. }) | Some(ReviewAskResponse::Done { .. })
+            ) {
                 let max = ask.max_response_scroll(
                     state.ask_area.width.saturating_sub(2) as usize,
                     state.ask_area.height.saturating_sub(2) as usize,
@@ -1009,19 +1038,19 @@ pub fn render_review_modal(
     if ask_visible {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(24),
-                Constraint::Percentage(48),
-                Constraint::Percentage(28),
-            ])
+            .constraints([Constraint::Percentage(24), Constraint::Percentage(76)])
             .split(inner);
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(chunks[1]);
         state.list_area = chunks[0];
-        state.preview_area = chunks[1];
-        state.ask_area = chunks[2];
+        state.preview_area = right[0];
+        state.ask_area = right[1];
 
         render_file_list(buf, chunks[0], state, &theme);
-        render_preview_pane(buf, chunks[1], state, scrollback, &theme);
-        render_ask_bar(buf, chunks[2], state, &theme);
+        render_preview_pane(buf, right[0], state, scrollback, &theme);
+        render_ask_bar(buf, right[1], state, &theme);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -1174,11 +1203,10 @@ fn render_flat_row(
 ) {
     let kind_tag = kind_tag(file.kind);
     let icon = file_type_icon(&file.path, false);
-    let stats_w = diffstat_display_width(file.additions, file.deletions);
     let prefix_w = 2 + icon.map(|_| 2).unwrap_or(0); // "~ " + optional "󰈙 "
     let name = truncate_str(
         &basename(&file.path),
-        width.saturating_sub(stats_w as u16 + prefix_w) as usize,
+        width.saturating_sub(prefix_w) as usize,
     );
     let kind_fg = kind_fg(file.kind, theme);
     let mut spans = vec![Span::styled(
@@ -1206,14 +1234,6 @@ fn render_flat_row(
                 Modifier::empty()
             }),
     ));
-    if width > stats_w as u16 + 6 {
-        spans.extend(diffstat_spans(
-            file.additions,
-            file.deletions,
-            row_bg,
-            theme,
-        ));
-    }
     buf.set_line(x, y, &Line::from(spans), width);
 }
 
@@ -1238,23 +1258,13 @@ fn render_tree_row(
     }
     let glyph = if row.is_dir { "▾ " } else { " " };
     let tag = row.kind.map(kind_tag).unwrap_or(" ");
-    let show_stats = row.additions + row.deletions > 0;
-    let stats_w = if show_stats {
-        diffstat_display_width(row.additions, row.deletions)
-    } else {
-        0
-    };
     // Tree leaf labels are basenames; dirs use folder glyph.
     let icon = file_type_icon(&row.label, row.is_dir);
     let kind_part = format!("{tag} ");
     let icon_part = icon.map(|ic| format!("{ic} ")).unwrap_or_default();
     let prefix = format!("{gutter}{glyph}");
-    let name_w = width.saturating_sub(
-        prefix.len() as u16
-            + kind_part.len() as u16
-            + icon_part.len() as u16
-            + stats_w as u16,
-    );
+    let name_w =
+        width.saturating_sub(prefix.len() as u16 + kind_part.len() as u16 + icon_part.len() as u16);
     let name = truncate_str(&row.label, name_w as usize);
     let kind_fg = row
         .kind
@@ -1293,39 +1303,7 @@ fn render_tree_row(
                 Modifier::empty()
             }),
     ));
-    if show_stats && width > stats_w as u16 + 6 {
-        spans.extend(diffstat_spans(
-            row.additions,
-            row.deletions,
-            row_bg,
-            theme,
-        ));
-    }
     buf.set_line(x, y, &Line::from(spans), width);
-}
-
-/// ` +N -M` display width (same glyph budget as the colored spans).
-fn diffstat_display_width(additions: usize, deletions: usize) -> usize {
-    format!(" +{additions} -{deletions}").len()
-}
-
-/// Colored ` +N` / ` -M` spans — matches Edit collapsed header (`diff_insert_fg` / `diff_delete_fg`).
-fn diffstat_spans(
-    additions: usize,
-    deletions: usize,
-    row_bg: ratatui::style::Color,
-    theme: &Theme,
-) -> [Span<'static>; 2] {
-    [
-        Span::styled(
-            format!(" +{additions}"),
-            Style::default().fg(theme.diff_insert_fg).bg(row_bg),
-        ),
-        Span::styled(
-            format!(" -{deletions}"),
-            Style::default().fg(theme.diff_delete_fg).bg(row_bg),
-        ),
-    ]
 }
 
 fn kind_tag(kind: ReviewFileKind) -> &'static str {
@@ -1470,7 +1448,7 @@ fn render_preview_pane(
     viewer.render_content(inner, buf, entry, focused, prepend);
 }
 
-/// Render the right-side review QA panel.
+/// Render the lower review Q&A panel.
 fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &Theme) {
     if area.width < 4 || area.height < 1 {
         return;
@@ -1480,7 +1458,7 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
 
     let border_color = if focused { theme.warning } else { theme.gray_dim };
     let status = match &ask.response {
-        Some(ReviewAskResponse::Loading) => "thinking",
+        Some(ReviewAskResponse::Loading { .. }) => "streaming",
         Some(ReviewAskResponse::Done { .. }) => "answer",
         Some(ReviewAskResponse::Error { .. }) => "error",
         None => "",
@@ -1491,7 +1469,7 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
         format!(" Ask · {status} ")
     };
     let border = Block::default()
-        .borders(Borders::TOP | Borders::LEFT)
+        .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,
@@ -1499,29 +1477,37 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
         ));
     let inner = border.inner(area);
     border.render(area, buf);
-    if inner.width < 2 || inner.height < 1 {
+    if inner.width < 2 || inner.height < 3 {
         return;
     }
 
-    // Row 0: input line (or last question when response is showing).
-    let input_y = inner.y;
-    let prompt_str = "❯ ";
-    let (display_text, placeholder) =
-        if ask.input.is_empty() && !ask.last_question.is_empty() && ask.response.is_some() {
-            (ask.last_question.as_str(), false)
-        } else if ask.input.is_empty() {
-            ("Ask about this review…", true)
-        } else {
-            (ask.input.as_str(), false)
-        };
+    let input_y = inner.y + inner.height - 1;
+    let separator_y = input_y.saturating_sub(1);
+    let response_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        separator_y.saturating_sub(inner.y),
+    );
+    buf.set_string(
+        inner.x,
+        separator_y,
+        "─".repeat(inner.width as usize),
+        Style::default().fg(theme.gray_dim),
+    );
+
+    let placeholder = ask.input.is_empty();
     let max_input_w = inner.width.saturating_sub(2) as usize;
     let input_line = Line::from(vec![
         Span::styled(
-            prompt_str,
+            "❯ ",
             Style::default().fg(if focused { theme.warning } else { theme.gray }),
         ),
         Span::styled(
-            truncate_str(display_text, max_input_w),
+            truncate_str(
+                if placeholder { "Ask about this review…" } else { &ask.input },
+                max_input_w,
+            ),
             Style::default().fg(if placeholder {
                 theme.gray_dim
             } else if focused {
@@ -1533,7 +1519,7 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
     ]);
     buf.set_line(inner.x, input_y, &input_line, inner.width);
 
-    // Cursor uses terminal display width, not UTF-8 bytes (CJK/emoji stay aligned).
+    // The cursor belongs only to text currently being edited, never to a submitted question.
     if focused && !placeholder && max_input_w > 0 {
         let cursor = floor_char_boundary(&ask.input, ask.cursor);
         let cursor_col = UnicodeWidthStr::width(&ask.input[..cursor])
@@ -1546,69 +1532,97 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
         }
     }
 
-    // Response area (rows below input).
-    if inner.height < 2 {
-        return;
+    if response_area.height > 0 {
+        render_ask_response(buf, response_area, ask, theme);
     }
-    let resp_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
+}
+
+fn render_ask_response(buf: &mut Buffer, area: Rect, ask: &ReviewAskState, theme: &Theme) {
+    let mut response_area = area;
+    if !ask.last_question.is_empty() {
+        let question = Line::from(vec![
+            Span::styled(" Q  ", Style::default().fg(theme.warning)),
+            Span::styled(
+                truncate_str(&ask.last_question, area.width.saturating_sub(4) as usize),
+                Style::default().fg(theme.gray_bright),
+            ),
+        ]);
+        buf.set_line(area.x, area.y, &question, area.width);
+        if response_area.height == 1 {
+            return;
+        }
+        response_area.y += 1;
+        response_area.height -= 1;
+    }
 
     match &ask.response {
-        Some(ReviewAskResponse::Loading) => {
-            let spinner = Line::from(Span::styled(
-                "  ⠿ thinking…",
-                Style::default().fg(theme.gray),
-            ));
-            buf.set_line(resp_area.x, resp_area.y, &spinner, resp_area.width);
+        Some(ReviewAskResponse::Loading {
+            content,
+            scroll_offset,
+        }) if content.text().is_empty() => {
+            let spinner = Line::from(Span::styled("  ⠿ thinking…", Style::default().fg(theme.gray)));
+            buf.set_line(response_area.x, response_area.y, &spinner, response_area.width);
         }
+        Some(ReviewAskResponse::Loading {
+            content,
+            scroll_offset,
+        })
+        | Some(ReviewAskResponse::Done {
+            content,
+            scroll_offset,
+        }) => render_ask_content(buf, response_area, content, *scroll_offset, theme),
         Some(ReviewAskResponse::Error { error }) => {
             let err_line = Line::from(Span::styled(
-                truncate_str(&format!("  ✗ {error}"), resp_area.width as usize),
+                truncate_str(&format!("  ✗ {error}"), response_area.width as usize),
                 Style::default().fg(theme.accent_error),
             ));
-            buf.set_line(resp_area.x, resp_area.y, &err_line, resp_area.width);
-        }
-        Some(ReviewAskResponse::Done { content, scroll_offset }) => {
-            let content_w = resp_area.width.saturating_sub(1) as usize;
-            if content_w == 0 {
-                return;
-            }
-            content.with_wrapped_lines(content_w, |wrapped| {
-                let total = wrapped.lines.len();
-                let visible = resp_area.height as usize;
-                let start = (*scroll_offset).min(total.saturating_sub(visible));
-                let end = (start + visible).min(total);
-                for (row, line_idx) in (start..end).enumerate() {
-                    let y = resp_area.y + row as u16;
-                    if y >= resp_area.y + resp_area.height {
-                        break;
-                    }
-                    let line = &wrapped.lines[line_idx];
-                    buf.set_line(resp_area.x + 1, y, line, resp_area.width.saturating_sub(1));
-                }
-                // Scroll indicator.
-                if total > visible {
-                    let pct = if total > visible {
-                        start * 100 / (total - visible)
-                    } else {
-                        0
-                    };
-                    let indicator = format!(" {pct}% ");
-                    let ind_x = resp_area.x + resp_area.width.saturating_sub(indicator.len() as u16 + 1);
-                    buf.set_string(ind_x, resp_area.y, &indicator, Style::default().fg(theme.gray_dim));
-                }
-            });
+            buf.set_line(
+                response_area.x,
+                response_area.y,
+                &err_line,
+                response_area.width,
+            );
         }
         None => {
-            // Hint when no response yet.
-            if !focused {
-                let hint = Line::from(Span::styled(
-                    "  a to ask about these changes",
-                    Style::default().fg(theme.gray_dim),
-                ));
-                buf.set_line(resp_area.x, resp_area.y, &hint, resp_area.width);
-            }
+            let hint = Line::from(Span::styled(
+                "  Ask a question about the selected changes",
+                Style::default().fg(theme.gray_dim),
+            ));
+            buf.set_line(response_area.x, response_area.y, &hint, response_area.width);
         }
     }
+}
+
+fn render_ask_content(
+    buf: &mut Buffer,
+    area: Rect,
+    content: &crate::scrollback::blocks::markdown_content::MarkdownContent,
+    scroll_offset: usize,
+    theme: &Theme,
+) {
+    let content_w = area.width.saturating_sub(1) as usize;
+    if content_w == 0 {
+        return;
+    }
+    content.with_wrapped_lines(content_w, |wrapped| {
+        let total = wrapped.lines.len();
+        let visible = area.height as usize;
+        let start = scroll_offset.min(total.saturating_sub(visible));
+        let end = (start + visible).min(total);
+        for (row, line_idx) in (start..end).enumerate() {
+            let y = area.y + row as u16;
+            if y >= area.y + area.height {
+                break;
+            }
+            buf.set_line(area.x + 1, y, &wrapped.lines[line_idx], area.width.saturating_sub(1));
+        }
+        if total > visible {
+            let pct = start * 100 / (total - visible);
+            let indicator = format!(" {pct}% ");
+            let ind_x = area.x + area.width.saturating_sub(indicator.len() as u16 + 1);
+            buf.set_string(ind_x, area.y, &indicator, Style::default().fg(theme.gray_dim));
+        }
+    });
 }
 
 /// Map a mouse position to a filtered file index using last-frame draw geometry.
@@ -2052,7 +2066,7 @@ mod tests {
     }
 
     #[test]
-    fn review_ask_renders_as_full_height_right_column() {
+    fn review_ask_renders_below_preview_with_bottom_input_separator() {
         let scrollback = ScrollbackState::new();
         let mut state = ReviewState::new("t", Vec::new(), ReviewKindFilter::Changes);
         state.focus = ReviewFocus::Ask;
@@ -2062,12 +2076,25 @@ mod tests {
         render_review_modal(&mut buffer, area, &mut state, &scrollback);
 
         assert!(state.ask_area.width > 0);
-        assert_eq!(state.ask_area.y, state.preview_area.y);
-        assert_eq!(state.ask_area.height, state.preview_area.height);
-        assert_eq!(
-            state.preview_area.x + state.preview_area.width,
-            state.ask_area.x
-        );
+        assert_eq!(state.ask_area.x, state.preview_area.x);
+        assert_eq!(state.ask_area.width, state.preview_area.width);
+        assert_eq!(state.preview_area.y + state.preview_area.height, state.ask_area.y);
+        let separator_y = state.ask_area.y + state.ask_area.height - 3;
+        assert_eq!(buffer[(state.ask_area.x + 1, separator_y)].symbol(), "─");
+    }
+
+    #[test]
+    fn review_ask_appends_streaming_deltas() {
+        let mut ask = ReviewAskState::default();
+        ask.start_loading();
+        ask.append_delta("first");
+        ask.append_delta(" second");
+        assert!(matches!(ask.response, Some(ReviewAskResponse::Loading { .. })));
+        let content = match &ask.response {
+            Some(ReviewAskResponse::Loading { content, .. }) => content.text(),
+            _ => unreachable!(),
+        };
+        assert_eq!(content, "first second");
     }
 
     #[test]
@@ -2220,13 +2247,59 @@ mod tests {
     }
 
     #[test]
-    fn review_diffstat_spans_use_diff_colors() {
+    fn review_file_rows_hide_diff_stats() {
         let theme = Theme::current();
-        let spans = diffstat_spans(12, 3, theme.bg_base, &theme);
-        assert_eq!(spans[0].content.as_ref(), " +12");
-        assert_eq!(spans[0].style.fg, Some(theme.diff_insert_fg));
-        assert_eq!(spans[1].content.as_ref(), " -3");
-        assert_eq!(spans[1].style.fg, Some(theme.diff_delete_fg));
-        assert_eq!(diffstat_display_width(12, 3), " +12 -3".len());
+        let file = ReviewFileItem {
+            path: "src/a.rs".into(),
+            kind: ReviewFileKind::Edit,
+            entry_id: EntryId::new(1),
+            additions: 12,
+            deletions: 3,
+            is_error: false,
+            op_count: 1,
+            plain_fallback: String::new(),
+        };
+        let area = Rect::new(0, 0, 40, 1);
+        let mut flat = Buffer::empty(area);
+        render_flat_row(
+            &mut flat,
+            area.x,
+            area.y,
+            area.width,
+            &file,
+            false,
+            theme.bg_base,
+            &theme,
+        );
+        let flat_text: String = (0..area.width).map(|x| flat[(x, 0)].symbol()).collect();
+        assert!(flat_text.contains("a.rs"));
+        assert!(!flat_text.contains("+12"));
+        assert!(!flat_text.contains("-3"));
+
+        let row = ReviewTreeRow {
+            depth: 1,
+            label: "a.rs".into(),
+            file_idx: Some(0),
+            additions: 12,
+            deletions: 3,
+            kind: Some(ReviewFileKind::Edit),
+            is_error: false,
+            is_dir: false,
+        };
+        let mut tree = Buffer::empty(area);
+        render_tree_row(
+            &mut tree,
+            area.x,
+            area.y,
+            area.width,
+            &row,
+            false,
+            theme.bg_base,
+            &theme,
+        );
+        let tree_text: String = (0..area.width).map(|x| tree[(x, 0)].symbol()).collect();
+        assert!(tree_text.contains("a.rs"));
+        assert!(!tree_text.contains("+12"));
+        assert!(!tree_text.contains("-3"));
     }
 }
