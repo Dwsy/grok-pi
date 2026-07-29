@@ -36,6 +36,29 @@ A built-in `pi-grok-subagents` extension was added: it creates, tracks, cancels,
 | Pager child-route lib test | BLOCKED | Focused test compilation blocked by a pre-existing unrelated Pager test config error: missing `set_voice_mode_enabled_for_test`, layout parameter drift, `ActiveModal: Debug`, `AppView` init field drift |
 | Native TUI E2E with a real model | PENDING | Manual verification of spawn/progress/child view/finish/cancel/resume/replay is not yet done; static passes must not be treated as runtime acceptance |
 
+## 2026-07-28 Subagent Configuration Increment
+
+`/subagents` now displays the built-in profiles and edits only product-isolated
+project/global Markdown overrides. Tools/models retain the existing Pager
+QuestionView flow; extension/skill selection opens the existing Pi resource
+manager in a non-mutating selection mode. `/subagent-message` and
+`send_message_to_subagent` use Pi's official child-session prompt API for a
+follow-up or a steer. None of this modifies Grok's original subagent
+implementation: Pi remains responsible for child sessions, tools, models,
+extensions, skills, and turn steering.
+
+| Verification layer | Result | Notes |
+|---|---:|---|
+| Pi RPC extension-load probe | PASS | System Pi `0.82.1` loaded `extensions/pi-grok-subagents/index.ts`; `get_commands` returned both `subagents` and `subagent-message`. |
+| Native QuestionView multi-select adapter test | PASS | `cargo test -p pi-grok-adapter product_multi_select_envelope_uses_native_checkbox_answer_shape` — 1 passing. |
+| Pi resource picker adapter test | PASS | `cargo test -p pi-grok-adapter product_resource_picker_envelope_round_trips_selected_paths` — 1 passing. |
+| Pager/resource-picker compile | PASS | `cargo check -p xai-grok-pager -p pi-grok-adapter` completed successfully; only pre-existing warnings remain. |
+| Embedded extension source test | PASS | `cargo test -p xai-grok-pager-bin --bin grok-pi subagent_extension_source_is_a_loadable_typescript_module` — 1 passing. |
+| Product compile and diff hygiene | PASS | `cargo check -p xai-grok-pager-bin --bin grok-pi` and `git diff --check` completed successfully; existing warnings remain. |
+| Extension TypeScript check | PARTIAL | No diagnostic originates in `extensions/pi-grok-subagents`; the full check is blocked by three pre-existing `pi-main` diagnostics: two stale provider model-catalog assertions and missing `highlight.js` declarations. |
+| Pager unit test harness | BLOCKED | `cargo test -p xai-grok-pager …` currently fails before this picker test because an unrelated existing test lacks `handle_switch_model_complete` import in `app/dispatch/tests/session/lifecycle.rs`; the normal library check passes. |
+| Native TUI real-model E2E | PENDING | Manually exercise built-in override/restore, `/subagents` selection/save, project shadowing, extension/skill picker apply/cancel, `/subagent-message`, spawn, and soft `max_turns` summary before release. |
+
 ## Executed Results
 
 | Verification layer | Result | Notes |

@@ -90,7 +90,7 @@ grok-pi update
 | Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
 | **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |
 | Shell execution | Bash integration, background tasks, output limits, timeouts, and process-tree cleanup |
-| Parallel work | Pi sub-agents with foreground/background execution and native task views |
+| Parallel work | Pi sub-agents with foreground/background execution and native task views; `/subagents` exposes built-ins plus product-isolated project/global overrides, reuses the Pi resource manager for extensions/skills, and `/subagent-message` sends follow-up or steer messages to running children |
 | Rhai workflows | Upstream `xai-workflow` host (F2 **Pi workflows**); `/workflow`, `/workflows`, `/create-workflow`; scripts under `~/.grok-pi/workflows` and `<repo>/.grok-pi/workflows` |
 | Session workflow | Resume, tree navigation, labels, recap, context inspection, and session picker |
 | Resource management | Native manager for Pi extensions, skills, prompts, and themes |
@@ -187,7 +187,7 @@ flowchart LR
 | **Q&A** (`pi_ask_user_question`) | F2 → Agent → Q&A (restart) | off | `@juicesharp/rpiv-ask-user-question` |
 | **Pi goal mode** (`pi_goal`) | F2 → Agent → Pi goal mode (restart) | off | `pi-codex-goal`, `@narumitw/pi-goal`, `@misunders2d/pi-goal`, `pi-goal`, `pi-goal-x` |
 | **Pi workflows** (`pi_workflows`) | F2 → Agent → Pi workflows (restart) | off | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents** (`pi_subagents`) | Bridge extension (on unless `--no-extensions`) | on* | `pi-subagents`, `@tintinweb/pi-subagents` |
+| **Pi subagents** (`pi_subagents`) | Bridge extension (on unless `--no-extensions`) | on* | `pi-subagents`, `@tintinweb/pi-subagents`; native `/subagents` config writes isolated global/project Markdown definitions (tools, up to 3 Pi models, extensions, skills, enablement, max turns) |
 | **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart) | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
 
 \*No separate F2 off switch today; use `--no-extensions` to skip the bridge (and thus this block list for that process).

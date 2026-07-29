@@ -90,7 +90,7 @@ grok-pi update
 | 产品教程 | `/tutorial`（别名 `/tour`、`/onboarding`）展示 18 个 grok-pi 能力域：Pager 原生工作流、Pi Provider/模型/工具/会话、扩展/Skill/Package 生态、产品桥接、可选自动化与明确边界 |
 | **Remote TUI 桥接** | Pi `ctx.ui.custom` 组件通过 Grok Build 原生 Pager 渲染，不创建第二套 TUI |
 | Shell 执行 | Bash 集成、后台任务、输出限制、超时和进程树清理 |
-| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图 |
+| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 可查看内置代理并维护隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关和最大回合），扩展/技能复用 Pi 资源管理器；`/subagent-message` 可向运行中子代理发送 follow-up 或 steer |
 | Rhai Workflow | 上游 `xai-workflow` 宿主（F2 **Pi workflows**）；`/workflow`、`/workflows`、`/create-workflow`；脚本目录 `~/.grok-pi/workflows` 与 `<repo>/.grok-pi/workflows` |
 | 会话流程 | Resume、树导航、标签、回顾、上下文查看和会话选择器 |
 | 资源管理 | Pi 扩展、skills、prompt 和主题的原生管理器 |
@@ -187,7 +187,7 @@ flowchart LR
 | **Q&A**（`pi_ask_user_question`） | F2 → Agent → Q&A（需重启） | 关 | `@juicesharp/rpiv-ask-user-question` |
 | **Pi goal mode**（`pi_goal`） | F2 → Agent → Pi goal mode（需重启） | 关 | `pi-codex-goal`、`@narumitw/pi-goal`、`@misunders2d/pi-goal`、`pi-goal`、`pi-goal-x` |
 | **Pi workflows**（`pi_workflows`） | F2 → Agent → Pi workflows（需重启） | 关 | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents**（`pi_subagents`） | 桥接扩展（除非 `--no-extensions`） | 开* | `pi-subagents`、`@tintinweb/pi-subagents` |
+| **Pi subagents**（`pi_subagents`） | 桥接扩展（除非 `--no-extensions`） | 开* | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 显示内置代理并写入产品隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关、最大回合）；资源选择复用 Pi 资源管理器，`/subagent-message` 支持追问运行中子代理 |
 | **`/btw`**（`pi_btw`） | F2 → Agent → Pi /btw（需重启） | 关 | `pi-btw`、`@narumitw/pi-btw`、`@juicesharp/rpiv-btw` |
 
 \*当前无独立 F2 关；`--no-extensions` 可跳过该桥接（本进程也就不应用这条 block）。
