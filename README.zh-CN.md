@@ -187,9 +187,9 @@ flowchart LR
 | **Q&A**（`pi_ask_user_question`） | F2 → Agent → Q&A（需重启） | 关 | `@juicesharp/rpiv-ask-user-question` |
 | **Pi goal mode**（`pi_goal`） | F2 → Agent → Pi goal mode（需重启） | 关 | `pi-codex-goal`、`@narumitw/pi-goal`、`@misunders2d/pi-goal`、`pi-goal`、`pi-goal-x` |
 | **Pi workflows**（`pi_workflows`） | F2 → Agent → Pi workflows（需重启） | 关 | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents**（`pi_subagents`） | 桥接扩展（除非 `--no-extensions`） | 开* | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 显示内置代理并写入产品隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关、最大回合）；资源选择复用 Pi 资源管理器，`/subagent-message` 支持追问运行中子代理 |
+| **Pi subagents**（`pi_subagents`） | F2 → Agent → Pi subagents（需重启） | 开 | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 显示内置代理并写入产品隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关、最大回合）；资源选择复用 Pi 资源管理器，`/subagent-message` 支持追问运行中子代理 |
 | **`/btw`**（`pi_btw`） | F2 → Agent → Pi /btw（需重启） | 关 | `pi-btw`、`@narumitw/pi-btw`、`@juicesharp/rpiv-btw` |
 
-\*当前无独立 F2 关；`--no-extensions` 可跳过该桥接（本进程也就不应用这条 block）。
+关闭 Pi subagents 后，下次启动会省略内置桥接、强制 `PI_GROK_SUBAGENTS=0`，并重新放行与其冲突的第三方包。
 
 对应 F2 项的说明文案会附带 **When on, blocks: …**（与同一张表同步）。

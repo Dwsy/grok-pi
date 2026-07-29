@@ -187,9 +187,9 @@ flowchart LR
 | **Q&A** (`pi_ask_user_question`) | F2 → Agent → Q&A (restart) | off | `@juicesharp/rpiv-ask-user-question` |
 | **Pi goal mode** (`pi_goal`) | F2 → Agent → Pi goal mode (restart) | off | `pi-codex-goal`, `@narumitw/pi-goal`, `@misunders2d/pi-goal`, `pi-goal`, `pi-goal-x` |
 | **Pi workflows** (`pi_workflows`) | F2 → Agent → Pi workflows (restart) | off | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents** (`pi_subagents`) | Bridge extension (on unless `--no-extensions`) | on* | `pi-subagents`, `@tintinweb/pi-subagents`; native `/subagents` config writes isolated global/project Markdown definitions (tools, up to 3 Pi models, extensions, skills, enablement, max turns) |
+| **Pi subagents** (`pi_subagents`) | F2 → Agent → Pi subagents (restart) | on | `pi-subagents`, `@tintinweb/pi-subagents`; native `/subagents` config writes isolated global/project Markdown definitions (tools, up to 3 Pi models, extensions, skills, enablement, max turns) |
 | **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart) | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
 
-\*No separate F2 off switch today; use `--no-extensions` to skip the bridge (and thus this block list for that process).
+Turning Pi subagents off omits the bundled bridge, forces `PI_GROK_SUBAGENTS=0`, and admits conflicting third-party packages again for the next process.
 
 F2 descriptions for the opt-in rows append **When on, blocks: …** from the same table.

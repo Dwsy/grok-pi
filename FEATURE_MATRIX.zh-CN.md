@@ -17,14 +17,14 @@
 | Welcome session 预热（Pi） | 适配 | 进入 Welcome 即后台 `new_session`；首字输入 attach 预热 agent，避免冷启动 “Starting session…” |
 | grok-pi 产品教程（`/tutorial`） | 原生+适配 | 复用上游 `TutorialState`、`ModalWindow`、picker、Markdown/doc viewer、命令别名（`/tour`、`/onboarding`）与键鼠路由；grok-pi composition 注入 18 主题 `TutorialProfile`，覆盖原生终端/输入；Pi 多 Provider 模型、thinking、工具、context、session/tree；review/rollback/Plan；extensions、Remote TUI、Skills、Prompt Templates、Packages、theme 与资源 Trust；后台任务、subagent/dashboard、可选自动化、export/update、状态隔离与 diagnostics。正文明确标注默认开启、F2 可选、重启、实验性和边界。stock Grok 保持默认正文；minimal 模式仍保持门控。 |
 | 更新检查/安装 | 适配 | **仅 GitHub** `Dwsy/grok-pi` releases JSON + install.sh/ps1；`grok-pi update` / `--check` / Welcome **Ctrl+U**；`GROK_PI_NO_AUTO_UPDATE=1` 关后台检查 |
-| Agent Dashboard | 原生+适配 | 原生 `/dashboard` · Ctrl+\\ · 列表/peek/dispatch；idle 行经 `pi/session/list` → `pi/ui/session_catalog` 投影到 dormant roster；不接 Grok leader FleetView |
+| Agent Dashboard | 原生+适配 | 原生 `/dashboard` · Ctrl+\\ · 列表/peek/dispatch；Pi 的单 session RPC host 同时仅保留一个 live AgentView，turn 忙时阻止二次 dispatch，已完成 session 经 `pi/session/list` → `pi/ui/session_catalog` 回到 dormant roster；不接 Grok leader FleetView |
 | Prompt editing | 原生 | PromptWidget |
 | Multiline / Vim mode | 原生 | Grok slash/settings |
 | Theme / timestamps / mouse | 原生+适配 | Grok appearance/input；Pi 主题 JSON 经 `theme::pi` 映射为 Grok `Theme`，`/theme` 可选 `pi:<name>`；内置实验性 `pi:transparent`（暗色）与 `pi:transparent-light`（浅色）将主画布交给终端默认背景（用于终端透明度/毛玻璃），同时保留选中态、代码、diff 与工具表面的实色；F2 可控制 OSC 9;4 terminal-tab progress，默认关闭 |
 | Markdown / code blocks | 原生+适配 | Pi text/reasoning → ACP chunks → `xai-grok-markdown` |
 | Tool cards | 原生+适配 | Pi tool events → ACP ToolCall；`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` 投影到原生卡 |
 | Todo / plan list | 原生+适配 | Pi `@juicesharp/rpiv-todo` 的 `todo` tool `details.tasks` → ACP `Plan` → 原生 TodoPane/badge；scrollback 抑制 `todo` 卡 |
-| Plan mode | 原生+适配 | Pager 原生 Plan 开关 → adapter 负责的 `Inactive/Pending/Active/ExitPending` 状态机；full/sparse system-reminder 前缀；session 私有 `.plan.md` sidecar；注入 Pi `tool_call` gate 阻止 `edit`/`write`/`bash`（仅放行计划文件）；Pi `exit_plan_mode` 打开原生 `x.ai/exit_plan_mode` 审批，并持久化 `.plan-mode.json` 状态 |
+| Plan mode | 原生+适配 | Pi 仅暴露 Normal ↔ Plan：`/plan-mode` 与 Ctrl+Shift+T 用于切换，`/plan` 用于进入；Shift+Tab 保持 thinking level 切换。Pager 原生 Plan 开关 → adapter 负责的 `Inactive/Pending/Active/ExitPending` 状态机；full/sparse system-reminder 前缀；session 私有 `.plan.md` sidecar；注入 Pi `tool_call` gate 阻止 `edit`/`write`/`bash`（仅放行计划文件）；Pi `exit_plan_mode` 打开原生 `x.ai/exit_plan_mode` 审批，并持久化 `.plan-mode.json` 状态 |
 | Goal 模式（`/goal`） | 适配（MVP legacy） | F2 `[ui].pi_goal` **默认关闭**（需重启）。注入扩展：`/goal` + `update_goal` + control 文件；adapter GoalHost 发原生 `GoalUpdated`（状态条 / detail）。Active 时 `agent_settled` follow-up 续跑。**不含** shell 完整 multi-agent classifier/planner/strategist（后续切片）。 |
 | Loop 定时（`/loop`） | 适配（MVP） | F2 `[ui].pi_loop` **默认关闭**（需重启）。注入扩展：`/loop` + `scheduler_create/delete/list` + 进程内 timer；adapter bridge → 原生 `ScheduledTask*`（tasks pane）。仅 session（无 durable / loop subagent）。 |
 | Diff rendering | 原生+适配 | edit-like tool metadata进入 Grok tool/diff pipeline |
@@ -43,8 +43,8 @@
 | Thinking/reasoning stream | 适配 | `message_update` → AgentThoughtChunk |
 | Tool start/update/end | 适配 | ACP ToolCall/ToolCallUpdate |
 | Pi Bash 后台任务 / Send to Background | 原生+适配 | `grok-pi` 私有 Bash extension 持有前台与初始后台 Bash 子进程；前台仍复用 Pi `createBashToolDefinition` 的输出/渲染语义。Pager 原生 Send to Background 经 `x.ai/terminal/background` 以受控临时控制文件按 `toolCallId` 转交**同一**子进程，随后投影到既有 `x.ai/task_*` 卡片；原生任务卡 kill 经同一控制通道走 `x.ai/task/kill`（`op:kill` + 已发布 `runningTaskIds`）；`is_background` + `description`、`get_task_output` / `wait_tasks` / `kill_task` 保持可用。 |
-| Pi 子代理 | 原生+适配 |
-| Workflow（Rhai / `/workflow`） | 上游引擎 + Pi Spawn 接缝 | **会话宿主 + slash 表面：** 复用 `xai-workflow` + `ExternalWorkflowRuntime`；adapter `x.ai/workflow/{launch,pause,stop}` + `x.ai/workflows/list` + `workflow_updated`；注入 `/workflow`、`/workflows`、`/create-workflow`（及命名脚本）；隐藏 `__pi_workflow_*` 桥命令；Pager 本地处理 + F2 门控。deep-research 实机手测仍建议。`/create-workflow` 为 PassThrough 用户提示（非 Pi skill）。项目脚本目录默认 `<repo>/.grok-pi/workflows`。 | 内置 `pi-grok-subagents` extension 拥有 Pi child `AgentSession`；版本化 bridge 投影到原生 `SubagentBlock`、Tasks Pane、child `AgentView` 与 `x.ai/subagent/cancel`。模型驱动的手工端到端验收待执行。 |
+| Pi 子代理 | 原生+适配 | F2 `[ui].pi_subagents` 默认开、需重启。开启时，内置 `pi-grok-subagents` extension 拥有 Pi child `AgentSession`；版本化 bridge 投影到原生 `SubagentBlock`、Tasks Pane、child `AgentView` 与 `x.ai/subagent/cancel`。`/subagents` 管理产品隔离的项目/全局 Markdown 覆盖，`/subagent-message` 与 `send_message_to_subagent` 可向运行中的 child 发送 follow-up/steer。关闭后不注入桥接，并清空继承的 activation metadata。模型驱动的手工端到端验收待执行。 |
+| Workflow（Rhai / `/workflow`） | 上游引擎 + Pi Spawn 接缝 | **会话宿主 + slash 表面：** 复用 `xai-workflow` + `ExternalWorkflowRuntime`；adapter `x.ai/workflow/{launch,pause,stop}` + `x.ai/workflows/list` + `workflow_updated`；注入 `/workflow`、`/workflows`、`/create-workflow`（及命名脚本）；隐藏 `__pi_workflow_*` 桥命令；Pager 本地处理 + F2 门控。deep-research 实机手测仍建议。`/create-workflow` 为 PassThrough 用户提示（非 Pi skill）。项目脚本目录默认 `<repo>/.grok-pi/workflows`。 |
 | Prompt completion | 适配 | 正常完成仍以 Pi `agent_settled` 为屏障。adapter 提升的客户端行保留 ACP waiter；extension/Pi 所有的运行发送 `x.ai/session/prompt_complete`。若 prompt 被 input handler 吞掉、没有 `agent_start`/`agent_settled`，idle 探针会主动收敛，避免幽灵 “Waiting…”。 |
 | Retry | 适配 | Grok native sticky status/toast |
 | Compaction | 原生+适配 | `/compact [instructions]` → Pi `compact`；Pi `compaction_*` → 原生 CompactionStarted/Completed/Failed/Cancelled scrollback blocks + sticky status |
@@ -62,8 +62,8 @@
 | New session | 适配 | Grok `/new` → Pi `new_session` |
 | Rename | 适配 | Grok `/rename` → Pi `set_session_name` |
 | Resume session catalog | 适配 | `/resume` 经无界面 adapter 读取 Pi JSONL 元数据。已命名会话显示原生 `named` 标记；展开 Pi 行可显示 CWD/会话路径、开始/更新时间、模型、消息数、已持久化的 token 总数与成本（仅在记录存在时）。目录继续按最近活动时间排序。 |
-| Session info / context snapshot | 适配 | 原生 `/session-info`（别名 `/session`，对齐 Pi 命名）→ Grok `x.ai/session/info` ← Pi stats（file/used/window/counts）+ message 估算 + 注入 extension 读 system/tool-defs/AGENTS；bridge 失败时 system/tools 回退 0。展示为 system scrollback（Pi interactive 写 chat）；图表仍用 `/context` modal。 |
-| Session history replay | 适配 | `get_messages` → ACP replay，使用 Grok scrollback |
+| Session info / context snapshot | 适配 | 原生 `/session-info`（别名 `/session`，对齐 Pi 命名）→ Grok `x.ai/session/info` ← 最新 Pi `get_session_stats`。Pi 风格 scrollback 现展示 session 名称/file/ID、总/user/assistant/tool call/tool result 计数、prompt/cache/output/total token、cache 命中率与写入量、总成本；下方保留 Grok runtime/auth/model/current-context。注入 breakdown 继续为 `/context` 提供 system/tool-defs/AGENTS，bridge 失败时回退 0。 |
+| Session history replay | 适配 | 保留 `get_entries` append-log 缓存并用 `since` 增量刷新；active `leafId` 按 parent chain 线性 push+reverse（对齐 Pi upstream 最近优化），排除 sibling branch，tree 切换不再全量刷新 state/model/command 与嵌套 `get_tree`。回放包含压缩前消息及可见 summary/custom entry；旧 host 不支持时回退压缩后的 `get_messages`。 |
 | 启动时继续上一会话 | 适配 | `grok-pi --continue` / `-c` → Pi `--continue` |
 | 启动资源、提示词与会话选项 | 适配 | `grok-pi` 一等转发：模型（`--provider`/`--model`/`--models`/`--thinking`）、会话（`--session`/`--session-id`/`--session-dir`/`--fork`/`--no-session`/`--name`）、提示词（`--system-prompt`/`--append-system-prompt`）、资源（`--extension`/`--no-extensions`/`--no-skills`/`--no-context-files`）、工具（`--tools`/`--exclude-tools`/`--no-tools`/`--no-builtin-tools`）、trust/网络（`--approve`/`--no-approve`/`--offline`）；`--` 后参数仍透传。不暴露 `--resume`（Welcome/`/resume`） |
 | Pi extension/prompt/skill commands | 原生+适配 | `get_commands` → Grok slash registry；`source=extension` 经私有 ACP metadata 直达 Pi command handler，不进入 Pager 本地或 Pi steering/follow-up 队列；prompt/skill 保持 prompt 语义 |
@@ -75,7 +75,7 @@
 | Pi session fork (`/fork`) | 适配 | External：与 `/jump` 同款 prompt 区 `ListOverlay`（RPC `get_fork_messages`）；选择后 RPC `fork` 生成分支 session 文件，同 agent 换绑新 `sessionId`，`session/load` 回放并把选中文案预填 prompt；非 external 仍走 Grok peer-agent `/fork` |
 | Pi session clone (`/clone`) | 适配 | External：RPC `clone` 在当前 leaf 复制新 session 文件；同 agent 换绑新 `sessionId`，`session/load` 回放并清空 prompt（对齐 Pi） |
 | Pi 资源重载 (`/reload`) | 适配 | External：`__pi_reload` → `ctx.reload()`；流式 **与** compaction 中禁止（对齐 Pi）；adapter 刷新命令/模型目录；Pager 重扫 Pi theme（`rediscover`）并重应用当前 `pi:*` 主题；loading/成功 toast 文案对齐 Pi；不分支 session 文件 |
-| Pi HTML export / share | 适配 | Grok `/export` 仍为 Markdown transcript；默认开启 `/export-html`（Pi HTML / `.jsonl`）与 `/pi-share`（私有 gh gist + pi.dev），经 `pi-grok-export` 注入，不另造 TUI |
+| Pi HTML export / share | 适配 | Grok `/export` 仍为 Markdown transcript；默认开启 `/export-html`（Pi HTML / `.jsonl`）与 `/pi-share`（私有 gh gist 固定写入 `session.html` + pi.dev），经 `pi-grok-export` 注入，不另造 TUI |
 
 ## Extension UI
 
@@ -95,7 +95,7 @@
 | raw terminal hook | 边界 | Pi RPC 明确不支持 |
 | custom header/footer/component | 边界 | Pi RPC 明确不支持 component factory |
 | Remote TUI（实验） | 实验 | `PI_GROK_REMOTE_TUI` 默认开：**不改 Pi 源码**；npm/Node Pi 通过官方 `rpc-entry.js` 启动，因此仅检查 argv 的第三方 RPC guard 看不到外层 `--mode rpc`；最先注入的兼容扩展仅在 Remote TUI host 活跃时将 `ExtensionRunner` 暴露给扩展的 `ctx.mode` 从 `rpc` 投影为 `tui`。Pi core 与 JSONL transport 仍是真实 RPC。注入 `ctx.ui.custom` host + `setWidget` 帧投影；键经 tmp keyfile；Pager ANSI 解析。裸 `/login`/`/logout` 由 `pi-grok-auth` 默认开启（resume-x 风格）；更广的 `/pi-*` 选择器仍需 `PI_GROK_NATIVE_COMMANDS` |
-| 原生 feature 包冲突 | 宿主策略 | 默认：`assets/native_feature_conflicts.toml`。运行时外挂（免 rebuild）：`$GROK_HOME/native-feature-conflicts.toml` → `$GROK_PROJECT_DIR/native-feature-conflicts.toml`（包列表 union）。门控：`pi_ask_user_question` / `pi_goal` / `pi_workflows` / always-on `pi_subagents`。用户 `allow` 可豁免。 |
+| 原生 feature 包冲突 | 宿主策略 | 默认：`assets/native_feature_conflicts.toml`。运行时外挂（免 rebuild）：`$GROK_HOME/native-feature-conflicts.toml` → `$GROK_PROJECT_DIR/native-feature-conflicts.toml`（包列表 union）。由 `pi_ask_user_question` / `pi_goal` / `pi_workflows` / `pi_subagents` / `pi_btw` 的 F2/bridge 状态门控；关闭功能后重新放行其冲突包。用户 `allow` 可豁免。 |
 | `rpiv-btw` | 边界 | F2 `pi_btw` 开启时屏蔽；走原生 `/btw` + adapter `x.ai/btw` + `pi-grok-btw` 扩展（默认关） |
 
 ## 斜杠命令
