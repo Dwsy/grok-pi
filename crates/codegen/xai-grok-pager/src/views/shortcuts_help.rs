@@ -1550,12 +1550,10 @@ mod tests {
         }
     }
 
-    /// `DashboardCycleMode` carries Shift+Tab three times (the terminal
-    /// encoding variants `BackTab` / `BackTab`+SHIFT / `Tab`+SHIFT).
-    /// The cheatsheet must collapse identically-rendered keys instead
-    /// of showing "Shift+Tab / Shift+Tab / Shift+Tab".
+    /// Dashboard mode switching must advertise Ctrl+Shift+T; Shift+Tab is the
+    /// thinking-level shortcut on the agent surface.
     #[test]
-    fn build_entries_dedupes_identically_rendered_alt_keys() {
+    fn build_entries_shows_dashboard_mode_shortcut() {
         let registry = crate::actions::ActionRegistry::defaults();
         let entries = build_entries(&[When::DashboardFocused], &registry, false);
         let item = entries
@@ -1569,11 +1567,7 @@ mod tests {
                 _ => None,
             })
             .expect("DashboardCycleMode must be listed");
-        assert_eq!(
-            hint_key_pretty(item),
-            "Shift+Tab",
-            "encoding-variant alt keys must collapse to one display",
-        );
+        assert_eq!(hint_key_pretty(item), "Ctrl+Shift+T");
     }
 
     #[test]

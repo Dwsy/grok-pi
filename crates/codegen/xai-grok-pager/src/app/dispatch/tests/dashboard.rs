@@ -1263,9 +1263,8 @@ fn dashboard_toggle_auto_approve_blocked_by_policy_pin() {
         "toggle OFF must still work under the pin"
     );
 }
-/// Shift+Tab in the peek cycles the PEEKED agent's live mode
-/// (Normal → Plan) and leaves the dashboard foregrounded — the same
-/// effect as Shift+Tab inside that agent's chat view.
+/// Ctrl+Shift+T in the peek cycles the PEEKED agent's live mode
+/// (Normal → Plan) and leaves the dashboard foregrounded.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
 fn dashboard_peek_cycle_mode_cycles_peeked_agent() {
@@ -1295,7 +1294,7 @@ fn dashboard_peek_cycle_mode_cycles_peeked_agent() {
         app.active_view,
     );
 }
-/// A dashboard-peek Shift+Tab cycles the peeked agent into plan mode but must
+/// A dashboard-peek mode shortcut cycles the peeked agent into plan mode but must
 /// NOT attribute a plan-nudge acceptance: the user is on the dashboard, not
 /// that agent's prompt, so the nudge (still within TTL) is left intact. This
 /// pins that the peek routes through the telemetry-free cycle body.
@@ -1764,6 +1763,32 @@ fn dashboard_cycle_mode_rotates_through_modes() {
         DashboardDispatchMode::Normal
     );
 }
+/// External Pi never stages Grok permission modes: dashboard mode dispatch is
+/// a binary Normal ↔ Plan toggle, even when the app-wide yolo default is stale.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn external_dashboard_cycle_mode_is_binary() {
+    use crate::views::dashboard::DashboardDispatchMode;
+    let mut app = test_app();
+    app.external_agent = true;
+    app.default_yolo = true;
+    open_dashboard(&mut app);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().pending_mode,
+        DashboardDispatchMode::Normal
+    );
+    let _ = dispatch(Action::DashboardCycleMode, &mut app);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().pending_mode,
+        DashboardDispatchMode::Plan
+    );
+    let _ = dispatch(Action::DashboardCycleMode, &mut app);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().pending_mode,
+        DashboardDispatchMode::Normal
+    );
+}
+
 /// Under the managed-policy pin the staged-mode cycle skips
 /// Always-Approve (Normal → Plan → Normal) and explains why.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
@@ -2127,6 +2152,60 @@ fn dashboard_dispatch_prompt_creates_session() {
         d.selected,
     );
 }
+/// Pi's RPC process owns one active session. Dispatching from the dashboard
+/// replaces an idle local AgentView and unregisters it before creating the next
+/// one, so old rows cannot send prompts into the newly active backend context.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn external_dashboard_dispatch_replaces_idle_local_agent() {
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    let old_id = AgentId(0);
+    open_dashboard(&mut app);
+
+    let effects = dispatch_dashboard_dispatch(&mut app, "fresh isolated task".into(), false);
+    assert_eq!(app.agents.len(), 1);
+    assert!(!app.agents.contains_key(&old_id));
+    let new_id = *app.agents.keys().next().unwrap();
+    assert_ne!(new_id, old_id);
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::UnregisterActiveSession { session_id }
+            if session_id.to_string() == "test-session"
+    )));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::CreateSession { agent_id, .. } if *agent_id == new_id
+    )));
+    assert_eq!(
+        app.agents[&new_id]
+            .session
+            .pending_prompts
+            .back()
+            .map(|entry| entry.text.as_str()),
+        Some("fresh isolated task")
+    );
+}
+
+/// A running Pi turn cannot be retargeted by a second dashboard dispatch.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn external_dashboard_dispatch_blocks_while_turn_is_running() {
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    app.agents.get_mut(&AgentId(0)).unwrap().session.state = AgentState::TurnRunning;
+    open_dashboard(&mut app);
+
+    let effects = dispatch_dashboard_dispatch(&mut app, "must wait".into(), false);
+    assert!(effects.is_empty());
+    assert_eq!(app.agents.len(), 1);
+    assert!(app.agents.contains_key(&AgentId(0)));
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().error_toast.as_deref(),
+        Some("Finish the current Pi turn before dispatching a new session")
+    );
+}
+
 /// An empty / whitespace-only prompt is rejected — there's no task
 /// to seed the new session, so no agent is created.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]

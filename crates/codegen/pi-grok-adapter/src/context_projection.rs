@@ -292,6 +292,7 @@ pub(crate) fn build_session_info_response(
     cached_tokens: Option<u64>,
     breakdown: Option<&ContextBreakdownRaw>,
     session_file: Option<&str>,
+    session_name: Option<&str>,
 ) -> Value {
     let used = context_tokens_from_stats(stats)
         .or(cached_tokens)
@@ -383,6 +384,22 @@ pub(crate) fn build_session_info_response(
     let turns = number(stats, &["userMessages", "user_messages"]).unwrap_or(0);
     let tool_call_count = number(stats, &["toolCalls", "tool_calls"]).unwrap_or(0);
     let message_count = number(stats, &["totalMessages", "total_messages"]).unwrap_or(0);
+    let user_messages = number(stats, &["userMessages", "user_messages"]).unwrap_or(0);
+    let assistant_messages =
+        number(stats, &["assistantMessages", "assistant_messages"]).unwrap_or(0);
+    let tool_results = number(stats, &["toolResults", "tool_results"]).unwrap_or(0);
+    let token_totals = stats.get("tokens").unwrap_or(&Value::Null);
+    let token_input = number(token_totals, &["input"]).unwrap_or(0);
+    let token_output = number(token_totals, &["output"]).unwrap_or(0);
+    let token_cache_read = number(token_totals, &["cacheRead", "cache_read"]).unwrap_or(0);
+    let token_cache_write = number(token_totals, &["cacheWrite", "cache_write"]).unwrap_or(0);
+    let token_total = number(token_totals, &["total"]).unwrap_or_else(|| {
+        token_input
+            .saturating_add(token_output)
+            .saturating_add(token_cache_read)
+            .saturating_add(token_cache_write)
+    });
+    let cost = stats.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
     let model_id = model.map(|m| m.id.clone());
     let model_label = model.map(|m| {
         if m.label.is_empty() {
@@ -401,6 +418,21 @@ pub(crate) fn build_session_info_response(
         "showModelFingerprint": false,
         "turns": turns,
         "turnIndex": turns.saturating_sub(1),
+        "sessionStats": {
+            "totalMessages": message_count,
+            "userMessages": user_messages,
+            "assistantMessages": assistant_messages,
+            "toolCalls": tool_call_count,
+            "toolResults": tool_results,
+            "tokens": {
+                "input": token_input,
+                "output": token_output,
+                "cacheRead": token_cache_read,
+                "cacheWrite": token_cache_write,
+                "total": token_total,
+            },
+            "cost": cost,
+        },
         "context": {
             "used": used,
             "total": total,
@@ -424,6 +456,9 @@ pub(crate) fn build_session_info_response(
         }
         if let Some(label) = model_label {
             obj.insert("modelDisplayName".into(), Value::String(label));
+        }
+        if let Some(name) = session_name.map(str::trim).filter(|name| !name.is_empty()) {
+            obj.insert("sessionName".into(), Value::String(name.to_owned()));
         }
         // Prefer the live bootstrap path; fall back to stats.sessionFile.
         let file = session_file
@@ -543,6 +578,14 @@ mod tests {
             "toolCalls": 4,
             "toolResults": 4,
             "totalMessages": 9,
+            "tokens": {
+                "input": 1_000,
+                "output": 300,
+                "cacheRead": 500,
+                "cacheWrite": 500,
+                "total": 2_300
+            },
+            "cost": 0.053,
             "contextUsage": { "tokens": 10_000, "contextWindow": 200_000, "percent": 5.0 }
         });
         let messages = json!({
@@ -576,10 +619,23 @@ mod tests {
             None,
             None,
             Some("/repo/.pi/session.jsonl"),
+            Some("demo session"),
         );
         assert_eq!(response["sessionId"], json!("sess-1"));
         assert_eq!(response["cwd"], json!("/repo"));
         assert_eq!(response["sessionFile"], json!("/repo/.pi/session.jsonl"));
+        assert_eq!(response["sessionName"], json!("demo session"));
+        assert_eq!(response["sessionStats"]["totalMessages"], json!(9));
+        assert_eq!(response["sessionStats"]["userMessages"], json!(3));
+        assert_eq!(response["sessionStats"]["assistantMessages"], json!(2));
+        assert_eq!(response["sessionStats"]["toolCalls"], json!(4));
+        assert_eq!(response["sessionStats"]["toolResults"], json!(4));
+        assert_eq!(response["sessionStats"]["tokens"]["input"], json!(1_000));
+        assert_eq!(response["sessionStats"]["tokens"]["output"], json!(300));
+        assert_eq!(response["sessionStats"]["tokens"]["cacheRead"], json!(500));
+        assert_eq!(response["sessionStats"]["tokens"]["cacheWrite"], json!(500));
+        assert_eq!(response["sessionStats"]["tokens"]["total"], json!(2_300));
+        assert_eq!(response["sessionStats"]["cost"], json!(0.053));
         assert_eq!(response["model"], json!("gpt-test"));
         assert_eq!(response["modelDisplayName"], json!("GPT Test"));
         assert_eq!(response["agentName"], json!("pi"));
@@ -635,6 +691,7 @@ mod tests {
             None,
             Some(&breakdown),
             None,
+            None,
         );
         let system = response["context"]["systemPromptTokens"].as_u64().unwrap();
         let tools = response["context"]["toolDefinitionsTokens"]
@@ -674,6 +731,7 @@ mod tests {
             "/tmp",
             None,
             Some(42_000),
+            None,
             None,
             None,
         );

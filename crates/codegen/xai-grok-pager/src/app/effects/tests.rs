@@ -2108,7 +2108,9 @@ fn make_session_info(
     xai_grok_shell::session::SessionInfoResponse {
         session_id: "test-session-id".into(),
         cwd: "/tmp/test".into(),
+        session_name: None,
         session_file: None,
+        session_stats: None,
         cache_metrics: None,
         data: SessionInfoData {
             agent_name: None,
@@ -2194,20 +2196,46 @@ fn format_session_info_shows_conversation_id_when_present() {
     info.data.conversation_id = Some("conv_abc123".into());
     let text = format_session_info(&info, None, false, false, false);
     assert!(text.contains("Conversation ID: conv_abc123"));
-    assert!(text.contains("Session ID: test-session-id"));
+    assert!(text.contains("ID: test-session-id"));
 }
 #[test]
-fn format_session_info_shows_pi_style_file_and_message_counts() {
-    let mut info = make_session_info("pi-model", None, 1200, 128000);
+fn format_session_info_shows_pi_style_counts_tokens_cache_and_cost() {
+    use xai_grok_shell::session::{SessionTokenTotals, SessionUsageStats};
+    let mut info = make_session_info("pi-model", None, 1_200, 128_000);
+    info.session_name = Some("demo".into());
     info.session_file = Some("/tmp/project/session.jsonl".into());
-    info.data.context.message_count = 12;
-    info.data.context.turn_count = 5;
-    info.data.context.tool_call_count = 3;
-    let text = format_session_info(&info, Some("demo"), false, false, false);
-    assert!(text.contains("File: /tmp/project/session.jsonl"));
-    assert!(text.contains("Messages: 12 (turns 5)"));
-    assert!(text.contains("Tools: 3 calls"));
-    assert!(text.contains("Context: 1200 / 128000 tokens"));
+    info.session_stats = Some(SessionUsageStats {
+        total_messages: 61,
+        user_messages: 4,
+        assistant_messages: 32,
+        tool_calls: 25,
+        tool_results: 25,
+        tokens: SessionTokenTotals {
+            input: 1_000,
+            output: 300,
+            cache_read: 500,
+            cache_write: 500,
+            total: 2_300,
+        },
+        cost: 0.053,
+    });
+    let text = format_session_info(&info, Some("ignored fallback"), false, false, false);
+    assert!(text.contains("Session Info"), "{text}");
+    assert!(text.contains("Name: demo"), "{text}");
+    assert!(!text.contains("ignored fallback"), "{text}");
+    assert!(text.contains("File: /tmp/project/session.jsonl"), "{text}");
+    assert!(text.contains("ID: test-session-id"), "{text}");
+    assert!(text.contains("Messages\n  Total: 61"), "{text}");
+    assert!(text.contains("User: 4"), "{text}");
+    assert!(text.contains("Assistant: 32"), "{text}");
+    assert!(text.contains("Tools: 25 calls, 25 results"), "{text}");
+    assert!(text.contains("Tokens\n  Input: 2,000"), "{text}");
+    assert!(text.contains("Cached: 500 (25.0%)"), "{text}");
+    assert!(text.contains("Uncached: 1,500 (500 written to cache)"), "{text}");
+    assert!(text.contains("Output: 300"), "{text}");
+    assert!(text.contains("Total: 2,300"), "{text}");
+    assert!(text.contains("Cost\n  Total: $0.053"), "{text}");
+    assert!(text.contains("Context: 1,200 / 128,000 tokens"), "{text}");
 }
 #[test]
 fn format_session_info_shows_resolved_when_enabled_and_different() {

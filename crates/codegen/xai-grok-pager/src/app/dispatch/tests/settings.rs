@@ -1445,6 +1445,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "pi_herdr" => {
             let _ = dispatch(Action::SetPiHerdr(false), app);
         }
+        "pi_subagents" => {
+            let _ = dispatch(Action::SetPiSubagents(false), app);
+        }
         other => {
             panic!(
                 "move_setting_away_from_default: no arm for `{other}`. \
@@ -1453,6 +1456,26 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
     }
 }
+#[test]
+fn set_pi_subagents_persists_restart_required_toggle() {
+    let mut app = test_app_with_agent();
+    app.current_ui.pi_subagents = true;
+
+    let effects = dispatch(Action::SetPiSubagents(false), &mut app);
+    assert!(!app.current_ui.pi_subagents);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistSetting {
+            key: "pi_subagents",
+            value: crate::settings::SettingValue::Bool(false),
+            rollback_value: crate::settings::SettingValue::Bool(true),
+        }]
+    ));
+    let toast = read_toast(&app);
+    assert!(toast.contains("Pi subagents: off"));
+    assert!(toast.contains("restart grok-pi to apply"));
+}
+
 #[test]
 fn set_compact_mode_toast_format() {
     let mut app = test_app_with_agent();

@@ -258,6 +258,8 @@ mod notification_list_tests {
 pub enum ArgPickerSelection {
     /// Execute the owning slash command with the selected argument.
     RunCommand,
+    /// Toggle rows in the current session's Pi scoped-model set in place.
+    ToggleScopedModel,
     /// Persist into a settings model slot (recap/btw chain).
     SetModelSlot(&'static str),
 }

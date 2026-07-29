@@ -46,12 +46,30 @@ impl EffortTokenError {
     }
 }
 
+/// One entry in the current session's Pi-style model scope.
+///
+/// Scope order defines Ctrl/action cycling order. An optional effort mirrors
+/// Pi's `provider/model:effort` pattern and is applied when that row is selected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopedModel {
+    pub model_id: acp::ModelId,
+    pub effort: Option<ReasoningEffort>,
+}
+
+impl ScopedModel {
+    pub fn new(model_id: acp::ModelId, effort: Option<ReasoningEffort>) -> Self {
+        Self { model_id, effort }
+    }
+}
+
 /// Per-agent model state.
 #[derive(Debug, Clone, Default)]
 pub struct ModelState {
     pub available: IndexMap<acp::ModelId, acp::ModelInfo>,
     pub current: Option<acp::ModelId>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Session-only Pi scoped-model list. Empty means every available model.
+    scoped_models: Vec<ScopedModel>,
     /// External override for the context window size (tokens).
     /// When set, `get_context_window()` returns this instead of
     /// reading from the current model's metadata. Used for subagent
@@ -144,6 +162,8 @@ impl ModelState {
     ) {
         let previous_current_model = self.current.clone();
         self.available = new_available;
+        self.scoped_models
+            .retain(|entry| self.available.contains_key(&entry.model_id));
         if let Some(ref id) = self.current {
             if !self.available.contains_key(id) {
                 self.current = fallback_current;
@@ -161,6 +181,69 @@ impl ModelState {
                 .and_then(|id| self.available.get(id))
                 .and_then(|info| parse_reasoning_effort_meta(info.meta.as_ref()));
         }
+    }
+
+    /// Replace the session-only scope, preserving first occurrence order and
+    /// ignoring catalog ids that are unavailable in this session.
+    pub fn set_scoped_models(&mut self, entries: Vec<ScopedModel>) {
+        let mut seen = std::collections::HashSet::new();
+        self.scoped_models = entries.into_iter()
+            .filter(|entry| self.available.contains_key(&entry.model_id))
+            .filter(|entry| seen.insert(entry.model_id.clone()))
+            .collect();
+    }
+
+    /// Clear the scope. Pi defines an empty scope as "all available models".
+    pub fn clear_scoped_models(&mut self) {
+        self.scoped_models.clear();
+    }
+
+    pub fn scoped_models(&self) -> &[ScopedModel] {
+        &self.scoped_models
+    }
+
+    pub fn has_scoped_models(&self) -> bool {
+        !self.scoped_models.is_empty()
+    }
+
+    pub fn is_model_scoped(&self, model_id: &acp::ModelId) -> bool {
+        self.scoped_models
+            .iter()
+            .any(|entry| &entry.model_id == model_id)
+    }
+
+    /// Toggle one catalog model in the session scope. An empty scope means all
+    /// models until the first row is selected, matching Pi's scoped selector.
+    pub fn toggle_scoped_model(&mut self, model_id: acp::ModelId) {
+        if let Some(index) = self
+            .scoped_models
+            .iter()
+            .position(|entry| entry.model_id == model_id)
+        {
+            self.scoped_models.remove(index);
+        } else if self.available.contains_key(&model_id) {
+            self.scoped_models.push(ScopedModel::new(model_id, None));
+        }
+    }
+
+    /// Next model and optional per-scope effort. Empty scope cycles the full
+    /// catalog; a current model outside a non-empty scope jumps to its first row.
+    pub fn next_model_selection(&self) -> Option<(acp::ModelId, Option<ReasoningEffort>)> {
+        if self.scoped_models.is_empty() {
+            return self.next_model().map(|model_id| (model_id, None));
+        }
+        let next_index = self
+            .current
+            .as_ref()
+            .and_then(|current| {
+                self.scoped_models
+                    .iter()
+                    .position(|entry| &entry.model_id == current)
+            })
+            .map_or(0, |index| (index + 1) % self.scoped_models.len());
+        self.scoped_models
+            .get(next_index)
+            .map(|entry| (entry.model_id.clone(), entry.effort.clone()))
     }
 
     /// Set the current model and resolve reasoning effort from catalog meta.
@@ -411,6 +494,7 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                     available: models,
                     current: current_model,
                     reasoning_effort,
+                    scoped_models: Vec::new(),
                     context_window_override: None,
                 }
             })
@@ -437,6 +521,78 @@ mod tests {
         );
         state.current = Some(id_a);
         state
+    }
+
+    #[test]
+    fn scoped_cycle_uses_scope_order_and_starts_first_when_current_is_outside() {
+        let mut state = sample_models();
+        let id_a = acp::ModelId::new(Arc::from("model-a"));
+        let id_b = acp::ModelId::new(Arc::from("model-b"));
+        state.current = Some(acp::ModelId::new(Arc::from("outside")));
+        state.set_scoped_models(vec![
+            ScopedModel::new(id_b.clone(), None),
+            ScopedModel::new(id_a.clone(), None),
+        ]);
+        assert_eq!(state.next_model_selection(), Some((id_b.clone(), None)));
+        state.current = Some(id_b);
+        assert_eq!(state.next_model_selection(), Some((id_a, None)));
+    }
+
+    #[test]
+    fn scoped_toggle_adds_and_removes_catalog_model() {
+        let mut state = sample_models();
+        let id_a = acp::ModelId::new(Arc::from("model-a"));
+        state.toggle_scoped_model(id_a.clone());
+        assert!(state.is_model_scoped(&id_a));
+        state.toggle_scoped_model(id_a.clone());
+        assert!(!state.is_model_scoped(&id_a));
+        state.toggle_scoped_model(acp::ModelId::new(Arc::from("missing")));
+        assert!(!state.has_scoped_models());
+    }
+
+    #[test]
+    fn scoped_cycle_carries_per_model_effort() {
+        let mut state = sample_models();
+        let id_b = acp::ModelId::new(Arc::from("model-b"));
+        let effort: ReasoningEffort = "high".parse().unwrap();
+        state.set_scoped_models(vec![ScopedModel::new(id_b.clone(), Some(effort.clone()))]);
+        assert_eq!(state.next_model_selection(), Some((id_b, Some(effort))));
+    }
+
+    #[test]
+    fn scoped_models_dedupe_unknown_ids_and_clear_to_all() {
+        let mut state = sample_models();
+        let id_a = acp::ModelId::new(Arc::from("model-a"));
+        state.set_scoped_models(vec![
+            ScopedModel::new(id_a.clone(), None),
+            ScopedModel::new(acp::ModelId::new(Arc::from("missing")), None),
+            ScopedModel::new(id_a.clone(), Some("low".parse().unwrap())),
+        ]);
+        assert_eq!(state.scoped_models().len(), 1);
+        assert_eq!(state.scoped_models()[0].model_id, id_a.clone());
+        state.clear_scoped_models();
+        assert!(!state.has_scoped_models());
+        state.current = None;
+        assert_eq!(state.next_model_selection(), Some((id_a, None)));
+    }
+
+    #[test]
+    fn catalog_update_prunes_missing_scoped_models() {
+        let mut state = sample_models();
+        let id_a = acp::ModelId::new(Arc::from("model-a"));
+        let id_b = acp::ModelId::new(Arc::from("model-b"));
+        state.set_scoped_models(vec![
+            ScopedModel::new(id_a, None),
+            ScopedModel::new(id_b.clone(), None),
+        ]);
+        let mut refreshed = IndexMap::new();
+        refreshed.insert(
+            id_b.clone(),
+            acp::ModelInfo::new(id_b.clone(), "Model B".to_string()),
+        );
+        state.update_catalog(refreshed, Some(id_b.clone()));
+        assert_eq!(state.scoped_models().len(), 1);
+        assert_eq!(state.scoped_models()[0].model_id, id_b);
     }
 
     #[test]

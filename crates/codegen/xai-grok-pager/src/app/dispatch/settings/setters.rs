@@ -2226,6 +2226,24 @@ pub(in crate::app::dispatch) fn set_pi_herdr(app: &mut AppView, enabled: bool) -
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_subagents(app: &mut AppView, enabled: bool) -> Vec<Effect> {
+    let previous = app.current_ui.pi_subagents;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_subagents = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} Pi subagents: {value} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_subagents",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_pi_workflows(app: &mut AppView, enabled: bool) -> Vec<Effect> {
     let previous = app.current_ui.pi_workflows;
     if previous == enabled {

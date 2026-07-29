@@ -5,7 +5,7 @@
 #   1. $GROK_HOME/native-feature-conflicts.toml          (~/.grok-pi/... for grok-pi)
 #   2. $GROK_PROJECT_DIR/native-feature-conflicts.toml   (<repo>/.grok-pi/...)
 #
-# feature key = F2 `[ui].*` key (or synthetic "pi_subagents" for always-on bridge).
+# feature key = F2 `[ui].*` key.
 # packages    = npm: sources blocked only while that native feature is enabled.
 # reason      = short note for diagnostics / F2 description.
 
@@ -25,7 +25,7 @@ packages = [
   "npm:pi-goal-x",
 ]
 
-# Injected whenever bridge extensions load (no F2 off switch today).
+# Default-on F2 feature; packages are admitted again when the switch is off.
 [features.pi_subagents]
 reason = "same role as native spawn_subagent"
 packages = [

@@ -11,10 +11,10 @@ use crate::{
     goal_host::{GoalControl, GoalHost},
     loop_host,
     model::{
-        PiCommand, PiHistoryItem, PiModel, PiReplayEntry, PiSessionSwitch, PiSessionTree, PiState,
-        PiToolContent, extract_delta, json_text, parse_commands, parse_messages, parse_models,
-        parse_session_switch, parse_session_tree, parse_state, scan_local_sessions,
-        scan_local_sessions_for_cwd, string, tree_entry_editor_text,
+        PiCommand, PiEntryReplayCache, PiHistoryItem, PiModel, PiReplayEntry, PiSessionSwitch,
+        PiSessionTree, PiState, PiToolContent, extract_delta, json_text, parse_commands,
+        parse_messages, parse_models, parse_session_switch, parse_session_tree, parse_state,
+        scan_local_sessions, scan_local_sessions_for_cwd, string, tree_entry_editor_text,
     },
     pi_rpc::PiRpc,
     pi_workflow_backend::{
@@ -195,6 +195,9 @@ struct AdapterState {
     bootstrap: PiBootstrap,
     acp_session_id: String,
     model_map: HashMap<String, PiModel>,
+    /// Flat append-log cache for active-branch replay. Pi's `get_entries.since`
+    /// updates this incrementally when navigating within the same session.
+    entry_replay_cache: PiEntryReplayCache,
     active_prompts: Vec<ActivePrompt>,
     queued_prompt_completions: HashMap<String, oneshot::Sender<PromptCompletion>>,
     next_prompt_id: u64,
@@ -307,6 +310,7 @@ impl PiAgent {
                 bootstrap,
                 acp_session_id,
                 model_map,
+                entry_replay_cache: PiEntryReplayCache::default(),
                 active_prompts: Vec::new(),
                 queued_prompt_completions: HashMap::new(),
                 next_prompt_id: 1,
@@ -506,6 +510,53 @@ impl PiAgent {
         })
         .await
         .map_err(|error| anyhow!("Pi get_tree worker failed: {error}"))
+    }
+
+    /// Refresh the retained flat entry log. Once a session has been loaded,
+    /// later branch switches ask Pi only for append-log entries after the last
+    /// known id. Older hosts that reject `since` are retried with a full request;
+    /// duplicate ids are ignored by the cache if they return a full payload.
+    async fn refresh_entry_replay_cache(&self) -> Result<()> {
+        let (session_id, since) = {
+            let state = self.state.borrow();
+            let since = state
+                .entry_replay_cache
+                .matches_session(&state.acp_session_id)
+                .then(|| state.entry_replay_cache.since_id().map(str::to_owned))
+                .flatten();
+            (state.acp_session_id.clone(), since)
+        };
+        let mut incremental = since.is_some();
+        let request = match since.as_deref() {
+            Some(since) => json!({ "type": "get_entries", "since": since }),
+            None => json!({ "type": "get_entries" }),
+        };
+        let data = match self.rpc.request(request).await {
+            Ok(data) => data,
+            Err(error) if incremental => {
+                tracing::debug!(%error, "Pi get_entries(since) failed; retrying full history");
+                incremental = false;
+                self.rpc.request(json!({ "type": "get_entries" })).await?
+            }
+            Err(error) => return Err(error),
+        };
+        let mut state = self.state.borrow_mut();
+        if state.acp_session_id != session_id {
+            bail!("Pi session changed while refreshing branch history");
+        }
+        if incremental && state.entry_replay_cache.matches_session(&session_id) {
+            state.entry_replay_cache.append(&data);
+        } else {
+            state.entry_replay_cache.reset(&session_id, &data);
+        }
+        tracing::debug!(
+            session_id,
+            incremental,
+            entries = state.entry_replay_cache.entry_count(),
+            leaf_id = ?state.entry_replay_cache.leaf_id(),
+            "refreshed Pi active-branch replay cache"
+        );
+        Ok(())
     }
 
     /// Run a read-only bridge command without entering `active_prompts`.
@@ -981,6 +1032,16 @@ impl PiAgent {
         if entry_id.is_empty() {
             return Err(acp::Error::invalid_params().data("tree entry id is empty"));
         }
+        let busy = {
+            let state = self.state.borrow();
+            state.agent_running
+                || state.bootstrap.state.is_streaming
+                || !state.active_prompts.is_empty()
+        };
+        if busy {
+            return Err(acp::Error::invalid_params()
+                .data("wait for the current Pi response before navigating the session tree"));
+        }
         let mut args = entry_id.to_string();
         if summarize {
             args.push_str(" --summarize");
@@ -993,16 +1054,22 @@ impl PiAgent {
         self.run_bridge_command(NAVIGATE_TREE_COMMAND, &args)
             .await?;
 
-        // Leaf moved inside the same session file. Refresh adapter state only;
-        // the pager issues session/load to clear scrollback and re-replay.
-        let bootstrap = self.refresh().await.map_err(acp_internal)?;
-        let (tree, editor_text) = self
-            .fetch_session_tree_with_editor_text(Some(entry_id))
+        // The leaf moved inside the same session file. Reuse Pi's flat append
+        // log instead of reloading models, commands, state, and the full nested
+        // tree. The following Pager session/load consumes this fresh snapshot.
+        self.refresh_entry_replay_cache()
             .await
             .map_err(acp_internal)?;
+        let (session_id, leaf_id, editor_text) = {
+            let state = self.state.borrow();
+            let session_id = state.acp_session_id.clone();
+            let leaf_id = state.entry_replay_cache.leaf_id().map(str::to_owned);
+            let editor_text = state.entry_replay_cache.editor_text(entry_id);
+            (session_id, leaf_id, editor_text)
+        };
         Ok(json!({
-            "sessionId": bootstrap.state.session_id,
-            "leafId": tree.leaf_id,
+            "sessionId": session_id,
+            "leafId": leaf_id,
             "editorText": editor_text,
             "cancelled": false,
         }))
@@ -1198,6 +1265,7 @@ impl PiAgent {
         // Drop cached context usage so publish_bootstrap cannot re-stamp the
         // previous session's totalTokens onto a fresh AgentView (context bar).
         if session_changed {
+            state.entry_replay_cache = PiEntryReplayCache::default();
             state.last_context_tokens = None;
             state.turn_start_ms = None;
             state.stream_start_ms = None;
@@ -1607,13 +1675,14 @@ impl PiAgent {
             .request(json!({ "type": "get_entries" }))
             .await
             .ok();
-        let (session_id, model, cached_tokens, session_file) = {
+        let (session_id, model, cached_tokens, session_file, session_name) = {
             let state = self.state.borrow();
             (
                 state.acp_session_id.clone(),
                 state.bootstrap.state.model.clone(),
                 state.last_context_tokens,
                 state.bootstrap.state.session_file.clone(),
+                state.bootstrap.state.session_name.clone(),
             )
         };
         let cwd = std::env::current_dir()
@@ -1628,6 +1697,7 @@ impl PiAgent {
             cached_tokens,
             breakdown.as_ref(),
             session_file.as_deref(),
+            session_name.as_deref(),
         );
         if let Some(entries) = entries_for_cache.as_ref() {
             let metrics = crate::cache_metrics::collect_cache_session_metrics(entries);
@@ -2049,8 +2119,26 @@ impl PiAgent {
     }
 
     async fn replay_history(&self) -> Result<()> {
-        let data = self.rpc.request(json!({ "type": "get_messages" })).await?;
-        for entry in parse_messages(&data) {
+        // `get_messages` exposes Pi's current LLM context, which is truncated at
+        // compaction. Keep the append-log cache hot so resume renders the full
+        // active branch while branch switches transfer only entries added since
+        // the previous snapshot. A second post-navigation poll is intentionally
+        // retained: it is an empty delta in the common case and prevents a stale
+        // cache if Pager delays or retries session/load.
+        let refreshed = if let Err(error) = self.refresh_entry_replay_cache().await {
+            tracing::warn!(%error, "Pi get_entries unavailable; falling back to compacted messages");
+            false
+        } else {
+            true
+        };
+        let history = if refreshed {
+            let state = self.state.borrow();
+            state.entry_replay_cache.replay_entries()
+        } else {
+            let data = self.rpc.request(json!({ "type": "get_messages" })).await?;
+            parse_messages(&data)
+        };
+        for entry in history {
             self.replay_history_item(entry).await;
         }
         Ok(())

@@ -151,8 +151,8 @@ pub struct PeekPanelState {
     /// `auto` flag (mutually exclusive with `always-approve` — yolo wins).
     pub auto: bool,
     /// Whether the peeked agent is in plan mode. Shown as a `plan` flag on
-    /// the bottom border (so the Shift+Tab mode cycle's three states are
-    /// all visible). Set live by the render-time refresh.
+    /// the bottom border so the mode shortcut's state is visible. Set live by
+    /// the render-time refresh.
     pub plan_mode: bool,
 }
 

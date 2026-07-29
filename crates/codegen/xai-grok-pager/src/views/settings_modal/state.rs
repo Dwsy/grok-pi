@@ -917,6 +917,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "pi_tree_file_rollback" => Some(Action::SetPiTreeFileRollback(new)),
         "pi_tree_skip_summary_prompt" => Some(Action::SetPiTreeSkipSummaryPrompt(new)),
         "pi_herdr" => Some(Action::SetPiHerdr(new)),
+        "pi_subagents" => Some(Action::SetPiSubagents(new)),
         "pi_workflows" => Some(Action::SetPiWorkflows(new)),
         "pi_goal" => Some(Action::SetPiGoal(new)),
         "pi_loop" => Some(Action::SetPiLoop(new)),

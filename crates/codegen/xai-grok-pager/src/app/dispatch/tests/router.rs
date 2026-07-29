@@ -953,6 +953,81 @@ fn announcements_show_clears_hidden_promo_ids() {
     );
 }
 #[test]
+fn scoped_models_drive_next_model_order_and_effort() {
+    use crate::acp::model_state::ScopedModel;
+    use xai_grok_shell::sampling::types::ReasoningEffort;
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_a = acp::ModelId::new(std::sync::Arc::from("model-a"));
+    let model_b = acp::ModelId::new(std::sync::Arc::from("model-b"));
+    {
+        let models = &mut app.agents.get_mut(&id).unwrap().session.models;
+        models.available.insert(
+            model_a.clone(),
+            acp::ModelInfo::new(model_a.clone(), "Model A".to_string()),
+        );
+        models.available.insert(
+            model_b.clone(),
+            acp::ModelInfo::new(model_b.clone(), "Model B".to_string()),
+        );
+        models.current = Some(model_a.clone());
+    }
+    let effort: ReasoningEffort = "high".parse().unwrap();
+    let effects = dispatch(
+        Action::SetScopedModels(vec![
+            ScopedModel::new(model_b.clone(), Some(effort.clone())),
+            ScopedModel::new(model_a, None),
+        ]),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert_eq!(app.agents[&id].session.models.scoped_models().len(), 2);
+
+    let effects = dispatch(Action::NextModel, &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::SwitchModel {
+            model_id,
+            effort: Some(actual_effort),
+            ..
+        }] if model_id == &model_b && actual_effort == &effort
+    ));
+    assert!(app.agents[&id].session.model_switch_pending);
+}
+
+#[test]
+fn clearing_scoped_models_restores_all_model_cycle() {
+    use crate::acp::model_state::ScopedModel;
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_a = acp::ModelId::new(std::sync::Arc::from("model-a"));
+    let model_b = acp::ModelId::new(std::sync::Arc::from("model-b"));
+    {
+        let models = &mut app.agents.get_mut(&id).unwrap().session.models;
+        models.available.insert(
+            model_a.clone(),
+            acp::ModelInfo::new(model_a.clone(), "Model A".to_string()),
+        );
+        models.available.insert(
+            model_b.clone(),
+            acp::ModelInfo::new(model_b.clone(), "Model B".to_string()),
+        );
+        models.current = Some(model_a.clone());
+        models.set_scoped_models(vec![ScopedModel::new(model_b.clone(), None)]);
+    }
+    let effects = dispatch(Action::SetScopedModels(Vec::new()), &mut app);
+    assert!(effects.is_empty());
+    assert!(!app.agents[&id].session.models.has_scoped_models());
+    let effects = dispatch(Action::NextModel, &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::SwitchModel { model_id, effort: None, .. }] if model_id == &model_b
+    ));
+}
+
+#[test]
 fn switch_model_dispatch_produces_effect_and_sets_pending() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);

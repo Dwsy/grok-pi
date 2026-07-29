@@ -741,6 +741,30 @@ mod tests {
     }
 
     #[test]
+    fn pi_subagent_packages_are_blocked_only_while_native_subagents_are_on() {
+        let catalog = make_catalog(vec![make_resource(
+            "/home/user/.pi/agent/npm/node_modules/pi-subagents/index.ts",
+            "npm:pi-subagents",
+            PiResourceType::Extensions,
+            true,
+        )]);
+        assert!(
+            ResourcePolicy::default()
+                .evaluate(&catalog)
+                .blocked
+                .is_empty()
+        );
+
+        let on = ResourcePolicy {
+            enabled_native_features: vec!["pi_subagents".to_owned()],
+            ..Default::default()
+        };
+        let plan = on.evaluate(&catalog);
+        assert_eq!(plan.blocked.len(), 1);
+        assert!(plan.blocked[0].reason.contains("pi-subagents"));
+    }
+
+    #[test]
     fn user_allow_overrides_default_block() {
         let catalog = make_catalog(vec![make_resource(
             "/home/user/.pi/agent/npm/node_modules/pi-tool-display/index.ts",

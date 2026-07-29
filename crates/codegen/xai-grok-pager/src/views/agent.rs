@@ -1022,9 +1022,10 @@ pub fn build_hints(
                         .pinned(),
                 );
             }
-            hints.push(HintItem::new(crate::key!(BackTab), "mode"));
+            hints.push(HintItem::new(crate::key!(BackTab), "thinking"));
             for def in registry.hints(&[When::PromptFocused, When::AgentScreen, When::Always]) {
                 if def.id == ActionId::SendPrompt
+                    || def.id == ActionId::CycleThinkingLevel
                     || def.id == ActionId::CommandPalette
                     || def.id == ActionId::Quit
                 {

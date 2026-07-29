@@ -426,22 +426,26 @@ pub fn tree_entry_editor_text(value: &Value, entry_id: &str) -> Option<String> {
     while let Some(node) = stack.pop() {
         let entry = node.get("entry").unwrap_or(node);
         if string(entry, &["id"]) == Some(entry_id) {
-            return match string(entry, &["type"]) {
-                Some("message") => {
-                    let message = entry.get("message").unwrap_or(entry);
-                    (string(message, &["role"]) == Some("user"))
-                        .then(|| full_text_content(message.get("content")))
-                        .flatten()
-                }
-                Some("custom_message") => full_text_content(entry.get("content")),
-                _ => None,
-            };
+            return session_entry_editor_text(entry);
         }
         if let Some(children) = node.get("children").and_then(Value::as_array) {
             stack.extend(children.iter().rev());
         }
     }
     None
+}
+
+fn session_entry_editor_text(entry: &Value) -> Option<String> {
+    match string(entry, &["type"]) {
+        Some("message") => {
+            let message = entry.get("message").unwrap_or(entry);
+            (string(message, &["role"]) == Some("user"))
+                .then(|| full_text_content(message.get("content")))
+                .flatten()
+        }
+        Some("custom_message") => full_text_content(entry.get("content")),
+        _ => None,
+    }
 }
 
 fn full_text_content(content: Option<&Value>) -> Option<String> {
@@ -869,6 +873,118 @@ pub enum PiToolContent {
     Image { data: String, mime_type: String },
 }
 
+/// Incremental cache for Pi's append-only `get_entries` RPC.
+///
+/// Pi returns all physical session entries plus the active `leafId`. Retaining
+/// the flat append log lets branch switches request only entries after the last
+/// known id (`get_entries.since`) and rebuild the selected parent chain in
+/// linear time, matching upstream's push-then-reverse path traversal.
+#[derive(Debug, Clone, Default)]
+pub struct PiEntryReplayCache {
+    session_id: String,
+    entries: Vec<Value>,
+    by_id: HashMap<String, usize>,
+    last_entry_id: Option<String>,
+    leaf_id: Option<String>,
+    leaf_known: bool,
+}
+
+impl PiEntryReplayCache {
+    pub fn matches_session(&self, session_id: &str) -> bool {
+        self.session_id == session_id
+    }
+
+    pub fn since_id(&self) -> Option<&str> {
+        self.last_entry_id.as_deref()
+    }
+
+    pub fn leaf_id(&self) -> Option<&str> {
+        self.leaf_id.as_deref()
+    }
+
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn reset(&mut self, session_id: &str, value: &Value) {
+        self.session_id.clear();
+        self.session_id.push_str(session_id);
+        self.entries.clear();
+        self.by_id.clear();
+        self.last_entry_id = None;
+        self.leaf_id = None;
+        self.leaf_known = false;
+        self.apply_payload(value, false);
+    }
+
+    pub fn append(&mut self, value: &Value) {
+        self.apply_payload(value, true);
+    }
+
+    pub fn replay_entries(&self) -> Vec<PiReplayEntry> {
+        let selected = self.active_branch_entries();
+        parse_replay_values(selected.into_iter().filter(|entry| replayable_entry(entry)))
+    }
+
+    pub fn editor_text(&self, entry_id: &str) -> Option<String> {
+        self.by_id
+            .get(entry_id)
+            .and_then(|index| self.entries.get(*index))
+            .and_then(session_entry_editor_text)
+    }
+
+    fn apply_payload(&mut self, value: &Value, incremental: bool) {
+        if let Some(leaf) = value.get("leafId").or_else(|| value.get("leaf_id")) {
+            self.leaf_known = true;
+            self.leaf_id = leaf.as_str().map(str::to_owned);
+        }
+        let source = value.get("entries").unwrap_or(value);
+        let Some(entries) = source.as_array() else {
+            return;
+        };
+        for entry in entries {
+            let id = string(entry, &["id"]).map(str::to_owned);
+            if incremental && id.as_deref().is_some_and(|id| self.by_id.contains_key(id)) {
+                continue;
+            }
+            let index = self.entries.len();
+            self.entries.push(entry.clone());
+            if let Some(id) = id {
+                self.last_entry_id = Some(id.clone());
+                self.by_id.insert(id, index);
+            }
+        }
+    }
+
+    fn active_branch_entries(&self) -> Vec<&Value> {
+        if !self.leaf_known {
+            return self.entries.iter().collect();
+        }
+        let Some(leaf_id) = self.leaf_id.as_deref() else {
+            return Vec::new();
+        };
+        let mut path = Vec::new();
+        let mut cursor = Some(leaf_id);
+        let mut seen = HashSet::new();
+        while let Some(id) = cursor {
+            if !seen.insert(id) {
+                return Vec::new();
+            }
+            let Some(index) = self.by_id.get(id).copied() else {
+                return Vec::new();
+            };
+            let entry = &self.entries[index];
+            path.push(entry);
+            cursor = entry
+                .get("parentId")
+                .or_else(|| entry.get("parent_id"))
+                .and_then(Value::as_str);
+        }
+        path.reverse();
+        path
+    }
+}
+
 pub fn parse_state(value: &Value) -> PiState {
     PiState {
         session_id: string(value, &["sessionId", "session_id"])
@@ -1125,8 +1241,29 @@ pub fn parse_messages(value: &Value) -> Vec<PiReplayEntry> {
         .get("messages")
         .or_else(|| value.get("history"))
         .unwrap_or(value);
+    parse_replay_values(source.as_array().into_iter().flatten())
+}
+
+/// Parse Pi's persisted active branch rather than only the compacted runtime
+/// context. The RPC payload is an append log plus `leafId`; sibling branches are
+/// excluded while messages before compaction and visible summaries are kept.
+pub fn parse_entries(value: &Value) -> Vec<PiReplayEntry> {
+    let mut cache = PiEntryReplayCache::default();
+    cache.reset("", value);
+    cache.replay_entries()
+}
+
+fn replayable_entry(entry: &Value) -> bool {
+    match string(entry, &["type"]).unwrap_or_default() {
+        "message" | "compaction" | "branch_summary" => true,
+        "custom_message" => entry.get("display").and_then(Value::as_bool) != Some(false),
+        _ => false,
+    }
+}
+
+fn parse_replay_values<'a>(values: impl IntoIterator<Item = &'a Value>) -> Vec<PiReplayEntry> {
     let mut history = Vec::new();
-    for (message_index, message) in source.as_array().into_iter().flatten().enumerate() {
+    for (message_index, message) in values.into_iter().enumerate() {
         let timestamp_ms = extract_message_timestamp(message);
         let mut items = Vec::new();
         parse_message(message, message_index, &mut items);
@@ -1175,7 +1312,7 @@ fn parse_message(value: &Value, message_index: usize, output: &mut Vec<PiHistory
         "assistant" => parse_assistant(value, message_index, output),
         "toolresult" | "tool_result" => parse_tool_result(value, output),
         "bashexecution" | "bash_execution" => parse_bash_execution(value, message_index, output),
-        "custom" => {
+        "custom" | "custom_message" => {
             if value.get("display").and_then(Value::as_bool) != Some(false) {
                 parse_agent_content(value.get("content").unwrap_or(value), output);
             }
@@ -1187,7 +1324,7 @@ fn parse_message(value: &Value, message_index: usize, output: &mut Vec<PiHistory
                 )));
             }
         }
-        "compactionsummary" | "compaction_summary" => {
+        "compaction" | "compactionsummary" | "compaction_summary" => {
             if let Some(summary) = string(value, &["summary", "text"]) {
                 output.push(PiHistoryItem::AgentText(format!(
                     "**Compaction summary**\n\n{summary}"
@@ -1613,6 +1750,191 @@ mod tests {
         assert!(matches!(items[2].item, PiHistoryItem::ToolStart { ref id, .. } if id == "tool-1"));
         assert!(matches!(items[3].item, PiHistoryItem::AgentText(ref text) if text == "done"));
         assert!(matches!(items[4].item, PiHistoryItem::ToolEnd { ref id, .. } if id == "tool-1"));
+    }
+
+    #[test]
+    fn entries_replay_preserves_messages_across_compaction() {
+        let items = parse_entries(&json!({
+            "entries": [
+                {
+                    "type": "message",
+                    "timestamp": "2026-07-01T00:00:01Z",
+                    "message": { "role": "user", "content": "before compaction" }
+                },
+                {
+                    "type": "compaction",
+                    "timestamp": "2026-07-01T00:00:02Z",
+                    "summary": "older context summary"
+                },
+                {
+                    "type": "message",
+                    "timestamp": "2026-07-01T00:00:03Z",
+                    "message": { "role": "assistant", "content": "after compaction" }
+                },
+                {
+                    "type": "custom_message",
+                    "display": false,
+                    "content": "hidden extension bookkeeping"
+                }
+            ]
+        }));
+
+        assert_eq!(items.len(), 3);
+        assert!(matches!(
+            items[0].item,
+            PiHistoryItem::UserText(ref text) if text == "before compaction"
+        ));
+        assert!(matches!(
+            items[1].item,
+            PiHistoryItem::AgentText(ref text)
+                if text == "**Compaction summary**\n\nolder context summary"
+        ));
+        assert!(matches!(
+            items[2].item,
+            PiHistoryItem::AgentText(ref text) if text == "after compaction"
+        ));
+        assert_eq!(items[0].timestamp_ms, Some(1_782_864_001_000));
+        assert_eq!(items[2].timestamp_ms, Some(1_782_864_003_000));
+    }
+
+    #[test]
+    fn entries_replay_selects_only_the_active_parent_chain() {
+        let items = parse_entries(&json!({
+            "entries": [
+                {
+                    "type": "message",
+                    "id": "root",
+                    "parentId": null,
+                    "message": { "role": "user", "content": "root" }
+                },
+                {
+                    "type": "message",
+                    "id": "main",
+                    "parentId": "root",
+                    "message": { "role": "assistant", "content": "main sibling" }
+                },
+                {
+                    "type": "message",
+                    "id": "branch-user",
+                    "parentId": "root",
+                    "message": { "role": "user", "content": "branch" }
+                },
+                {
+                    "type": "model_change",
+                    "id": "branch-model",
+                    "parentId": "branch-user",
+                    "provider": "openai",
+                    "modelId": "gpt-test"
+                },
+                {
+                    "type": "message",
+                    "id": "branch-leaf",
+                    "parentId": "branch-model",
+                    "message": { "role": "assistant", "content": "selected leaf" }
+                }
+            ],
+            "leafId": "branch-leaf"
+        }));
+
+        assert_eq!(items.len(), 3);
+        assert!(matches!(
+            items[0].item,
+            PiHistoryItem::UserText(ref text) if text == "root"
+        ));
+        assert!(matches!(
+            items[1].item,
+            PiHistoryItem::UserText(ref text) if text == "branch"
+        ));
+        assert!(matches!(
+            items[2].item,
+            PiHistoryItem::AgentText(ref text) if text == "selected leaf"
+        ));
+    }
+
+    #[test]
+    fn entry_replay_cache_applies_deltas_and_leaf_only_switches() {
+        let mut cache = PiEntryReplayCache::default();
+        cache.reset(
+            "session-1",
+            &json!({
+                "entries": [
+                    {
+                        "type": "message",
+                        "id": "root",
+                        "parentId": null,
+                        "message": { "role": "user", "content": "root editor" }
+                    },
+                    {
+                        "type": "message",
+                        "id": "main",
+                        "parentId": "root",
+                        "message": { "role": "assistant", "content": "main" }
+                    }
+                ],
+                "leafId": "main"
+            }),
+        );
+        assert!(cache.matches_session("session-1"));
+        assert_eq!(cache.since_id(), Some("main"));
+        assert_eq!(cache.editor_text("root").as_deref(), Some("root editor"));
+
+        cache.append(&json!({
+            "entries": [
+                {
+                    "type": "message",
+                    "id": "main",
+                    "parentId": "root",
+                    "message": { "role": "assistant", "content": "duplicate" }
+                },
+                {
+                    "type": "message",
+                    "id": "branch-user",
+                    "parentId": "root",
+                    "message": { "role": "user", "content": "branch" }
+                },
+                {
+                    "type": "message",
+                    "id": "branch-leaf",
+                    "parentId": "branch-user",
+                    "message": { "role": "assistant", "content": "branch leaf" }
+                }
+            ],
+            "leafId": "branch-leaf"
+        }));
+        assert_eq!(
+            cache.entry_count(),
+            4,
+            "duplicate ids must not grow the cache"
+        );
+        assert_eq!(cache.since_id(), Some("branch-leaf"));
+        let branch = cache.replay_entries();
+        assert_eq!(branch.len(), 3);
+        assert!(matches!(
+            branch[2].item,
+            PiHistoryItem::AgentText(ref text) if text == "branch leaf"
+        ));
+
+        cache.append(&json!({ "entries": [], "leafId": "main" }));
+        let main = cache.replay_entries();
+        assert_eq!(main.len(), 2);
+        assert!(matches!(
+            main[1].item,
+            PiHistoryItem::AgentText(ref text) if text == "main"
+        ));
+    }
+
+    #[test]
+    fn entry_replay_cache_respects_explicit_empty_leaf() {
+        let items = parse_entries(&json!({
+            "entries": [{
+                "type": "message",
+                "id": "orphan",
+                "parentId": null,
+                "message": { "role": "user", "content": "not active" }
+            }],
+            "leafId": null
+        }));
+        assert!(items.is_empty());
     }
 
     #[test]

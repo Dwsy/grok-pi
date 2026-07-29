@@ -3664,12 +3664,12 @@ fn render_footer(
             // Typed text dispatches a NEW agent (a section header is
             // never a reply target), so surface the same chips as the
             // `[+ New Agent]` button with a draft: send_key sends (stays
-            // on the dashboard), Ctrl+S sends + opens detail,
-            // Shift+Tab cycles the dispatch mode.
+            // on the dashboard), Ctrl+S sends + opens detail, and
+            // Ctrl+Shift+T cycles the dispatch mode.
             vec![
                 HintItem::new(send_key, "send"),
                 HintItem::new(send_open, "send+open"),
-                HintItem::new(key!(BackTab), "mode"),
+                HintItem::new(key!('T', CONTROL | SHIFT), "mode"),
             ]
         }
     } else if state.selected_idle_overflow {
@@ -3689,7 +3689,7 @@ fn render_footer(
             vec![
                 HintItem::new(send_key, "send"),
                 HintItem::new(send_open, "send+open"),
-                HintItem::new(key!(BackTab), "mode"),
+                HintItem::new(key!('T', CONTROL | SHIFT), "mode"),
             ]
         }
     } else if button_focused {
@@ -3701,7 +3701,7 @@ fn render_footer(
             h.push(HintItem::new(send_key, "send"));
             h.push(HintItem::new(send_open, "send+open"));
         }
-        h.push(HintItem::new(key!(BackTab), "mode"));
+        h.push(HintItem::new(key!('T', CONTROL | SHIFT), "mode"));
         h
     } else if row_selected {
         let mut h: Vec<HintItem> = vec![];
@@ -8638,8 +8638,8 @@ mod tests {
             "section + typed prompt footer must hint send / send+open, got: {content:?}",
         );
         assert!(
-            content.contains(":mode"),
-            "section + typed prompt footer must hint Shift+Tab:mode, got: {content:?}",
+            content.contains("Ctrl+Shift+T:mode"),
+            "section + typed prompt footer must hint Ctrl+Shift+T:mode, got: {content:?}",
         );
         assert!(
             !content.contains(":collapse") && !content.contains(":expand"),

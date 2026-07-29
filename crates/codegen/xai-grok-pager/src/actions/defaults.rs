@@ -766,7 +766,7 @@ pub(super) fn default_actions(
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Turns auto-approve (YOLO) on or off for this session.\nWhile on, the agent runs every tool call (edits, shell, deletes) with no per-action confirmation.\nSame state as the Shift+Tab cycle's Always-Approve; use with care.",
+                "Turns auto-approve (YOLO) on or off for this session.\nWhile on, the agent runs every tool call (edits, shell, deletes) with no per-action confirmation.\nThis is a permission policy, separate from Shift+Tab thinking-level cycling; use with care.",
             ),
         },
         ActionDef {
@@ -1005,18 +1005,15 @@ pub(super) fn default_actions(
             id: ActionId::DashboardCycleMode,
             label: "mode",
             description: "Cycle dispatch mode",
-            // All Shift+Tab encodings — see `input::key::shift_tab_keys()`.
-            // Registry `matches` is exact-modifier, so the SHIFT-bearing
-            // forms must be alts.
-            default_key: crate::input::key::shift_tab_keys()[0],
-            alt_keys: crate::input::key::shift_tab_keys()[1..].to_vec(),
+            default_key: key!('T', CONTROL | SHIFT),
+            alt_keys: vec![],
             category: Category::Dashboard,
             context: When::DashboardFocused,
             hint_priority: None,
-            hint_key_display: Some("Shift+Tab"),
+            hint_key_display: Some("Ctrl+Shift+T"),
             requires_confirmation: false,
             long_help: Some(
-                "Cycles the dispatch mode for agents you launch from the dashboard: Normal, Plan, then Always-Approve.\nPlan has new agents plan before changing files; Always-Approve runs their tools without prompting.\nMirrors the in-session Shift+Tab cycle, applied to new dispatches.",
+                "Cycles the dispatch mode for agents you launch from the dashboard.\nPi uses Normal and Plan; stock Grok may also expose permission modes.\nShift+Tab is reserved for thinking-level cycling.",
             ),
         },
         ActionDef {

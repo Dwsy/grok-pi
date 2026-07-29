@@ -845,6 +845,44 @@ impl AgentView {
                 InputOutcome::Changed
             }
             ArgPickerStep::Selected(item) => {
+                if matches!(selection, ArgPickerSelection::ToggleScopedModel) {
+                    if item.insert_text.eq_ignore_ascii_case("all") {
+                        self.session.models.clear_scoped_models();
+                    } else if let Some(model_id) =
+                        crate::slash::commands::model::resolve_model_for_arg_item(
+                            &self.session.models,
+                            &item,
+                        )
+                    {
+                        self.session.models.toggle_scoped_model(model_id);
+                    }
+                    if let Some(cmd) = self.prompt.slash_controller.registry().get(&command_clone) {
+                        let ctx = self.prompt.slash_controller.app_ctx(&self.session.models);
+                        if let Some(updated) = cmd.suggest_args(&ctx, "")
+                            && let Some(ActiveModal::ArgPicker {
+                                items,
+                                original_items,
+                                state,
+                                ..
+                            }) = self.active_modal.as_mut()
+                        {
+                            *original_items = updated;
+                            let query = state.query().to_lowercase();
+                            *items = original_items
+                                .iter()
+                                .filter(|candidate| {
+                                    query.is_empty()
+                                        || candidate.match_text.to_lowercase().contains(&query)
+                                        || candidate.display.to_lowercase().contains(&query)
+                                        || candidate.description.to_lowercase().contains(&query)
+                                })
+                                .cloned()
+                                .collect();
+                            state.selected = state.selected.min(items.len().saturating_sub(1));
+                        }
+                    }
+                    return InputOutcome::Changed;
+                }
                 if let ArgPickerSelection::SetModelSlot(slot_key) = selection {
                     let settings = match self.active_modal.as_mut() {
                         Some(ActiveModal::ArgPicker {

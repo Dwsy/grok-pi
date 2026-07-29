@@ -30,6 +30,10 @@ pub struct UiConfig {
     /// Default off; takes effect for new sessions only.
     #[serde(default)]
     pub pi_herdr: bool,
+    /// Enable the built-in Pi child-session subagent bridge.
+    /// Default on; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_true")]
+    pub pi_subagents: bool,
     /// Enable upstream-compatible Rhai workflows in grok-pi (xai-workflow + Pi spawn).
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
@@ -393,6 +397,7 @@ impl Default for UiConfig {
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,
             pi_herdr: true,
+            pi_subagents: true,
             pi_workflows: false,
             pi_goal: false,
             pi_loop: false,

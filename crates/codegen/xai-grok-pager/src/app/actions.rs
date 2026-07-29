@@ -509,8 +509,10 @@ pub enum Action {
         tool_name: String,
         enabled: bool,
     },
-    /// Cycle to next model.
+    /// Cycle to next model in the session's Pi scope (or all models).
     NextModel,
+    /// Replace the session-only Pi scoped-model list. Empty means all models.
+    SetScopedModels(Vec<crate::acp::model_state::ScopedModel>),
     /// Switch active model.
     SwitchModel {
         model_id: acp::ModelId,
@@ -714,6 +716,8 @@ pub enum Action {
     ClearBtwModel3,
     /// Open the model picker for the active agent.
     OpenModelPicker,
+    /// Open the native Pi-style scoped-model multi-selector.
+    OpenScopedModelsPicker,
     /// Open the native model picker to select the dedicated recap model.
     OpenRecapModelPicker,
     /// Open native searchable model picker for a recap/btw settings slot.
@@ -739,6 +743,8 @@ pub enum Action {
     SetPiTreeSkipSummaryPrompt(bool),
     /// Enable the built-in Herdr lifecycle bridge for grok-pi (restart required).
     SetPiHerdr(bool),
+    /// Enable built-in Pi child-session subagents (restart required).
+    SetPiSubagents(bool),
     /// Enable upstream Rhai workflows for grok-pi (restart required).
     SetPiWorkflows(bool),
     /// Enable Grok-style /goal for grok-pi (restart required).
@@ -1019,14 +1025,14 @@ pub enum Action {
     /// Stop / kill the selected row (top-level: cancel turn → close;
     /// subagent: kill). Double-press protected for top-level rows.
     DashboardStop,
-    /// Cycle the dispatch input's mode for the next spawned agent
-    /// (Normal → Plan → Always-Approve → Normal). Bound to Shift+Tab.
+    /// Cycle the dispatch input's mode for the next spawned agent.
+    /// Pi uses Normal ↔ Plan; stock Grok retains its wider mode ring.
+    /// Bound to Ctrl+Shift+T so Shift+Tab remains the thinking shortcut.
     DashboardCycleMode,
-    /// Cycle the PEEKED agent's live mode (Normal → Plan → Always-Approve
-    /// → Normal) — the peek-panel counterpart to [`Self::DashboardCycleMode`].
-    /// Unlike that staged dispatch mode, this changes the existing agent
-    /// directly (same effect as Shift+Tab inside the agent's chat view).
-    /// Emitted when Shift+Tab fires while the peek panel is open.
+    /// Cycle the PEEKED agent's live mode — the peek-panel counterpart to
+    /// [`Self::DashboardCycleMode`]. Unlike the staged dispatch mode, this
+    /// changes the existing agent directly. Emitted by Ctrl+Shift+T while the
+    /// peek panel is open.
     DashboardPeekCycleMode,
     /// Toggle grouping (State ↔ Directory).
     DashboardToggleGrouping,

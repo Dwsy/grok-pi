@@ -14,6 +14,7 @@ use super::session::lifecycle::{
 use super::session::load::dispatch_load_session;
 use super::session::load::focus_if_session_already_open;
 use super::session::modal::dispatch_sessions_confirm_close;
+use super::task_result::unregister_all_active_sessions;
 use super::turn::dispatch_cancel_turn;
 use super::voice::{merge_prompt_with_voice_interim, voice_stop_on_submit};
 use crate::app::actions::{Action, Effect};
@@ -74,7 +75,9 @@ fn configure_dashboard_state(app: &mut AppView) {
     let bootstrap_commands = app.bootstrap_acp_commands.clone();
     let models = app.models.clone();
     let disable_plugins = app.appearance.disable_plugins;
-    let default_yolo = app.default_yolo;
+    // External Pi exposes only Normal/Plan; never seed a dashboard dispatch
+    // with Grok's Always-Approve policy mode.
+    let default_yolo = app.default_yolo && !app.external_agent;
     let cwd = app.cwd.clone();
     let cwd_has_git_ancestor = app.cwd_has_git_ancestor;
     let has_agents = !app.agents.is_empty();
@@ -1146,6 +1149,21 @@ pub(super) fn dispatch_dashboard_dispatch(
         return vec![];
     }
 
+    // One Pi RPC host owns one mutable active session. Starting another while a
+    // local turn is running would retarget later events/prompts to the new Pi
+    // context, so fail closed until the current turn settles.
+    if app.external_agent
+        && app
+            .agents
+            .values()
+            .any(|agent| agent.session.state.is_busy())
+    {
+        if let Some(d) = app.dashboard.as_mut() {
+            d.set_error_toast("Finish the current Pi turn before dispatching a new session");
+        }
+        return vec![];
+    }
+
     // Worktree mode armed (via the location picker) AND the cwd is a git
     // repo: stash the prompt and open the worktree-label dialog. Confirming
     // it spawns the agent in a fresh worktree and replays this prompt (see
@@ -1195,9 +1213,32 @@ pub(super) fn dispatch_dashboard_dispatch(
         });
     let (prompt_text, mut pasted_images, chip_elements) = prompt_state.into_submission();
     log_dashboard_launched("prompt");
+
+    // Pi's headless RPC process is a single-session host. Keep exactly one live
+    // local AgentView before issuing `new_session`; completed sessions remain in
+    // Pi's persisted catalog and return as dormant roster rows. This prevents an
+    // old dashboard row from sending user text into the newly active Pi context.
+    let mut effects = if app.external_agent {
+        let effects = unregister_all_active_sessions(app);
+        let had_agents = !app.agents.is_empty();
+        app.agents.clear();
+        app.welcome_prewarm_agent = None;
+        if had_agents {
+            crate::memory_release::release_retained_memory_with("pi-dashboard-session-isolation");
+        }
+        if let Some(d) = app.dashboard.as_mut() {
+            d.close_popup();
+            d.focus_new_agent_button();
+        }
+        effects
+    } else {
+        Vec::new()
+    };
+
     let saved_shown = app.project_picker_shown;
     app.project_picker_shown = true;
-    let (new_id, effects) = dispatch_new_session_inner_with_id(app, model_id);
+    let (new_id, create_effects) = dispatch_new_session_inner_with_id(app, model_id);
+    effects.extend(create_effects);
     app.project_picker_shown = saved_shown;
     let policy_block = app.yolo_policy_block;
     if let Some(agent) = app.agents.get_mut(&new_id) {

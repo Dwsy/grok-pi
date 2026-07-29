@@ -752,6 +752,15 @@ fn compute_tree_display(
 // Session entry data building
 // ---------------------------------------------------------------------------
 
+fn format_session_row_metadata(entry: &SessionPickerEntry) -> String {
+    let age = format_time_ago(entry.last_active_at.unwrap_or(entry.updated_at));
+    if entry.num_messages > 0 {
+        format!("{age} · {} msgs", entry.num_messages)
+    } else {
+        age
+    }
+}
+
 /// Build owned rendering data for each session entry in the filtered list.
 ///
 /// The caller zips the result with `PickerField` slices and builds
@@ -779,7 +788,9 @@ pub(crate) fn build_session_entry_data(
             };
             // Prefer last_active_at; fall back to updated_at (not created_at)
             // so pre-migration sessions don't jump to their creation date.
-            let right_text = format_time_ago(entry.last_active_at.unwrap_or(entry.updated_at));
+            // Append the known message count directly after the age so users
+            // can compare session size without opening the preview pane.
+            let right_text = format_session_row_metadata(entry);
             let is_selected = !state.selection_hidden && fi == state.selected;
             let is_foreign = crate::app::is_foreign_picker_source(&entry.source);
             let is_expanded = !is_foreign && state.expanded.contains(&orig_idx);
@@ -1226,6 +1237,21 @@ mod tests {
             parent_session_path: None,
             card_detail: None,
         }
+    }
+
+    #[test]
+    fn resume_row_shows_message_count_after_age() {
+        let mut entry = make_entry("session-with-messages", "repo");
+        entry.num_messages = 20;
+        let metadata = format_session_row_metadata(&entry);
+        assert!(metadata.ends_with(" · 20 msgs"), "{metadata}");
+    }
+
+    #[test]
+    fn resume_row_omits_unknown_zero_message_count() {
+        let entry = make_entry("session-with-unknown-count", "repo");
+        let metadata = format_session_row_metadata(&entry);
+        assert!(!metadata.contains("msgs"), "{metadata}");
     }
 
     fn make_content_hit(

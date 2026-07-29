@@ -62,6 +62,7 @@ pub mod rename;
 pub mod resume;
 pub mod review;
 pub mod rewind;
+pub mod scoped_models;
 pub mod screen_mode_switch;
 pub mod scroll_debug;
 pub mod session_info;
@@ -112,6 +113,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::minimal()),
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::fullscreen()),
         Arc::new(model::ModelCommand),
+        Arc::new(scoped_models::ScopedModelsCommand),
         Arc::new(effort::EffortCommand),
         Arc::new(always_approve::AlwaysApproveCommand),
         Arc::new(auto::AutoCommand),

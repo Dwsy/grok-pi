@@ -1,5 +1,5 @@
 //! Plan-nudge trigger: detects planning keywords typed into the prompt so the
-//! pager can hint that Shift+Tab cycles into plan mode first.
+//! pager can hint that Ctrl+Shift+T toggles plan mode first.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

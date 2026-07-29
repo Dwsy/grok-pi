@@ -1953,6 +1953,32 @@ pub fn default_settings() -> Vec<SettingMeta> {
             external_only: true,
         },
         SettingMeta {
+            key: "pi_subagents",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Pi subagents",
+            description: crate::native_feature_conflicts::f2_description_with_conflicts(
+                "Enable the built-in Pi child-session subagents (`spawn_subagent`, native Tasks/child views). Default on; takes effect for new grok-pi sessions.",
+                "pi_subagents",
+            ),
+            keywords: &[
+                "pi",
+                "subagent",
+                "subagents",
+                "child",
+                "agent",
+                "spawn_subagent",
+                "tasks",
+                "delegate",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_subagents,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
             key: "pi_workflows",
             category: SettingCategory::Agent,
             owner: SettingOwner::Shell,

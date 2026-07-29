@@ -70,6 +70,9 @@ impl SlashCommand for ModelCommand {
         if trimmed.is_empty() {
             return CommandResult::Action(Action::OpenModelPicker);
         }
+        if trimmed.eq_ignore_ascii_case("next") {
+            return CommandResult::Action(Action::NextModel);
+        }
 
         // Prefer an exact full-string catalog match first. Model display names
         // often contain spaces ("Grok 4.5"); if we split on the last token
@@ -184,6 +187,9 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
         } else {
             format!("{label} · {provider}")
         };
+        if models.is_model_scoped(id) {
+            display.push_str(" (scoped)");
+        }
         if is_current {
             display.push_str(" (current)");
         }
@@ -575,6 +581,16 @@ mod tests {
         );
         // No interior whitespace → nothing to split off.
         assert!(split_trailing_token("reasoning-x-pro").is_none());
+    }
+
+    #[test]
+    fn model_next_uses_scoped_cycle_action() {
+        let models = ModelState::default();
+        let mut ctx = dummy_exec_ctx(&models);
+        assert!(matches!(
+            ModelCommand.run(&mut ctx, "next"),
+            CommandResult::Action(Action::NextModel)
+        ));
     }
 
     #[test]

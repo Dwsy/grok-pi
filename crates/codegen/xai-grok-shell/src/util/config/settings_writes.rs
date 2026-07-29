@@ -247,6 +247,11 @@ pub async fn set_pi_herdr(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_herdr = value).await
 }
 
+/// Persist `[ui].pi_subagents` via `update_config`.
+pub async fn set_pi_subagents(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_subagents = value).await
+}
+
 /// Persist `[ui].pi_workflows` via `update_config`.
 pub async fn set_pi_workflows(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_workflows = value).await

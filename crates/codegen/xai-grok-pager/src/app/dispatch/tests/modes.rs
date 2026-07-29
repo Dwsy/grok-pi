@@ -1162,6 +1162,40 @@ fn cycle_mode_plan_to_auto_includes_persist_auto() {
     );
 }
 
+/// External Pi keeps mode and permission/thinking controls separate: the mode
+/// action toggles only Normal ↔ Plan and clears stale Grok policy flags.
+#[test]
+fn external_cycle_mode_toggles_only_normal_and_plan() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.external_agent = true;
+    app.default_yolo = true;
+    app.current_ui.permission_mode = Some("always-approve".into());
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.yolo_mode = true;
+        agent.session.auto_mode = true;
+    }
+
+    let enter = dispatch(Action::CycleMode, &mut app);
+    assert_eq!(app.agents[&id].plan_mode_pending, Some(true));
+    assert!(!app.agents[&id].session.yolo_mode);
+    assert!(!app.agents[&id].session.auto_mode);
+    assert!(!app.default_yolo);
+    assert_eq!(app.current_ui.permission_mode.as_deref(), Some("ask"));
+    assert!(matches!(
+        enter.as_slice(),
+        [Effect::SetSessionMode { mode_id, .. }] if &*mode_id.0 == "plan"
+    ));
+
+    let exit = dispatch(Action::CycleMode, &mut app);
+    assert_eq!(app.agents[&id].plan_mode_pending, Some(false));
+    assert!(matches!(
+        exit.as_slice(),
+        [Effect::SetSessionMode { mode_id, .. }] if &*mode_id.0 == "default"
+    ));
+}
+
 /// Feature gate OFF: the Shift+Tab cycle skips Auto entirely — Plan jumps
 /// straight to Always-Approve (legacy cycle), and "auto" is never persisted.
 /// Drives the real `dispatch_cycle_mode` with `auto_mode_gate = false`.

@@ -645,7 +645,7 @@ pub struct DashboardState {
     /// model. Sticky across dispatches; reset to `None` on every
     /// dashboard-open (alongside `pending_mode`).
     pub pending_model: Option<PendingDispatchModel>,
-    /// Mode the next spawned agent starts in. Cycled with Shift+Tab and set
+    /// Mode the next spawned agent starts in. Cycled with Ctrl+Shift+T and set
     /// by `/plan`. Sticky across dispatches; re-seeded from
     /// `app.default_yolo` on every dashboard-open (alongside `pending_model`).
     pub pending_mode: DashboardDispatchMode,
@@ -715,7 +715,7 @@ pub struct DashboardState {
 }
 
 /// Mode staged for the next agent the dashboard spawns. Mirrors the agent
-/// view's Shift+Tab cycle (Normal → Plan → Always-Approve → Normal).
+/// view's mode-shortcut cycle (Normal → Plan → Always-Approve → Normal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DashboardDispatchMode {
     #[default]
@@ -725,7 +725,7 @@ pub enum DashboardDispatchMode {
 }
 
 impl DashboardDispatchMode {
-    /// Advance to the next mode in the Shift+Tab rotation.
+    /// Advance to the next mode in the mode-shortcut rotation.
     pub fn cycle(self) -> Self {
         match self {
             Self::Normal => Self::Plan,
@@ -2546,7 +2546,7 @@ impl DashboardState {
     ///
     /// `dashboard_owned` is whether the key resolved to a
     /// `When::DashboardFocused` registry binding (`Ctrl+X` stop,
-    /// `Shift+↑/↓` reorder, `Shift+Tab` mode, …) — those return `None`
+    /// `Shift+↑/↓` reorder, `Ctrl+Shift+T` mode, …) — those return `None`
     /// so the dashboard handler (and the remaining app-global
     /// shortcuts) still fire with the panel open.
     ///
@@ -2603,7 +2603,7 @@ impl DashboardState {
         }
 
         // Dashboard-owned chords fall through so the registry actions
-        // (Ctrl+X stop, Ctrl+T pin, Shift+↑/↓ reorder, Shift+Tab mode,
+        // (Ctrl+X stop, Ctrl+T pin, Shift+↑/↓ reorder, Ctrl+Shift+T mode,
         // …) and the hardcoded Ctrl+/ search toggle keep working with
         // the panel open. Keys the peek itself owns are exempt:
         //   - bare / Shift printable chars TYPE into the reply (vim's
@@ -3062,9 +3062,9 @@ impl DashboardState {
             ));
         }
 
-        // Shift+Tab while the peek is open cycles the PEEKED agent's live
-        // mode, not the new-session staged mode. The registry resolves all
-        // Shift+Tab encodings to `DashboardCycleMode`; re-route that to the
+        // Ctrl+Shift+T while the peek is open cycles the PEEKED agent's live
+        // mode, not the new-session staged mode. The registry resolves the
+        // mode shortcut to `DashboardCycleMode`; re-route that to the
         // peek-scoped action here so the cycle acts on the agent under the
         // cursor (and the bottom-border badge updates to match). Outside the
         // peek it still cycles the dispatch box's staged mode.
@@ -3473,10 +3473,8 @@ impl DashboardState {
             }
         }
 
-        // Shift+Tab (DashboardCycleMode) is resolved through the registry
-        // `from_registry` path above — its `ActionDef` carries the three
-        // terminal encodings (`BackTab`, `BackTab`+SHIFT, `Tab`+SHIFT) as
-        // default/alt keys, so no hardcoded intercept is needed here.
+        // Ctrl+Shift+T (`DashboardCycleMode`) is resolved through the registry
+        // `from_registry` path above, so no hardcoded intercept is needed here.
 
         // Tab toggles focus between the dispatch input and the overview
         // list (the vim-style way to reach j/k navigation). When the
@@ -7624,51 +7622,44 @@ mod tests {
         assert!(!state.list_focused, "Tab again returns focus to the input");
     }
 
-    /// Shift+Tab emits `DashboardCycleMode` regardless of how the terminal
-    /// encodes it — `BackTab` (with or without a SHIFT modifier) or
-    /// `Tab`+SHIFT. Guards the regression where the registry's exact-modifier
-    /// `key!(BackTab)` lookup silently failed on `BackTab`+SHIFT.
+    /// Ctrl+Shift+T emits `DashboardCycleMode`; Shift+Tab stays reserved for
+    /// thinking-level cycling on the agent surface.
     #[test]
-    fn shift_tab_emits_cycle_mode_for_all_encodings() {
+    fn ctrl_shift_t_emits_cycle_mode() {
         let reg = crate::actions::ActionRegistry::defaults();
-        for key in [
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
-        ] {
-            let mut state = DashboardState::new();
-            let outcome = state.handle_key(&key, &reg);
-            assert!(
-                matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
-                "Shift+Tab ({key:?}) must emit DashboardCycleMode, got {outcome:?}",
-            );
-        }
+        let key = KeyEvent::new(
+            KeyCode::Char('T'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let mut state = DashboardState::new();
+        let outcome = state.handle_key(&key, &reg);
+        assert!(
+            matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
+            "Ctrl+Shift+T must emit DashboardCycleMode, got {outcome:?}",
+        );
     }
 
-    /// Multiline must not treat Shift+Tab as the submit chord (is_mod_enter
-    /// requires KeyCode::Enter).
+    /// Multiline drafts are preserved when the mode shortcut fires.
     #[test]
-    fn multiline_shift_tab_cycles_mode_with_non_empty_draft() {
+    fn multiline_ctrl_shift_t_cycles_mode_with_non_empty_draft() {
         let reg = crate::actions::ActionRegistry::defaults();
-        for key in [
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
-        ] {
-            let mut state = DashboardState::new();
-            state.multiline_mode = true;
-            state.dispatch.set_text("draft text");
-            let outcome = state.handle_key(&key, &reg);
-            assert!(
-                matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
-                "multiline + {key:?} must DashboardCycleMode, not send, got {outcome:?}",
-            );
-            assert_eq!(
-                state.dispatch.text(),
-                "draft text",
-                "draft must not be consumed by Shift+Tab"
-            );
-        }
+        let key = KeyEvent::new(
+            KeyCode::Char('T'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let mut state = DashboardState::new();
+        state.multiline_mode = true;
+        state.dispatch.set_text("draft text");
+        let outcome = state.handle_key(&key, &reg);
+        assert!(
+            matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
+            "multiline + Ctrl+Shift+T must cycle mode, not send, got {outcome:?}",
+        );
+        assert_eq!(
+            state.dispatch.text(),
+            "draft text",
+            "draft must not be consumed by the mode shortcut"
+        );
     }
 
     /// Shift+↑/↓ emits the reorder actions even with the peek open (the
@@ -7695,37 +7686,36 @@ mod tests {
         }
     }
 
-    /// Shift+Tab cycles the PEEKED agent's live mode while the peek is
-    /// open (emitting `DashboardPeekCycleMode`), but the new-session
-    /// staged mode (`DashboardCycleMode`) when no peek is shown.
+    /// Ctrl+Shift+T cycles the PEEKED agent's live mode while the peek is
+    /// open (emitting `DashboardPeekCycleMode`), but the new-session staged
+    /// mode (`DashboardCycleMode`) when no peek is shown.
     #[test]
-    fn shift_tab_cycles_peeked_agent_mode_when_peek_open() {
+    fn ctrl_shift_t_cycles_peeked_agent_mode_when_peek_open() {
         let reg = crate::actions::ActionRegistry::defaults();
-        for key in [
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
-        ] {
-            let mut state = make_state_with_selection();
-            state.peek = Some(super::super::peek::PeekPanelState::new(
-                DashboardRowId::TopLevel(AgentId(0)),
-                peek_fields_for_test("Idle"),
-            ));
-            let outcome = state.handle_key(&key, &reg);
-            assert!(
-                matches!(
-                    outcome,
-                    InputOutcome::Action(Action::DashboardPeekCycleMode)
-                ),
-                "Shift+Tab ({key:?}) with peek open must emit DashboardPeekCycleMode, got {outcome:?}",
-            );
-        }
-        // No peek → still the new-session staged-mode cycle.
+        let key = KeyEvent::new(
+            KeyCode::Char('T'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let mut state = make_state_with_selection();
+        state.peek = Some(super::super::peek::PeekPanelState::new(
+            DashboardRowId::TopLevel(AgentId(0)),
+            peek_fields_for_test("Idle"),
+        ));
+        let outcome = state.handle_key(&key, &reg);
+        assert!(
+            matches!(
+                outcome,
+                InputOutcome::Action(Action::DashboardPeekCycleMode)
+            ),
+            "Ctrl+Shift+T with peek open must emit DashboardPeekCycleMode, got {outcome:?}",
+        );
+
+        // No peek → the new-session staged-mode cycle.
         let mut state = DashboardState::new();
-        let outcome = state.handle_key(&KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE), &reg);
+        let outcome = state.handle_key(&key, &reg);
         assert!(
             matches!(outcome, InputOutcome::Action(Action::DashboardCycleMode)),
-            "Shift+Tab without peek must emit DashboardCycleMode, got {outcome:?}",
+            "Ctrl+Shift+T without peek must emit DashboardCycleMode, got {outcome:?}",
         );
     }
 

@@ -90,8 +90,8 @@ use super::settings::setters::{
     set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
     set_model_slot, set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question,
     set_pi_bash_run_display, set_pi_btw, set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal,
-    set_pi_herdr, set_pi_loop, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt,
-    set_pi_workflows,
+    set_pi_herdr, set_pi_loop, set_pi_subagents, set_pi_tree_file_rollback,
+    set_pi_tree_skip_summary_prompt, set_pi_workflows,
     set_progress_bar, set_prompt_suggestions, set_psm_resume_index, set_recap_mermaid,
     set_recap_model, set_remember_tool_approvals, set_remote_tui_footer, set_render_mermaid,
     set_respect_manual_folds, set_review_file_tree, set_review_include_reads, set_screen_mode,
@@ -103,6 +103,7 @@ use super::settings::setters::{
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
     dispatch_open_model_picker, dispatch_open_pi_config, dispatch_open_pi_models,
+    dispatch_open_scoped_models_picker,
     dispatch_open_pi_shortcut_manager, dispatch_open_recap_model_picker,
     dispatch_open_reset_confirm, dispatch_open_settings,
     dispatch_open_shortcuts_help, dispatch_toggle_compact_mode, dispatch_toggle_mouse_capture,
@@ -910,7 +911,45 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 enabled,
             }]
         }
-        Action::NextModel => vec![],
+        Action::NextModel => {
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&id) else {
+                return vec![];
+            };
+            let Some((model_id, effort)) = agent.session.models.next_model_selection() else {
+                return vec![];
+            };
+            let Some(session_id) = agent.session.session_id.clone() else {
+                agent.session.deferred_model_switch = Some((model_id, effort));
+                return vec![];
+            };
+            agent.session.model_switch_pending = true;
+            vec![Effect::SwitchModel {
+                agent_id: id,
+                session_id,
+                model_id,
+                effort,
+                prev_model_id: None,
+            }]
+        }
+        Action::SetScopedModels(entries) => {
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&id) else {
+                return vec![];
+            };
+            agent.session.models.set_scoped_models(entries);
+            let count = agent.session.models.scoped_models().len();
+            if count == 0 {
+                app.show_toast("Scoped models: all available models");
+            } else {
+                app.show_toast(&format!("Scoped models: {count} selected for this session"));
+            }
+            vec![]
+        }
         Action::CycleThinkingLevel => {
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
@@ -1106,6 +1145,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetBtwModel3(v) => set_model_slot(app, "btw_model_3", v),
         Action::ClearBtwModel3 => set_model_slot(app, "btw_model_3", String::new()),
         Action::OpenModelPicker => dispatch_open_model_picker(app),
+        Action::OpenScopedModelsPicker => dispatch_open_scoped_models_picker(app),
         Action::OpenRecapModelPicker => dispatch_open_recap_model_picker(app),
         Action::OpenSideModelPicker { slot_key } => {
             crate::app::dispatch::settings::ui::dispatch_open_side_model_picker(app, slot_key)
@@ -1121,6 +1161,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             set_pi_tree_skip_summary_prompt(app, enabled)
         }
         Action::SetPiHerdr(enabled) => set_pi_herdr(app, enabled),
+        Action::SetPiSubagents(enabled) => set_pi_subagents(app, enabled),
         Action::SetPiWorkflows(enabled) => set_pi_workflows(app, enabled),
         Action::SetPiGoal(enabled) => set_pi_goal(app, enabled),
         Action::SetPiLoop(enabled) => set_pi_loop(app, enabled),
@@ -1417,8 +1458,18 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::DashboardStop => dispatch_dashboard_stop(app),
         Action::DashboardCycleMode => {
             let policy_block = app.yolo_policy_block;
+            let external_agent = app.external_agent;
             if let Some(d) = app.dashboard.as_mut() {
-                d.pending_mode = d.pending_mode.cycle();
+                d.pending_mode = if external_agent {
+                    match d.pending_mode {
+                        crate::views::dashboard::DashboardDispatchMode::Plan => {
+                            crate::views::dashboard::DashboardDispatchMode::Normal
+                        }
+                        _ => crate::views::dashboard::DashboardDispatchMode::Plan,
+                    }
+                } else {
+                    d.pending_mode.cycle()
+                };
                 if d.pending_mode == crate::views::dashboard::DashboardDispatchMode::AlwaysApprove
                     && let Some(warning) = policy_block
                 {

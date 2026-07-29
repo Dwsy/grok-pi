@@ -308,10 +308,12 @@ async fn run(mut args: Args) -> Result<()> {
     } else {
         None
     };
-    let subagent_extension = bridge_extensions_enabled
-        .then(|| write_subagent_extension())
-        .transpose()
-        .context("failed to create Pi subagent extension")?;
+    // F2 `[ui].pi_subagents` (default on). Restart required — inject at startup only.
+    let subagent_extension = if bridge_extensions_enabled && subagents_enabled() {
+        Some(write_subagent_extension().context("failed to create Pi subagent extension")?)
+    } else {
+        None
+    };
     // F2 `[ui].pi_workflows` (default off). Restart required — inject at startup only.
     let workflow_extension = if bridge_extensions_enabled && workflows_enabled() {
         Some(write_workflow_extension().context("failed to create Pi workflow extension")?)
@@ -812,6 +814,15 @@ async fn run(mut args: Args) -> Result<()> {
             "PI_GROK_SUBAGENT_EXTENSION_CATALOG".to_string(),
             serde_json::to_string(&subagent_extension_catalog)
                 .expect("Pi-Grok extension catalog must be serializable"),
+        ));
+    } else {
+        // Override inherited shell values so an explicitly loaded copy of the
+        // bundled extension still respects the F2 off switch and cannot see a
+        // stale child-extension catalog from a parent process.
+        env.push(("PI_GROK_SUBAGENTS".to_string(), "0".to_string()));
+        env.push((
+            "PI_GROK_SUBAGENT_EXTENSION_CATALOG".to_string(),
+            "[]".to_string(),
         ));
     }
     if workflow_extension.is_some() {
@@ -1482,6 +1493,21 @@ fn herdr_enabled_from_config(config: Option<&toml::Value>) -> bool {
         .unwrap_or(false)
 }
 
+/// F2 `[ui].pi_subagents` — enable built-in Pi child-session subagents.
+/// Missing/invalid config preserves the product's existing default-on behavior.
+fn subagents_enabled() -> bool {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    subagents_enabled_from_config(config.as_ref())
+}
+
+fn subagents_enabled_from_config(config: Option<&toml::Value>) -> bool {
+    config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_subagents"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true)
+}
+
 /// F2 `[ui].pi_workflows` — enable upstream Rhai workflows for this process.
 fn workflows_enabled() -> bool {
     let Ok(config) = xai_grok_shell::config::load_effective_config() else {
@@ -1661,7 +1687,7 @@ async fn probe_extensions_ok(
 mod env_flag_tests {
     use super::{
         Args, PI_GROK_NATIVE_COMMANDS, env_flag_default_off, env_flag_default_on,
-        herdr_enabled_from_config,
+        herdr_enabled_from_config, subagents_enabled_from_config,
     };
     use clap::Parser;
 
@@ -1679,6 +1705,22 @@ mod env_flag_tests {
         let disabled: toml::Value =
             toml::from_str("[ui]\npi_herdr = false\n").expect("parse disabled config");
         assert!(!herdr_enabled_from_config(Some(&disabled)));
+    }
+
+    #[test]
+    fn subagents_default_on_and_honor_explicit_off() {
+        assert!(subagents_enabled_from_config(None));
+
+        let missing: toml::Value = toml::from_str("[ui]\n").expect("parse missing config");
+        assert!(subagents_enabled_from_config(Some(&missing)));
+
+        let enabled: toml::Value =
+            toml::from_str("[ui]\npi_subagents = true\n").expect("parse enabled config");
+        assert!(subagents_enabled_from_config(Some(&enabled)));
+
+        let disabled: toml::Value =
+            toml::from_str("[ui]\npi_subagents = false\n").expect("parse disabled config");
+        assert!(!subagents_enabled_from_config(Some(&disabled)));
     }
 
     #[test]

@@ -3825,7 +3825,11 @@ pub(crate) fn execute(
                 .spawn(async move {
                     match fetch_session_info(&session_id, &tx).await {
                         Ok(info) => {
-                            let title = lookup_session_title(&session_id).await;
+                            let title = if info.session_name.is_some() {
+                                None
+                            } else {
+                                lookup_session_title(&session_id).await
+                            };
                             let text = format_session_info(
                                 &info,
                                 title.as_deref(),
@@ -5346,9 +5350,22 @@ async fn lookup_session_title(session_id: &acp::SessionId) -> Option<String> {
         .find(|s| s.info.id == *session_id)
         .and_then(|s| s.display_title_opt())
 }
+/// Add ASCII thousands separators without introducing a formatting dependency.
+fn format_session_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
 /// Format session info into a human-readable string.
 ///
-/// Mirrors the TUI's `render_session_info` for pager display.
+/// Pi owns the session-wide message/token/cost sections; Grok runtime details
+/// remain below them so `/session-info` keeps its existing auth/model context.
 fn format_session_info(
     info: &SessionInfoResponse,
     title: Option<&str>,
@@ -5366,66 +5383,121 @@ fn format_session_info(
         show_resolved_model,
     );
     let ctx = &info.data.context;
-    let used = ctx.used;
-    let total = ctx.total;
-    let pct = ctx.usage_pct;
-    let title_line = match title {
-        Some(t) => format!("  Title: {t}\n"),
-        None => String::new(),
-    };
-    // Pi `/session` leads with the on-disk JSONL path when present.
-    let file_line = info
+    let mut text = String::from("Session Info\n\n");
+    if let Some(name) = info
+        .session_name
+        .as_deref()
+        .or(title)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        text.push_str(&format!("  Name: {name}\n"));
+    }
+    if let Some(path) = info
         .session_file
         .as_deref()
+        .map(str::trim)
         .filter(|path| !path.is_empty())
-        .map(|path| format!("  File: {path}\n"))
-        .unwrap_or_default();
-    let model_hash_line = if xai_grok_shell::session::should_show_model_fingerprint(
-        info.data.show_model_fingerprint,
-        model,
-    ) {
-        info.data
-            .model_fingerprint
-            .as_deref()
-            .map(|fp| format!("\n  Model Hash: {fp}"))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let backend_line = info
-        .data
-        .api_backend
-        .as_deref()
-        .map(|b| format!("\n  API Backend: {b}"))
-        .unwrap_or_default();
-    let sandbox_line = xai_grok_sandbox::profile_name()
-        .map(|profile| format!("\n  Sandbox: {profile}"))
-        .unwrap_or_default();
-    let turn_line = format!("\n  Turn: {}", info.data.turn_index);
-    // Pi `/session` reports message / tool counts; surface them when the
-    // agent filled ContextInfo (Pi adapter always does).
-    let messages_line = if ctx.message_count > 0 || ctx.tool_call_count > 0 || ctx.turn_count > 0 {
-        format!(
-            "\n  Messages: {} (turns {})\n  Tools: {} calls",
-            ctx.message_count, ctx.turn_count, ctx.tool_call_count
-        )
-    } else {
-        String::new()
-    };
-    let conversation_line = info
+    {
+        text.push_str(&format!("  File: {path}\n"));
+    }
+    text.push_str(&format!("  ID: {session_id}"));
+    if let Some(id) = info
         .data
         .conversation_id
         .as_deref()
+        .map(str::trim)
         .filter(|id| !id.is_empty())
-        .map(|id| format!("\n  Conversation ID: {id}"))
-        .unwrap_or_default();
+    {
+        text.push_str(&format!("\n  Conversation ID: {id}"));
+    }
+
+    if let Some(stats) = info.session_stats.as_ref() {
+        text.push_str("\n\nMessages\n");
+        text.push_str(&format!(
+            "  Total: {}\n  User: {}\n  Assistant: {}\n  Tools: {} calls, {} results",
+            format_session_count(stats.total_messages),
+            format_session_count(stats.user_messages),
+            format_session_count(stats.assistant_messages),
+            format_session_count(stats.tool_calls),
+            format_session_count(stats.tool_results),
+        ));
+
+        let tokens = &stats.tokens;
+        let prompt_tokens = tokens
+            .input
+            .saturating_add(tokens.cache_read)
+            .saturating_add(tokens.cache_write);
+        text.push_str("\n\nTokens\n");
+        text.push_str(&format!(
+            "  Input: {}",
+            format_session_count(prompt_tokens)
+        ));
+        if prompt_tokens > 0 && (tokens.cache_read > 0 || tokens.cache_write > 0) {
+            let hit_rate = (tokens.cache_read as f64 / prompt_tokens as f64) * 100.0;
+            text.push_str(&format!(
+                "\n    Cached: {} ({hit_rate:.1}%)",
+                format_session_count(tokens.cache_read)
+            ));
+            let uncached = tokens.input.saturating_add(tokens.cache_write);
+            text.push_str(&format!(
+                "\n    Uncached: {}",
+                format_session_count(uncached)
+            ));
+            if tokens.cache_write > 0 {
+                text.push_str(&format!(
+                    " ({} written to cache)",
+                    format_session_count(tokens.cache_write)
+                ));
+            }
+        }
+        text.push_str(&format!(
+            "\n  Output: {}\n  Total: {}",
+            format_session_count(tokens.output),
+            format_session_count(tokens.total),
+        ));
+        if stats.cost > 0.0 {
+            text.push_str(&format!("\n\nCost\n  Total: ${:.3}", stats.cost));
+        }
+    } else if ctx.message_count > 0 || ctx.tool_call_count > 0 || ctx.turn_count > 0 {
+        // Older agents lack `sessionStats`; keep their compact count surface.
+        text.push_str(&format!(
+            "\n\nMessages\n  Total: {} (turns {})\n  Tools: {} calls",
+            format_session_count(ctx.message_count),
+            format_session_count(ctx.turn_count),
+            format_session_count(ctx.tool_call_count),
+        ));
+    }
+
     let version_display = xai_grok_version::display_version(
         xai_grok_update::channel_label(),
     );
     let auth_lines = format_auth_lines(is_api_key_auth, api_key_env_set);
-    format!(
-        "{title_line}  Shell version: {version_display}\n{auth_lines}  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}\n  Context: {used} / {total} tokens ({pct}%)"
-    )
+    text.push_str(&format!(
+        "\n\nRuntime\n  Shell version: {version_display}\n{auth_lines}  Working directory: {cwd}\n  Model: {model_display}"
+    ));
+    if xai_grok_shell::session::should_show_model_fingerprint(
+        info.data.show_model_fingerprint,
+        model,
+    ) {
+        if let Some(fingerprint) = info.data.model_fingerprint.as_deref() {
+            text.push_str(&format!("\n  Model Hash: {fingerprint}"));
+        }
+    }
+    if let Some(backend) = info.data.api_backend.as_deref() {
+        text.push_str(&format!("\n  API Backend: {backend}"));
+    }
+    if let Some(profile) = xai_grok_sandbox::profile_name() {
+        text.push_str(&format!("\n  Sandbox: {profile}"));
+    }
+    text.push_str(&format!(
+        "\n  Turn: {}\n  Context: {} / {} tokens ({}%)",
+        info.data.turn_index,
+        format_session_count(ctx.used),
+        format_session_count(ctx.total),
+        ctx.usage_pct,
+    ));
+    text
 }
 /// Auth section for `/session-info` — login method + where to manage account/credits.
 ///

@@ -103,7 +103,21 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
 /// keybinding handler (`ActionId::CommandPalette`); toggles closed if already
 /// open. Hosted inline in minimal mode by the overlay app-modal host.
 pub(in crate::app::dispatch) fn dispatch_open_model_picker(app: &mut AppView) -> Vec<Effect> {
-    open_model_picker(app, crate::views::modal::ArgPickerSelection::RunCommand)
+    open_command_arg_picker(
+        app,
+        "model",
+        crate::views::modal::ArgPickerSelection::RunCommand,
+    )
+}
+
+pub(in crate::app::dispatch) fn dispatch_open_scoped_models_picker(
+    app: &mut AppView,
+) -> Vec<Effect> {
+    open_command_arg_picker(
+        app,
+        "scoped-models",
+        crate::views::modal::ArgPickerSelection::ToggleScopedModel,
+    )
 }
 
 /// Open the native searchable model selector for a recap/btw settings slot.
@@ -115,14 +129,16 @@ pub(in crate::app::dispatch) fn dispatch_open_side_model_picker(
     app: &mut AppView,
     slot_key: &'static str,
 ) -> Vec<Effect> {
-    open_model_picker(
+    open_command_arg_picker(
         app,
+        "model",
         crate::views::modal::ArgPickerSelection::SetModelSlot(slot_key),
     )
 }
 
-fn open_model_picker(
+fn open_command_arg_picker(
     app: &mut AppView,
+    command: &str,
     selection: crate::views::modal::ArgPickerSelection,
 ) -> Vec<Effect> {
     use crate::views::modal::ActiveModal;
@@ -132,7 +148,6 @@ fn open_model_picker(
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
-    let command = "model";
     let Some(cmd) = agent.prompt.slash_controller.registry().get(command) else {
         return vec![];
     };
@@ -968,6 +983,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
             Some(Action::SetPiTreeSkipSummaryPrompt(*b))
         }
         ("pi_herdr", SettingValue::Bool(b)) => Some(Action::SetPiHerdr(*b)),
+        ("pi_subagents", SettingValue::Bool(b)) => Some(Action::SetPiSubagents(*b)),
         ("pi_workflows", SettingValue::Bool(b)) => Some(Action::SetPiWorkflows(*b)),
         ("pi_goal", SettingValue::Bool(b)) => Some(Action::SetPiGoal(*b)),
         ("pi_loop", SettingValue::Bool(b)) => Some(Action::SetPiLoop(*b)),
