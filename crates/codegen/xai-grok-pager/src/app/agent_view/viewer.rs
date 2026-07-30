@@ -2,7 +2,7 @@
 //! and their key/mouse handlers.
 
 use super::{AgentView, render_char_buttons};
-use crate::app::app_view::InputOutcome;
+use crate::app::{actions::Action, app_view::InputOutcome};
 use crate::key;
 use crate::scrollback::selection::SelectionBox;
 use crate::scrollback::types::DisplayMode;
@@ -847,10 +847,58 @@ impl AgentView {
 
     // -- Block viewer input handling ------------------------------------------
 
+    fn is_tool_viewer_block(block: &crate::scrollback::block::RenderBlock) -> bool {
+        matches!(
+            block,
+            crate::scrollback::block::RenderBlock::ToolCall(_)
+                | crate::scrollback::block::RenderBlock::BgTask(_)
+        ) && block.has_normal_fullscreen_viewer()
+    }
+
+    fn adjacent_tool_viewer_index(&self, current: usize, forward: bool) -> Option<usize> {
+        let is_candidate = |idx: usize| {
+            !self.scrollback.entry_content_hidden_by_group(idx)
+                && self
+                    .scrollback
+                    .entry(idx)
+                    .is_some_and(|entry| Self::is_tool_viewer_block(&entry.block))
+        };
+
+        if forward {
+            (current.saturating_add(1)..self.scrollback.len()).find(|&idx| is_candidate(idx))
+        } else {
+            (0..current).rev().find(|&idx| is_candidate(idx))
+        }
+    }
+
     /// Handle a key event when the block viewer is open.
     ///
     /// Returns `Changed` if consumed, `Unchanged` if the key should bubble up.
     pub(super) fn handle_block_viewer_key(&mut self, key: &KeyEvent) -> InputOutcome {
+        let tool_navigation = self.block_viewer.as_ref().and_then(|viewer| {
+            let forward = match (key.code, key.modifiers) {
+                (KeyCode::Left, KeyModifiers::NONE) => false,
+                (KeyCode::Right, KeyModifiers::NONE) => true,
+                _ => return None,
+            };
+            if viewer.list_state.input_mode().is_some() || viewer.list_state.visual_mode {
+                return None;
+            }
+            let current = self.scrollback.selected()?;
+            let entry = self.scrollback.entry(current)?;
+            (entry.id == viewer.entry_id && Self::is_tool_viewer_block(&entry.block))
+                .then_some((current, forward))
+        });
+
+        if let Some((current, forward)) = tool_navigation {
+            if let Some(target) = self.adjacent_tool_viewer_index(current, forward) {
+                self.scrollback.set_selected(Some(target));
+                self.block_viewer = None;
+                return InputOutcome::Action(Action::OpenBlockViewer);
+            }
+            return InputOutcome::Changed;
+        }
+
         let Some(ref mut viewer) = self.block_viewer else {
             return InputOutcome::Unchanged;
         };
@@ -979,5 +1027,76 @@ impl AgentView {
             DisplayMode::Expanded => "collapse",
             _ => "expand",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scrollback::block::RenderBlock;
+    use crate::views::block_viewer::BlockViewerPane;
+
+    fn open_selected_list_dir_viewer(agent: &mut AgentView) {
+        let idx = agent.scrollback.selected().unwrap();
+        let entry = agent.scrollback.entry(idx).unwrap();
+        agent.block_viewer = BlockViewerPane::for_list_dir(entry.id, entry);
+        assert!(agent.block_viewer.is_some());
+    }
+
+    #[test]
+    fn tool_viewer_arrows_switch_between_adjacent_viewable_tools() {
+        let mut agent = crate::app::agent_view::test_agent_view(None, std::env::temp_dir());
+        agent
+            .scrollback
+            .push_block(RenderBlock::list_dir_with_output("first", "a.txt"));
+        agent
+            .scrollback
+            .push_block(RenderBlock::agent_message("not a tool viewer"));
+        agent.scrollback.push_block(RenderBlock::tool_call(
+            "custom",
+            "no fullscreen viewer",
+            true,
+        ));
+        agent
+            .scrollback
+            .push_block(RenderBlock::agent_message("still not a tool viewer"));
+        agent
+            .scrollback
+            .push_block(RenderBlock::list_dir_with_output("second", "b.txt"));
+
+        agent.scrollback.set_selected(Some(0));
+        open_selected_list_dir_viewer(&mut agent);
+        let first = agent.scrollback.entry(0).unwrap();
+        let viewer = agent.block_viewer.as_ref().unwrap();
+        assert_eq!(viewer.entry_id, first.id);
+        assert!(AgentView::is_tool_viewer_block(&first.block));
+        assert_eq!(viewer.list_state.input_mode(), None);
+        assert!(!viewer.list_state.visual_mode);
+        assert_eq!(agent.adjacent_tool_viewer_index(0, true), Some(4));
+        let outcome =
+            agent.handle_block_viewer_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenBlockViewer)
+        ));
+        assert_eq!(agent.scrollback.selected(), Some(4));
+        assert!(agent.block_viewer.is_none());
+
+        open_selected_list_dir_viewer(&mut agent);
+        let outcome =
+            agent.handle_block_viewer_key(&KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(matches!(
+            outcome,
+            InputOutcome::Action(Action::OpenBlockViewer)
+        ));
+        assert_eq!(agent.scrollback.selected(), Some(0));
+        assert!(agent.block_viewer.is_none());
+
+        open_selected_list_dir_viewer(&mut agent);
+        let outcome =
+            agent.handle_block_viewer_key(&KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert_eq!(agent.scrollback.selected(), Some(0));
+        assert!(agent.block_viewer.is_some());
     }
 }

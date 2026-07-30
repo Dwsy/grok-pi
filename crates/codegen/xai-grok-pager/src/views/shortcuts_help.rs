@@ -21,7 +21,10 @@
 
 use std::borrow::Cow;
 
+use crossterm::event::{KeyCode, KeyModifiers};
+
 use crate::actions::{ActionDef, ActionId, ActionRegistry, Category, When};
+use crate::app::extension_shortcuts::ExtensionShortcut;
 use crate::input::key::KeyShortcut;
 use crate::views::picker::{PickerConfig, PickerOutcome, PickerState, handle_picker_input};
 use crate::views::shortcuts_bar::HintItem;
@@ -84,9 +87,107 @@ const CATEGORY_ORDER: &[(Category, &str)] = &[
     (Category::Session, "Session"),
     (Category::Dashboard, "Dashboard"),
 ];
+const PI_EXTENSION_CATEGORY_IDX: usize = CATEGORY_ORDER.len();
 
 pub fn default_collapsed() -> std::collections::HashSet<usize> {
     (1..CATEGORY_ORDER.len()).collect()
+}
+
+fn append_pi_extension_shortcuts(
+    entries: &mut Vec<ShortcutsHelpEntry>,
+    shortcuts: &[ExtensionShortcut],
+) {
+    if shortcuts.is_empty() {
+        return;
+    }
+
+    let header_idx = entries.len();
+    entries.push(ShortcutsHelpEntry::SectionHeader {
+        label: "Pi Extension Shortcuts",
+        category_idx: PI_EXTENSION_CATEGORY_IDX,
+        entry_count: 0,
+    });
+
+    for shortcut in shortcuts {
+        let effective_key = shortcut.remapped_to.as_deref().unwrap_or(&shortcut.key);
+        let Some(key) = key_id_to_shortcut(effective_key) else {
+            continue;
+        };
+        let label = if shortcut.description.trim().is_empty() {
+            shortcut.extension.clone()
+        } else {
+            shortcut.description.clone()
+        };
+        let mut item = HintItem::new(key, Cow::Owned(label));
+        item.description = Some(Cow::Owned(if shortcut.description.trim().is_empty() {
+            format!("Shortcut from {}", shortcut.extension)
+        } else {
+            format!("{} ({})", shortcut.description, shortcut.extension)
+        }));
+        entries.push(ShortcutsHelpEntry::Hint {
+            item,
+            dimmed: !shortcut.enabled,
+            action_id: None,
+            long_help: None,
+        });
+    }
+
+    let count = entries.len() - header_idx - 1;
+    if count == 0 {
+        entries.pop();
+    } else if let Some(ShortcutsHelpEntry::SectionHeader { entry_count, .. }) =
+        entries.get_mut(header_idx)
+    {
+        *entry_count = count;
+    }
+}
+
+fn key_id_to_shortcut(key_id: &str) -> Option<KeyShortcut> {
+    let lower = key_id.to_lowercase();
+    let mut parts = lower.split('+').collect::<Vec<_>>();
+    let key_part = parts.pop()?;
+    if key_part.is_empty() {
+        return None;
+    }
+
+    let mut modifiers = KeyModifiers::NONE;
+    for modifier in parts {
+        modifiers |= match modifier {
+            "ctrl" | "control" => KeyModifiers::CONTROL,
+            "alt" | "meta" | "option" => KeyModifiers::ALT,
+            "shift" => KeyModifiers::SHIFT,
+            "super" | "cmd" | "command" | "win" => KeyModifiers::SUPER,
+            _ => return None,
+        };
+    }
+
+    let code = match key_part {
+        "enter" | "return" => KeyCode::Enter,
+        "escape" | "esc" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
+        "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        "space" => KeyCode::Char(' '),
+        key if key.len() == 1 => KeyCode::Char(key.chars().next()?),
+        key if key.starts_with('f') => {
+            let number = key[1..].parse::<u8>().ok()?;
+            if !(1..=12).contains(&number) {
+                return None;
+            }
+            KeyCode::F(number)
+        }
+        _ => return None,
+    };
+
+    Some(KeyShortcut::new(code, modifiers))
 }
 
 // Man-page body for the paste pseudo-row (Enter detail). Keep claims that
@@ -130,7 +231,17 @@ pub fn build_entries(
     registry: &ActionRegistry,
     vim_mode: bool,
 ) -> Vec<ShortcutsHelpEntry> {
+    build_entries_with_extension_shortcuts(active_contexts, registry, vim_mode, &[])
+}
+
+pub fn build_entries_with_extension_shortcuts(
+    active_contexts: &[When],
+    registry: &ActionRegistry,
+    vim_mode: bool,
+    extension_shortcuts: &[ExtensionShortcut],
+) -> Vec<ShortcutsHelpEntry> {
     let mut entries: Vec<ShortcutsHelpEntry> = Vec::new();
+    append_pi_extension_shortcuts(&mut entries, extension_shortcuts);
 
     // Keys the dashboard session-overlay claims while it is up. The
     // overlay intercept consults `When::DashboardOverlay` before
@@ -1548,6 +1659,70 @@ mod tests {
             action_id: Some(action_id),
             long_help: None,
         }
+    }
+
+    #[test]
+    fn extension_shortcuts_are_prepended_and_use_effective_keys() {
+        let registry = crate::actions::ActionRegistry::defaults();
+        let shortcuts = vec![
+            ExtensionShortcut {
+                key: "alt+t".to_string(),
+                description: "Translate".to_string(),
+                extension: "pi-language-tutor".to_string(),
+                enabled: true,
+                remapped_to: Some("alt+shift+t".to_string()),
+            },
+            ExtensionShortcut {
+                key: "ctrl+k".to_string(),
+                description: "Disabled action".to_string(),
+                extension: "pi-disabled".to_string(),
+                enabled: false,
+                remapped_to: None,
+            },
+        ];
+        let entries = build_entries_with_extension_shortcuts(
+            &[When::PromptFocused],
+            &registry,
+            false,
+            &shortcuts,
+        );
+
+        assert!(matches!(
+            entries.first(),
+            Some(ShortcutsHelpEntry::SectionHeader {
+                label: "Pi Extension Shortcuts",
+                entry_count: 2,
+                ..
+            })
+        ));
+        match &entries[1] {
+            ShortcutsHelpEntry::Hint { item, dimmed, .. } => {
+                assert!(!dimmed);
+                assert_eq!(
+                    item.keys,
+                    vec![KeyShortcut::new(
+                        KeyCode::Char('t'),
+                        KeyModifiers::ALT | KeyModifiers::SHIFT
+                    )]
+                );
+                assert_eq!(
+                    item.description.as_deref(),
+                    Some("Translate (pi-language-tutor)")
+                );
+            }
+            _ => panic!("first Pi shortcut must be a hint"),
+        }
+        assert!(matches!(
+            entries.get(2),
+            Some(ShortcutsHelpEntry::Hint { dimmed: true, .. })
+        ));
+        assert!(entries.iter().skip(3).any(|entry| matches!(
+            entry,
+            ShortcutsHelpEntry::SectionHeader {
+                label: "Essentials",
+                ..
+            }
+        )));
     }
 
     /// Dashboard mode switching must advertise Ctrl+Shift+T; Shift+Tab is the

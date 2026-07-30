@@ -2419,17 +2419,19 @@ impl AppView {
                                         .collect()
                                 })
                                 .unwrap_or_default();
-                        self.external_ui.extension_shortcuts.set_shortcuts(shortcuts);
-                        // Refresh open modal snapshot if user has it open.
+                        self.external_ui
+                            .extension_shortcuts
+                            .set_shortcuts(shortcuts);
+                        self.refresh_external_ui_surface();
+                        // Refresh open manager snapshot if user has it open.
                         if let ActiveView::Agent(id) = self.active_view
                             && let Some(agent) = self.agents.get_mut(&id)
                             && agent.pi_shortcut_manager.is_some()
                         {
-                            agent.pi_shortcut_manager = Some(
-                                crate::views::shortcut_manager::ShortcutManagerModal::new(
+                            agent.pi_shortcut_manager =
+                                Some(crate::views::shortcut_manager::ShortcutManagerModal::new(
                                     &self.external_ui.extension_shortcuts,
-                                ),
-                            );
+                                ));
                         }
                     }
                 }
@@ -2687,7 +2689,23 @@ impl AppView {
             &self.external_ui.widgets,
             ExternalWidgetPlacement::BelowEditor,
         );
+        let global_shortcuts_enabled = self.external_ui.extension_shortcuts.is_global_enabled();
+        let mut extension_shortcuts = self
+            .external_ui
+            .extension_shortcuts
+            .all()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !global_shortcuts_enabled {
+            for shortcut in &mut extension_shortcuts {
+                shortcut.enabled = false;
+            }
+        }
         self.agents.values_mut().fold(false, |changed, agent| {
+            agent
+                .pi_extension_shortcuts
+                .clone_from(&extension_shortcuts);
             agent.set_external_ui_surface(&widgets_above_editor, &widgets_below_editor, &statuses)
                 || changed
         })
@@ -3069,6 +3087,7 @@ impl AppView {
                         .and_then(|a| a.pi_shortcut_manager.take())
                         .expect("pi_shortcut_manager present");
                     let close = modal.handle_key(key, &mut self.external_ui.extension_shortcuts);
+                    self.refresh_external_ui_surface();
                     if !close && let Some(agent) = self.agents.get_mut(&id) {
                         agent.pi_shortcut_manager = Some(modal);
                     }

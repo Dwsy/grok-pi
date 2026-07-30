@@ -1363,7 +1363,12 @@ impl AgentView {
                 if self.in_dashboard_overlay {
                     contexts.push(crate::actions::When::DashboardOverlay);
                 }
-                let entries = shortcuts_help::build_entries(&contexts, registry, self.vim_mode);
+                let entries = shortcuts_help::build_entries_with_extension_shortcuts(
+                    &contexts,
+                    registry,
+                    self.vim_mode,
+                    &self.pi_extension_shortcuts,
+                );
                 let state = shortcuts_help::build_initial_picker_state(&entries);
                 self.active_modal = Some(crate::views::modal::ActiveModal::ShortcutsHelp {
                     entries,

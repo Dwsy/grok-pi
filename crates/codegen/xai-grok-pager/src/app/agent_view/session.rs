@@ -232,6 +232,7 @@ impl AgentView {
             inline_media_hits: InlineMediaHitAreas::default(),
             extensions_modal: None,
             pi_shortcut_manager: None,
+            pi_extension_shortcuts: Vec::new(),
             agents_modal: None,
             persona_detail: None,
             btw_state: None,

@@ -1186,6 +1186,9 @@ pub struct AgentView {
     /// Native Pi extension-shortcut manager. Opened by `/pi-shortcut-manager`.
     /// Independent of remote-tui; does not host extension component UIs.
     pub(crate) pi_shortcut_manager: Option<crate::views::shortcut_manager::ShortcutManagerModal>,
+    /// Read-only Pi extension shortcut snapshot shown at the top of Grok's
+    /// native all-shortcuts modal. Management remains in `/pi-shortcut-manager`.
+    pub(crate) pi_extension_shortcuts: Vec<crate::app::extension_shortcuts::ExtensionShortcut>,
     /// Active agents modal popup. When `Some`, blocks all input and
     /// renders as a centered overlay. Opened by `/config-agents` or `/agents`.
     pub(crate) agents_modal: Option<crate::views::agents_modal::AgentsModalState>,
