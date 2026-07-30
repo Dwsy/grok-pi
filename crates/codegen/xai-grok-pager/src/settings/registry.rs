@@ -525,6 +525,9 @@ pub fn current_value_for(
         "pi_goal" => Some(SettingValue::Bool(ui.pi_goal)),
         "pi_loop" => Some(SettingValue::Bool(ui.pi_loop)),
         "pi_ask_user_question" => Some(SettingValue::Bool(ui.pi_ask_user_question)),
+        "pi_ask_user_question_notifications" => {
+            Some(SettingValue::Bool(ui.pi_ask_user_question_notifications))
+        }
         "pi_btw" => Some(SettingValue::Bool(ui.pi_btw)),
         "pi_cache_graph" => Some(SettingValue::Bool(ui.pi_cache_graph)),
         "show_other_tool_args" => Some(SettingValue::Bool(ui.show_other_tool_args)),
@@ -1342,6 +1345,16 @@ mod tests {
                         "pi_ask_user_question default drifts from UiConfig::default()"
                     );
                     assert!(!*default, "pi_ask_user_question must default OFF");
+                }
+                ("pi_ask_user_question_notifications", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_ask_user_question_notifications,
+                        "pi_ask_user_question_notifications default drifts from UiConfig::default()"
+                    );
+                    assert!(
+                        *default,
+                        "pi_ask_user_question_notifications must default ON"
+                    );
                 }
                 ("pi_cache_graph", SettingKind::Bool { default }) => {
                     assert_eq!(

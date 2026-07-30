@@ -50,6 +50,10 @@ pub struct UiConfig {
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
     pub pi_ask_user_question: bool,
+    /// Notify the desktop when native Q&A arrives while grok-pi is unfocused.
+    /// Default on; applies immediately.
+    #[serde(default = "default_true")]
+    pub pi_ask_user_question_notifications: bool,
     /// Enable native `/btw` side questions for grok-pi (Pi extension + x.ai/btw).
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
@@ -402,6 +406,7 @@ impl Default for UiConfig {
             pi_goal: false,
             pi_loop: false,
             pi_ask_user_question: false,
+            pi_ask_user_question_notifications: true,
             pi_btw: false,
             pi_cache_graph: true,
             show_other_tool_args: false,

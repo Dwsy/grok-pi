@@ -752,6 +752,8 @@ pub enum Action {
     SetPiLoop(bool),
     /// Enable native Q&A (`ask_user_question` → QuestionView; restart required).
     SetPiAskUserQuestion(bool),
+    /// Notify when a native Q&A question arrives while grok-pi is unfocused.
+    SetPiAskUserQuestionNotifications(bool),
     /// Enable native /btw for grok-pi (restart required).
     SetPiBtw(bool),
     SetPiCacheGraph(bool),

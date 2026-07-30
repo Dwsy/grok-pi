@@ -4,6 +4,22 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.13] - 2026-07-30
+
+Range: `v0.0.12` → `v0.0.13` (2026-07-28 → 2026-07-30).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Added
+
+- **Q&A desktop notifications** — when an enabled native `ask_user_question` request arrives while grok-pi is unfocused, Pager sends a best-effort native desktop notification. F2 → Agent → **Q&A desktop notifications** controls it immediately; it defaults on and does not affect the Q&A tool admission setting.
+
+### Fixed
+
+- **External ACP startup noise** — the Pager-owned auth manager no longer logs expected missing Grok auth-file diagnostics for grok-pi's product-isolated external profile.
+
+---
+
 ## [0.0.12] - 2026-07-28
 
 Range: `v0.0.11` → `v0.0.12` (2026-07-25 → 2026-07-28).

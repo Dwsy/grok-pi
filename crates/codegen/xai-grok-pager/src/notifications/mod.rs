@@ -4,6 +4,7 @@ pub mod hooks;
 pub mod progress;
 pub mod protocol;
 pub mod sleep;
+pub(crate) mod system;
 pub mod title;
 pub mod tmux;
 

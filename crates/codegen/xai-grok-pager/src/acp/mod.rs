@@ -197,10 +197,12 @@ impl AcpConnection {
         cancel: CancellationToken,
         profile: ExternalUiProfile,
     ) -> Self {
-        let auth_manager = std::sync::Arc::new(xai_grok_shell::auth::AuthManager::new(
-            &xai_grok_shell::util::grok_home::grok_home(),
-            xai_grok_shell::auth::GrokComConfig::default(),
-        ));
+        let auth_manager = std::sync::Arc::new(
+            xai_grok_shell::auth::AuthManager::new_without_startup_diagnostics(
+                &xai_grok_shell::util::grok_home::grok_home(),
+                xai_grok_shell::auth::GrokComConfig::default(),
+            ),
+        );
         Self {
             tx,
             rx,

@@ -1322,6 +1322,18 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_ask_user_question_notifications" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch(
+                    "pi_ask_user_question_notifications",
+                    "Bool",
+                    &value,
+                ));
+            };
+            xai_grok_shell::util::config::set_pi_ask_user_question_notifications(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "pi_btw" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("pi_btw", "Bool", &value));

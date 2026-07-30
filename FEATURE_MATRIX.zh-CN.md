@@ -91,7 +91,7 @@
 | `input` | 原生+适配 | QuestionView freeform PromptWidget |
 | `editor` | 原生+适配 | QuestionView multiline PromptWidget |
 | timeout/cancel | 适配 | Pi timeout 撤销对应 QuestionView，返回 `cancelled:true` |
-| 原生 Q&A（`ask_user_question` 工具） | 适配 | F2 `[ui].pi_ask_user_question` **默认关**（需重启）。注入扩展注册工具；adapter 打开多题 `x.ai/ask_user_question` → 原生 QuestionView；control 目录回写答案。文案：*Grok Build asks the right questions to nail the details.* 冲突包表：`assets/native_feature_conflicts.toml` — 开启时 host block 列表包（如 `@juicesharp/rpiv-ask-user-question`）；F2 描述会列出。 |
+| 原生 Q&A（`ask_user_question` 工具） | 适配 | F2 `[ui].pi_ask_user_question` **默认关**（需重启）。注入扩展注册工具；adapter 打开多题 `x.ai/ask_user_question` → 原生 QuestionView；control 目录回写答案。F2 `[ui].pi_ask_user_question_notifications` **默认开**，即时控制 grok-pi 失焦时 Q&A 抵达的原生桌面通知。文案：*Grok Build asks the right questions to nail the details.* 冲突包表：`assets/native_feature_conflicts.toml` — 开启时 host block 列表包（如 `@juicesharp/rpiv-ask-user-question`）；F2 描述会列出。 |
 | raw terminal hook | 边界 | Pi RPC 明确不支持 |
 | custom header/footer/component | 边界 | Pi RPC 明确不支持 component factory |
 | Remote TUI（实验） | 实验 | `PI_GROK_REMOTE_TUI` 默认开：**不改 Pi 源码**；npm/Node Pi 通过官方 `rpc-entry.js` 启动，因此仅检查 argv 的第三方 RPC guard 看不到外层 `--mode rpc`；最先注入的兼容扩展仅在 Remote TUI host 活跃时将 `ExtensionRunner` 暴露给扩展的 `ctx.mode` 从 `rpc` 投影为 `tui`。Pi core 与 JSONL transport 仍是真实 RPC。注入 `ctx.ui.custom` host + `setWidget` 帧投影；键经 tmp keyfile；Pager ANSI 解析。裸 `/login`/`/logout` 由 `pi-grok-auth` 默认开启（resume-x 风格）；更广的 `/pi-*` 选择器仍需 `PI_GROK_NATIVE_COMMANDS` |

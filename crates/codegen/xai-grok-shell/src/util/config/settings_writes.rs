@@ -272,6 +272,11 @@ pub async fn set_pi_ask_user_question(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_ask_user_question = value).await
 }
 
+/// Persist `[ui].pi_ask_user_question_notifications` via `update_config`.
+pub async fn set_pi_ask_user_question_notifications(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_ask_user_question_notifications = value).await
+}
+
 /// Persist `[ui].pi_btw` via `update_config`.
 pub async fn set_pi_btw(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_btw = value).await

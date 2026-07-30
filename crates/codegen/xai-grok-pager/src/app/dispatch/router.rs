@@ -89,7 +89,8 @@ use super::settings::setters::{
     set_display_refresh_auto_cadence, set_fork_secondary_model, set_group_tool_verbs,
     set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
     set_model_slot, set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question,
-    set_pi_bash_run_display, set_pi_btw, set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal,
+    set_pi_ask_user_question_notifications, set_pi_bash_run_display, set_pi_btw,
+    set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal,
     set_pi_herdr, set_pi_loop, set_pi_subagents, set_pi_tree_file_rollback,
     set_pi_tree_skip_summary_prompt, set_pi_workflows,
     set_progress_bar, set_prompt_suggestions, set_psm_resume_index, set_recap_mermaid,
@@ -1166,6 +1167,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetPiGoal(enabled) => set_pi_goal(app, enabled),
         Action::SetPiLoop(enabled) => set_pi_loop(app, enabled),
         Action::SetPiAskUserQuestion(enabled) => set_pi_ask_user_question(app, enabled),
+        Action::SetPiAskUserQuestionNotifications(enabled) => {
+            set_pi_ask_user_question_notifications(app, enabled)
+        }
         Action::SetPiBtw(enabled) => set_pi_btw(app, enabled),
         Action::SetPiCacheGraph(enabled) => set_pi_cache_graph(app, enabled),
         Action::SetShowOtherToolArgs(enabled) => set_show_other_tool_args(app, enabled),

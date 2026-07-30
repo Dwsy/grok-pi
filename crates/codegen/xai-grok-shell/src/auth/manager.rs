@@ -264,22 +264,44 @@ enum LockOutcome {
 
 impl AuthManager {
     pub fn new(grok_home: &Path, grok_com_config: GrokComConfig) -> Self {
+        Self::new_with_startup_diagnostics(grok_home, grok_com_config, true)
+    }
+
+    /// Construct an auth manager without writing Grok product startup diagnostics.
+    ///
+    /// External ACP hosts still need the manager for Pager-owned voice auth, but
+    /// their state directory is not a Grok login home and a missing `auth.json`
+    /// is expected rather than diagnostic-worthy.
+    pub fn new_without_startup_diagnostics(
+        grok_home: &Path,
+        grok_com_config: GrokComConfig,
+    ) -> Self {
+        Self::new_with_startup_diagnostics(grok_home, grok_com_config, false)
+    }
+
+    fn new_with_startup_diagnostics(
+        grok_home: &Path,
+        grok_com_config: GrokComConfig,
+        emit_startup_diagnostics: bool,
+    ) -> Self {
         let scope = grok_com_config.auth_scope();
         let proxy_base_url =
             crate::agent::config::EndpointsConfig::from_effective_config().proxy_url();
 
-        xai_grok_telemetry::unified_log::info(
-            "AuthManager::new",
-            None,
-            Some(serde_json::json!({
-                "scope": &scope,
-                "grok_home": grok_home.display().to_string(),
-                "HOME": std::env::var("HOME").unwrap_or_else(|_| "(unset)".into()),
-                "GROK_HOME": std::env::var("GROK_HOME").unwrap_or_else(|_| "(unset)".into()),
-                "GROK_AUTH_PATH": std::env::var("GROK_AUTH_PATH").unwrap_or_else(|_| "(unset)".into()),
-                "GROK_AUTH": std::env::var("GROK_AUTH").map(|_| "(set)".to_string()).unwrap_or_else(|_| "(unset)".into()),
-            })),
-        );
+        if emit_startup_diagnostics {
+            xai_grok_telemetry::unified_log::info(
+                "AuthManager::new",
+                None,
+                Some(serde_json::json!({
+                    "scope": &scope,
+                    "grok_home": grok_home.display().to_string(),
+                    "HOME": std::env::var("HOME").unwrap_or_else(|_| "(unset)".into()),
+                    "GROK_HOME": std::env::var("GROK_HOME").unwrap_or_else(|_| "(unset)".into()),
+                    "GROK_AUTH_PATH": std::env::var("GROK_AUTH_PATH").unwrap_or_else(|_| "(unset)".into()),
+                    "GROK_AUTH": std::env::var("GROK_AUTH").map(|_| "(set)".to_string()).unwrap_or_else(|_| "(unset)".into()),
+                })),
+            );
+        }
 
         // GROK_AUTH: inline JSON credentials (highest priority, read-only).
         if let Ok(inline_json) = std::env::var("GROK_AUTH") {
@@ -357,11 +379,13 @@ impl AuthManager {
                 (None, detail, state)
             }
         };
-        xai_grok_telemetry::unified_log::info(
-            "AuthManager::new auth.json load result",
-            None,
-            Some(auth_read_detail),
-        );
+        if emit_startup_diagnostics {
+            xai_grok_telemetry::unified_log::info(
+                "AuthManager::new auth.json load result",
+                None,
+                Some(auth_read_detail),
+            );
+        }
 
         let manager = Self::assemble(
             auth,

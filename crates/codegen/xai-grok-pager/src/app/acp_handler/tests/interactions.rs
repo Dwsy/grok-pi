@@ -152,6 +152,83 @@
     }
 
     #[test]
+    fn ask_user_question_system_notification_requires_unfocused_pager() {
+        let _ = crate::notifications::system::take_recorded_notifications();
+
+        let mut focused_app = make_app_with_agent("sess-focused");
+        let (focused_tx, _focused_rx) = tokio::sync::oneshot::channel();
+        let focused_raw = serde_json::value::to_raw_value(&serde_json::json!({
+            "sessionId": "sess-focused",
+            "toolCallId": "tc-focused",
+            "questions": [],
+            "mode": "default",
+        }))
+        .unwrap();
+        let focused_msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+            request: acp::ExtRequest::new("x.ai/ask_user_question", focused_raw.into()),
+            response_tx: focused_tx,
+        });
+
+        assert!(handle(focused_msg, &mut focused_app));
+        assert!(
+            crate::notifications::system::take_recorded_notifications().is_empty(),
+            "a focused pager must not emit a native system notification"
+        );
+
+        let mut unfocused_app = make_app_with_agent("sess-unfocused");
+        unfocused_app
+            .notification_service
+            .focus_tracker
+            .on_focus_lost();
+        let (unfocused_tx, _unfocused_rx) = tokio::sync::oneshot::channel();
+        let unfocused_raw = serde_json::value::to_raw_value(&serde_json::json!({
+            "sessionId": "sess-unfocused",
+            "toolCallId": "tc-unfocused",
+            "questions": [],
+            "mode": "default",
+        }))
+        .unwrap();
+        let unfocused_msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+            request: acp::ExtRequest::new("x.ai/ask_user_question", unfocused_raw.into()),
+            response_tx: unfocused_tx,
+        });
+
+        assert!(handle(unfocused_msg, &mut unfocused_app));
+        assert_eq!(
+            crate::notifications::system::take_recorded_notifications(),
+            vec![(
+                "Grok".to_owned(),
+                "A question is waiting for your response.".to_owned(),
+            )]
+        );
+
+        let mut disabled_app = make_app_with_agent("sess-disabled");
+        disabled_app.current_ui.pi_ask_user_question_notifications = false;
+        disabled_app
+            .notification_service
+            .focus_tracker
+            .on_focus_lost();
+        let (disabled_tx, _disabled_rx) = tokio::sync::oneshot::channel();
+        let disabled_raw = serde_json::value::to_raw_value(&serde_json::json!({
+            "sessionId": "sess-disabled",
+            "toolCallId": "tc-disabled",
+            "questions": [],
+            "mode": "default",
+        }))
+        .unwrap();
+        let disabled_msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+            request: acp::ExtRequest::new("x.ai/ask_user_question", disabled_raw.into()),
+            response_tx: disabled_tx,
+        });
+
+        assert!(handle(disabled_msg, &mut disabled_app));
+        assert!(
+            crate::notifications::system::take_recorded_notifications().is_empty(),
+            "an opt-out must suppress an unfocused Q&A notification"
+        );
+    }
+
+    #[test]
     fn ask_user_question_unknown_session_parks_without_error() {
         // No local view for the session, and the active agent HAS a session_id
         // (so the race-window fallback does not fire). The reverse-request must

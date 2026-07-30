@@ -2320,6 +2320,25 @@ pub(in crate::app::dispatch) fn set_pi_ask_user_question(
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_ask_user_question_notifications(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = app.current_ui.pi_ask_user_question_notifications;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_ask_user_question_notifications = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!("\u{2713} Q&A desktop notifications: {value}"));
+    vec![Effect::PersistSetting {
+        key: "pi_ask_user_question_notifications",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_pi_btw(app: &mut AppView, enabled: bool) -> Vec<Effect> {
     let previous = app.current_ui.pi_btw;
     if previous == enabled {

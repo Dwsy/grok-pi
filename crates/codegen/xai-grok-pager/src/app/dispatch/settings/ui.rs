@@ -988,6 +988,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("pi_goal", SettingValue::Bool(b)) => Some(Action::SetPiGoal(*b)),
         ("pi_loop", SettingValue::Bool(b)) => Some(Action::SetPiLoop(*b)),
         ("pi_ask_user_question", SettingValue::Bool(b)) => Some(Action::SetPiAskUserQuestion(*b)),
+        ("pi_ask_user_question_notifications", SettingValue::Bool(b)) => {
+            Some(Action::SetPiAskUserQuestionNotifications(*b))
+        }
         ("pi_btw", SettingValue::Bool(b)) => Some(Action::SetPiBtw(*b)),
         ("pi_cache_graph", SettingValue::Bool(b)) => Some(Action::SetPiCacheGraph(*b)),
         ("show_other_tool_args", SettingValue::Bool(b)) => Some(Action::SetShowOtherToolArgs(*b)),
@@ -1228,6 +1231,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         ("pi_goal", SettingValue::Bool(b)) => app.current_ui.pi_goal = *b,
         ("pi_loop", SettingValue::Bool(b)) => app.current_ui.pi_loop = *b,
         ("pi_ask_user_question", SettingValue::Bool(b)) => app.current_ui.pi_ask_user_question = *b,
+        ("pi_ask_user_question_notifications", SettingValue::Bool(b)) => {
+            app.current_ui.pi_ask_user_question_notifications = *b
+        }
         ("pi_btw", SettingValue::Bool(b)) => app.current_ui.pi_btw = *b,
         ("pi_cache_graph", SettingValue::Bool(b)) => app.current_ui.pi_cache_graph = *b,
         ("show_other_tool_args", SettingValue::Bool(b)) => {

@@ -185,6 +185,7 @@ flowchart LR
 | 功能开关 | 如何开启 | 默认 | 会禁用的包（npm） |
 |---|---|---:|---|
 | **Q&A**（`pi_ask_user_question`） | F2 → Agent → Q&A（需重启） | 关 | `@juicesharp/rpiv-ask-user-question` |
+| **Q&A 桌面通知**（`pi_ask_user_question_notifications`） | F2 → Agent → Q&A desktop notifications | 开 | — |
 | **Pi goal mode**（`pi_goal`） | F2 → Agent → Pi goal mode（需重启） | 关 | `pi-codex-goal`、`@narumitw/pi-goal`、`@misunders2d/pi-goal`、`pi-goal`、`pi-goal-x` |
 | **Pi workflows**（`pi_workflows`） | F2 → Agent → Pi workflows（需重启） | 关 | `@quintinshaw/pi-dynamic-workflows` |
 | **Pi subagents**（`pi_subagents`） | F2 → Agent → Pi subagents（需重启） | 开 | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 显示内置代理并写入产品隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关、最大回合）；资源选择复用 Pi 资源管理器，`/subagent-message` 支持追问运行中子代理 |

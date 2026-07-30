@@ -922,6 +922,9 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "pi_goal" => Some(Action::SetPiGoal(new)),
         "pi_loop" => Some(Action::SetPiLoop(new)),
         "pi_ask_user_question" => Some(Action::SetPiAskUserQuestion(new)),
+        "pi_ask_user_question_notifications" => {
+            Some(Action::SetPiAskUserQuestionNotifications(new))
+        }
         "pi_btw" => Some(Action::SetPiBtw(new)),
         "pi_cache_graph" => Some(Action::SetPiCacheGraph(new)),
         "show_other_tool_args" => Some(Action::SetShowOtherToolArgs(new)),

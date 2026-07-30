@@ -268,6 +268,12 @@ pub(crate) fn handle_ask_user_question(
         "Opened question view from ext_method"
     );
 
+    if app.current_ui.pi_ask_user_question_notifications
+        && !app.notification_service.focus_tracker.is_focused()
+    {
+        crate::notifications::system::notify("Grok", "A question is waiting for your response.");
+    }
+
     // Only the currently-displayed view needs an immediate redraw; a question
     // parked on a background agent surfaces via the roster `NeedsInput` delta
     // and renders when the user switches to that session.
