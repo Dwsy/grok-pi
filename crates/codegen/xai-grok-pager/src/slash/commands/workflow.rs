@@ -105,6 +105,7 @@ mod tests {
             },
             screen_mode: crate::app::ScreenMode::Fullscreen,
             billing_surface_visible: false,
+            usage_command_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot::default(),
         };
         assert!(matches!(

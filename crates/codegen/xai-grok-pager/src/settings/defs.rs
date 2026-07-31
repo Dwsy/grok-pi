@@ -570,17 +570,9 @@ const CONTEXTUAL_HINTS_CHILDREN: &[&str] = &[
     "contextual_hints.ssh_wrap",
 ];
 
-const RECAP_MODELS_CHILDREN: &[&str] = &[
-    "recap_model",
-    "recap_model_2",
-    "recap_model_3",
-];
+const RECAP_MODELS_CHILDREN: &[&str] = &["recap_model", "recap_model_2", "recap_model_3"];
 
-const BTW_MODELS_CHILDREN: &[&str] = &[
-    "btw_model",
-    "btw_model_2",
-    "btw_model_3",
-];
+const BTW_MODELS_CHILDREN: &[&str] = &["btw_model", "btw_model_2", "btw_model_3"];
 
 const PI_BUILTIN_TOOLS_CHILDREN: &[&str] = &[
     "pi_builtin_tools.read",

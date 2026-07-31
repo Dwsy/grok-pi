@@ -549,8 +549,7 @@ impl AgentView {
                 review.list_area.area() > 0 && review.list_area.contains((col, row).into());
             let in_preview =
                 review.preview_area.area() > 0 && review.preview_area.contains((col, row).into());
-            let in_ask =
-                review.ask_area.area() > 0 && review.ask_area.contains((col, row).into());
+            let in_ask = review.ask_area.area() > 0 && review.ask_area.contains((col, row).into());
             if in_ask {
                 review.focus = ReviewFocus::Ask;
                 let max = review.ask.max_response_scroll(

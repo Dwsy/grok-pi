@@ -315,7 +315,8 @@ impl ResourcePolicy {
         }
 
         // 4b. Feature-gated conflicts from assets/native_feature_conflicts.toml.
-        if let Some(reason) = self.feature_conflict_reason(&resource.source, resource.path.as_path())
+        if let Some(reason) =
+            self.feature_conflict_reason(&resource.source, resource.path.as_path())
         {
             return Decision::Block { reason };
         }
@@ -708,16 +709,20 @@ mod tests {
         assert_eq!(plan.extensions.len(), 1);
         assert!(plan.extensions[0].ends_with("my-tool/index.ts"));
         assert_eq!(plan.blocked.len(), 1);
-        assert!(plan.blocked[0]
-            .reason
-            .contains("@juicesharp/rpiv-ask-user-question"));
+        assert!(
+            plan.blocked[0]
+                .reason
+                .contains("@juicesharp/rpiv-ask-user-question")
+        );
 
         let reason = policy.check_explicit_path(
             "/home/user/.pi/agent/npm/node_modules/@juicesharp/rpiv-ask-user-question/index.ts",
         );
-        assert!(reason
-            .unwrap()
-            .contains("@juicesharp/rpiv-ask-user-question"));
+        assert!(
+            reason
+                .unwrap()
+                .contains("@juicesharp/rpiv-ask-user-question")
+        );
     }
 
     #[test]

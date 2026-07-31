@@ -169,7 +169,7 @@ async fn notify_session_title(agent: &MvpAgent, session_id: acp::SessionId, titl
     use crate::extensions::notification::{SessionNotification, SessionUpdate};
 
     let notification = SessionNotification {
-        session_id,
+        session_id: session_id.clone(),
         update: SessionUpdate::SessionSummaryGenerated {
             session_summary: title.to_owned(),
         },
@@ -180,6 +180,8 @@ async fn notify_session_title(agent: &MvpAgent, session_id: acp::SessionId, titl
             acp::ExtNotification::new("x.ai/session_notification", params.into());
         let _ = agent.gateway.ext_notification(ext_notification).await;
     }
+
+    agent.notify_session_info_update(&session_id, title);
 }
 
 async fn rename_chat_conversation(
@@ -253,6 +255,13 @@ async fn handle_session_delete(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtR
     let needs_remote =
         agent.is_writeback_storage() && agent.current_auth().is_some_and(|a| !a.is_zdr_team());
 
+    // Tear down any live actor first (cancel turn/subagents/bg tasks,
+    // process-scope kill, flush). Then wipe history so shutdown cannot
+    // rewrite the session directory after delete.
+    if agent.sessions.borrow().contains_key(&session_id) {
+        agent.teardown_live_session_before_delete(&session_id).await;
+    }
+
     // Shared delete: remote-first, then local disk + FTS eviction.
     // Mirrored by the `grok sessions delete <id>` CLI path.
     crate::session::persistence::delete_session_history(
@@ -268,15 +277,6 @@ async fn handle_session_delete(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtR
         }
         acp::Error::internal_error().data(e.to_string())
     })?;
-
-    // If an in-memory live session exists for this id (e.g. the user
-    // deleted history for a session that is still open in another agent
-    // or the current one), shut it down and drop the MvpAgent bookkeeping
-    // so we don't leave a live actor whose on-disk/FTS state is gone.
-    if agent.sessions.borrow().contains_key(&session_id) {
-        agent.request_session_shutdown(&session_id);
-        agent.remove_session(&session_id);
-    }
 
     tracing::info!(session_id = %req.session_id, "Session deleted");
 
@@ -653,6 +653,29 @@ async fn handle_plugins_reload(agent: &MvpAgent) -> ExtResult {
 async fn handle_commands_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let req: crate::session::slash_commands::ListCommandsRequest = parse_params(args)?;
 
+    let availability = agent.command_availability();
+    let skills_config = agent.cfg.borrow().skills.clone();
+    let compat = agent.cfg.borrow().compat_resolved;
+
+    // Chat product catalog never uses cwd plugin discovery / folder-trust.
+    // Prefer kind=chat even when sessionId is set so the pull matches ACU.
+    if req.kind.as_deref() == Some("chat") {
+        let response = crate::session::slash_commands::list_commands(
+            None,
+            &skills_config,
+            None,
+            availability,
+            compat,
+            false,
+            Some("chat"),
+            Some(agent.auth_manager.clone()),
+        )
+        .await?;
+        return Ok(acp::ExtResponse::new(Arc::from(
+            serde_json::value::to_raw_value(&response)?,
+        )));
+    }
+
     if let Some(session_id) = req.session_id.as_ref() {
         let Some(handle) = agent.session_handle_waiting_for_load(session_id).await else {
             return Err(
@@ -664,10 +687,6 @@ async fn handle_commands_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
             serde_json::value::to_raw_value(&response)?,
         )));
     }
-
-    let skills_config = agent.cfg.borrow().skills.clone();
-    let compat = agent.cfg.borrow().compat_resolved;
-    let availability = agent.command_availability();
 
     // For a given cwd, compute the plugin registry the same way a session would
     // at spawn time (via build_for_cwd) and the same way reload_plugins_impl does
@@ -715,8 +734,10 @@ async fn handle_commands_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
         availability,
         compat,
         false,
+        req.kind.as_deref(),
+        Some(agent.auth_manager.clone()),
     )
-    .await;
+    .await?;
     Ok(acp::ExtResponse::new(Arc::from(
         serde_json::value::to_raw_value(&response)?,
     )))

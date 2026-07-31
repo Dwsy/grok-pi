@@ -94,10 +94,7 @@ impl SlashCommand for ScopedModelsCommand {
                 return CommandResult::Error("empty scoped-model pattern".into());
             }
             let (model_text, effort_text) = split_effort_suffix(ctx.models, pattern);
-            let Some(model_id) = ctx
-                .models
-                .resolve_by_name_or_id(model_text)
-            else {
+            let Some(model_id) = ctx.models.resolve_by_name_or_id(model_text) else {
                 return CommandResult::Error(format!("Unknown model in scope: {model_text}"));
             };
             let effort = match effort_text {
@@ -231,6 +228,7 @@ mod tests {
             bundle_state: &EMPTY_BUNDLE,
             screen_mode: crate::app::ScreenMode::Inline,
             billing_surface_visible: true,
+            usage_command_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot::default(),
         }
     }

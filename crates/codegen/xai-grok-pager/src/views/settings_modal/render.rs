@@ -869,9 +869,9 @@ fn wrapped_description_height(
     (wrapped.len() as u16).min(cap)
 }
 
-// Picker prefix constants (hoisted to avoid per-frame allocation).
-const PICKER_PREFIX_FOCUSED: &str = " \u{25CF}  ";
-const PICKER_PREFIX_UNFOCUSED: &str = " \u{25CB}  ";
+// Picker prefix width templates (glyphs are drawn separately).
+const PICKER_PREFIX_SELECTED: &str = " \u{25CF}  ";
+const PICKER_PREFIX_UNSELECTED: &str = " \u{25CB}  ";
 
 pub(super) const PICKER_PREFIX_W: u16 = 4;
 const PICKER_SEPARATOR: &str = " \u{00B7} ";
@@ -944,14 +944,14 @@ pub(super) fn render_picking_enum(
     theme: &Theme,
 ) {
     debug_assert_eq!(
-        PICKER_PREFIX_FOCUSED.width(),
+        PICKER_PREFIX_SELECTED.width(),
         PICKER_PREFIX_W as usize,
-        "PICKER_PREFIX_W drifted from PICKER_PREFIX_FOCUSED width",
+        "PICKER_PREFIX_W drifted from PICKER_PREFIX_SELECTED width",
     );
     debug_assert_eq!(
-        PICKER_PREFIX_UNFOCUSED.width(),
+        PICKER_PREFIX_UNSELECTED.width(),
         PICKER_PREFIX_W as usize,
-        "PICKER_PREFIX_W drifted from PICKER_PREFIX_UNFOCUSED width",
+        "PICKER_PREFIX_W drifted from PICKER_PREFIX_UNSELECTED width",
     );
     debug_assert_eq!(
         PICKER_SEPARATOR.width(),
@@ -959,11 +959,19 @@ pub(super) fn render_picking_enum(
         "PICKER_SEPARATOR_W drifted from PICKER_SEPARATOR width",
     );
 
-    let (setting_key, choices_idx) = match &state.state.mode {
+    let (setting_key, choices_idx, original_value) = match &state.state.mode {
         SettingsMode::PickingEnum {
-            key, choices_idx, ..
-        } => (*key, *choices_idx),
+            key,
+            choices_idx,
+            original_value,
+            ..
+        } => (*key, *choices_idx, original_value),
         _ => unreachable!("picker renderer requires PickingEnum state"),
+    };
+    let committed_canonical: Option<&str> = match original_value {
+        SettingValue::Enum(s) => Some(s),
+        SettingValue::String(s) => Some(s.as_str()),
+        _ => None,
     };
     let Some(meta) = state.registry.find(setting_key) else {
         return;
@@ -1050,6 +1058,7 @@ pub(super) fn render_picking_enum(
     {
         let choice = &choices[choice_i];
         let is_focused = choice_i == choices_idx;
+        let is_current = committed_canonical.is_some_and(|c| c == choice.canonical);
 
         let is_hovered = !is_focused && state.hover_row == Some(choice_i);
         let bg = settings_list_row_bg(theme, is_focused, is_hovered);
@@ -1063,12 +1072,12 @@ pub(super) fn render_picking_enum(
             Style::default().fg(fg_primary).bg(bg)
         };
         let desc_style = Style::default().fg(fg_gray).bg(bg);
-        let marker_style = if is_focused {
+        let marker_style = if is_current {
             Style::default().fg(fg_accent).bg(bg)
         } else {
             Style::default().fg(fg_gray).bg(bg)
         };
-        let marker = if is_focused {
+        let marker = if is_current {
             crate::glyphs::filled_dot()
         } else {
             "\u{25CB}"
@@ -1335,22 +1344,17 @@ fn render_picking_group(
                 "on".to_string(),
                 Style::default().fg(theme.accent_user).bg(bg),
             ),
-            Some(SettingValue::Bool(false)) => (
-                "off".to_string(),
-                Style::default().fg(theme.gray).bg(bg),
-            ),
-            Some(SettingValue::String(s)) if !s.is_empty() => (
-                s,
-                Style::default().fg(theme.accent_user).bg(bg),
-            ),
+            Some(SettingValue::Bool(false)) => {
+                ("off".to_string(), Style::default().fg(theme.gray).bg(bg))
+            }
+            Some(SettingValue::String(s)) if !s.is_empty() => {
+                (s, Style::default().fg(theme.accent_user).bg(bg))
+            }
             Some(SettingValue::String(_)) | None => (
                 "(no override)".to_string(),
                 Style::default().fg(theme.gray).bg(bg),
             ),
-            other => (
-                format!("{other:?}"),
-                Style::default().fg(theme.gray).bg(bg),
-            ),
+            other => (format!("{other:?}"), Style::default().fg(theme.gray).bg(bg)),
         };
 
         // " <marker>  <label> … <value> " (value right-aligned with a pad).
@@ -1389,7 +1393,12 @@ fn render_picking_group(
             );
         }
         if value_x + value_w <= area.x + area.width {
-            buf.set_span(value_x, y, &Span::styled(value_text.as_str(), value_style), value_w);
+            buf.set_span(
+                value_x,
+                y,
+                &Span::styled(value_text.as_str(), value_style),
+                value_w,
+            );
         }
         y = y.saturating_add(1);
     }

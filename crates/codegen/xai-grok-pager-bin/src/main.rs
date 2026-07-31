@@ -1144,6 +1144,13 @@ async fn run_agent_command(
         let cancel = CancellationToken::new();
         match mode {
             ClientMode::Stdio => {
+                if let Err(error) = xai_tty_utils::kill_current_process_on_parent_death() {
+                    tracing::warn!(
+                        %error,
+                        "failed to bind to parent death; stdio bridge will not die \
+                         with its parent — stdin EOF remains the only cleanup"
+                    );
+                }
                 let replay_state = Arc::new(std::sync::Mutex::new(StdioReplayState::default()));
                 let leader_tx = Arc::new(TokioMutex::new(tx));
                 let leader_tx_stdin = leader_tx.clone();
@@ -2059,6 +2066,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 yolo: launch_yolo.yolo,
                 trust: args.trust,
                 output_format: args.output_format,
+                include_partial_messages: args.include_partial_messages,
                 json_schema,
                 model: args.model,
                 rules: args.rules,

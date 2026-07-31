@@ -121,12 +121,13 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     if let Some(v) = update.show_resolved_model {
         app.show_resolved_model = v;
     }
-    if let Some(v) = update.sharing_enabled {
-        app.sharing_enabled = v;
-        // Propagate to existing agents so slash-command registries stay
-        // in sync (same fan-out pattern used when creating new agents).
+    // Temporary client kill switch: ignore remote `sharing_enabled` until
+    // session share links are restored. Presence is still observed so a
+    // later re-enable can go back to `app.sharing_enabled = v`.
+    if update.sharing_enabled.is_some() {
+        app.sharing_enabled = false;
         for agent in app.agents.values_mut() {
-            agent.set_sharing_enabled(v);
+            agent.set_sharing_enabled(false);
         }
     }
     // Env overrides win over live updates too, mirroring the startup
@@ -152,7 +153,7 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         let was_api_key = app.is_api_key_auth;
         let is_key = super::super::app_view::is_api_key_label(&v);
         app.is_api_key_auth = is_key;
-        app.usage_visible = !is_key && app.team_name.is_none();
+        app.usage_visible = !is_key && app.team_name.is_none() && !app.has_external_auth_provider;
         app.sync_billing_surface_to_agents();
         app.subscription_tier = Some(v);
         app.apply_tier_restrictions();
@@ -172,20 +173,11 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         }
     }
     if let Some(remote_v) = update.voice_mode_enabled {
-        // Same resolution as startup: env > remote > default on. API-key sessions
-        // keep voice on (billable STT) even when remote is a kill switch.
-        let v = crate::app::resolve_voice_mode_enabled(
-            xai_grok_config::env_bool("GROK_VOICE_MODE"),
-            Some(remote_v),
-        ) || app.is_api_key_auth;
-        // Kill-switch: tear down capture so a remote false doesn't leave the mic armed
-        // (skipped for API keys via the OR above).
+        let v = crate::app::resolve_voice_mode_live(Some(remote_v), app.is_api_key_auth);
         if !v {
             app.voice_reset();
             app.voice_ui_active = false;
         }
-        // Sync the flag into the execution gate + every slash surface so
-        // `/voice` shows/hides in lockstep with the gate.
         app.apply_voice_mode_enabled(v);
     } else {
         app.ensure_voice_for_api_key();

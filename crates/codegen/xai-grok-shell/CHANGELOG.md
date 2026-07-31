@@ -1,5 +1,82 @@
 # Changelog
 
+# 0.2.116 — 2026-07-30
+
+## Features
+
+- **Headless streaming output** now includes tool calls, results, and usage when using `--output-format streaming-json`.
+- **New `/undo` slash command** restores files and chat to an earlier turn, same as `/rewind`.
+- **Slash commands** are now correctly hidden or refused in minimal or fullscreen mode based on their declared support.
+
+## Bug Fixes
+
+- **Fixed repeated forced re-logins** after laptop sleep or network hiccups during token refresh.
+- **Suppressed spurious history load warnings** on draft conversations that have no server history yet.
+- **Settings enum pickers** now keep the selected radio button on the current value until you press Enter.
+- **Deep-linked settings** such as `/privacy` now close the settings modal on Esc or Enter instead of returning to the list.
+
+
+# 0.2.115 — 2026-07-29
+
+## Bug Fixes
+
+- **Fixed chat history corruption** that could duplicate tool results or cause later 400 errors after repeated identical tool calls.
+- **Fixed infinite redirect loops** in embedded previews when the browser blocks the required cookie.
+- **Improved the action-stationarity nudge message** to avoid incorrectly claiming tool results were identical.
+- **Fixed external auth provider commands** (`auth_provider_command`) not working on Windows.
+- **Fixed incorrect 'Turn cancelled by user' messages** shown on internal send-now wake turns.
+- **Fixed language server crashes** (e.g. Roslyn on every edit) and missing C# diagnostics; improved diagnostics reliability for other servers.
+
+## Performance
+
+- **Improved prompt caching** for long conversations, reducing repeated billing on growing transcripts.
+
+# 0.2.114 — 2026-07-29
+
+## Features
+
+- **New `/delete` slash command** removes the current session's history after confirmation.
+
+## Bug Fixes
+
+- **Grok** no longer crashes on startup when the host machine has no free threads.
+
+
+# 0.2.113 — 2026-07-28
+
+## Features
+
+- **MCP servers** can now be enabled or disabled directly from the CLI with `grok mcp enable <name>` and `grok mcp disable <name>`.
+- **Full plan markdown** can now be copied to the clipboard with `y` during plan approval or preview.
+- **Added support for the new SuperGrok Plus subscription tier** in authentication and feature gating.
+- **Enabled automatic recovery** from repetitive loops in model output by default.
+
+## Bug Fixes
+
+- **Terminal command output** is no longer lost or duplicated when the gateway is unreachable.
+- **Invalid MCP server entries** in config.toml no longer prevent Grok from starting; problems are shown in `grok inspect`.
+- **SessionEnd hooks** now run on exit in non-leader TUI and headless sessions.
+- **Paste chips** now display with the correct background in inline prompts and question inputs.
+- **Pasted content chips** now behave consistently when editing answers in the question view.
+- **Background task status** now shows only elapsed duration instead of absolute timestamps.
+- **Session lists** no longer drop real sessions when the remote registry reports an outdated turn count of zero.
+- **/loop** now stores prompts that include stop conditions so recurring tasks can terminate themselves when done.
+- **Reduced spurious warning messages** for common auth and config scenarios.
+- **Fixed conda activation** (and other sourced scripts that read $@) when using persistent or login-capture shells.
+- **Fixed stuck background-task tray rows** after long foreground shell commands complete.
+- **Agent subprocesses and idle inhibitors** are now cleaned up when the parent CLI process dies unexpectedly.
+- **Fixed truncated plans** in minimal mode and improved visual separation between reasoning and output (including NO_COLOR).
+- **Fixed credential loss** across multiple grok processes sharing the same auth file.
+- **Fixed doubled Enter** and other keys on older Alacritty terminals.
+- **Fixed false paywall** messages for free-tier and unmatched users.
+
+## Performance
+
+- **Cold start** shows the UI instantly while models and settings load in the background.
+- **Large session forks and resumes** now use far less memory and avoid spikes.
+- **Prevented thread exhaustion** on high-core shared machines by limiting the workspace daemon's worker threads.
+
+
 # 0.2.112 — 2026-07-24
 
 ## Breaking Changes

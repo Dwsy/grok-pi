@@ -32,6 +32,5 @@ mod minimal_slash_switches_from_fullscreen;
 mod minimal_slash_switches_to_fullscreen;
 mod minimal_sticky_screen_mode_persists;
 mod minimal_thinking_is_visually_distinct_from_output;
-mod minimal_transcript_expands_collapsed_thinking;
 mod minimal_transcript_opens_in_pager;
 mod minimal_transcript_pager_restore_no_artifacts;

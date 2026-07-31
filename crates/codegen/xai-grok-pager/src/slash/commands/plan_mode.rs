@@ -69,6 +69,7 @@ mod tests {
             bundle_state: &bundle,
             screen_mode: crate::app::ScreenMode::Inline,
             billing_surface_visible: false,
+            usage_command_visible: true,
             pager_state,
         };
         match PlanModeCommand.run(&mut ctx, "") {
@@ -88,6 +89,7 @@ mod tests {
             bundle_state: &bundle,
             screen_mode: crate::app::ScreenMode::Inline,
             billing_surface_visible: false,
+            usage_command_visible: true,
             pager_state,
         };
         match PlanModeCommand.run(&mut ctx, "") {

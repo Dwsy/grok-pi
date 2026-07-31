@@ -10,8 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use xai_grok_tools::implementations::grok_build::task::types::{
     ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
-    SubagentOwner, SubagentRequest, SubagentResult, SubagentRuntimeOverrides,
-    SubagentSpawnRequest,
+    SubagentOwner, SubagentRequest, SubagentResult, SubagentRuntimeOverrides, SubagentSpawnRequest,
 };
 use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
 use xai_workflow::HostError;

@@ -2386,7 +2386,11 @@ pub(in crate::app::dispatch) fn set_model_slot(
         _ => {}
     }
     refresh_open_settings_modals(app);
-    let label = if value.is_empty() { "cleared" } else { value.as_str() };
+    let label = if value.is_empty() {
+        "cleared"
+    } else {
+        value.as_str()
+    };
     app.show_toast(&format!("\u{2713} {key}: {label}"));
     vec![Effect::PersistSetting {
         key,

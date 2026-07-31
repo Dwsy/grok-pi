@@ -499,10 +499,7 @@ mod tests {
         } else {
             format!("test::{id}")
         };
-        let bare = catalog_id
-            .split_once("::")
-            .map(|(_, m)| m)
-            .unwrap_or(id);
+        let bare = catalog_id.split_once("::").map(|(_, m)| m).unwrap_or(id);
         let provider = catalog_id
             .split_once("::")
             .map(|(p, _)| p)
@@ -513,7 +510,10 @@ mod tests {
             "supportsReasoningEffort".into(),
             serde_json::Value::Bool(true),
         );
-        meta.insert("provider".into(), serde_json::Value::String(provider.into()));
+        meta.insert(
+            "provider".into(),
+            serde_json::Value::String(provider.into()),
+        );
         meta.insert("modelId".into(), serde_json::Value::String(bare.into()));
         let info = acp::ModelInfo::new(model_id.clone(), name.to_string())
             .meta(serde_json::Value::Object(meta).as_object().cloned());
@@ -526,17 +526,17 @@ mod tests {
         } else {
             format!("test::{id}")
         };
-        let bare = catalog_id
-            .split_once("::")
-            .map(|(_, m)| m)
-            .unwrap_or(id);
+        let bare = catalog_id.split_once("::").map(|(_, m)| m).unwrap_or(id);
         let provider = catalog_id
             .split_once("::")
             .map(|(p, _)| p)
             .unwrap_or("test");
         let model_id = acp::ModelId::new(Arc::from(catalog_id.as_str()));
         let mut meta = serde_json::Map::new();
-        meta.insert("provider".into(), serde_json::Value::String(provider.into()));
+        meta.insert(
+            "provider".into(),
+            serde_json::Value::String(provider.into()),
+        );
         meta.insert("modelId".into(), serde_json::Value::String(bare.into()));
         let info = acp::ModelInfo::new(model_id.clone(), name.to_string())
             .meta(serde_json::Value::Object(meta).as_object().cloned());
@@ -561,6 +561,7 @@ mod tests {
             bundle_state: &EMPTY_BUNDLE,
             screen_mode: crate::app::ScreenMode::Inline,
             billing_surface_visible: true,
+            usage_command_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: false,
                 yolo_mode: false,
@@ -618,6 +619,7 @@ mod tests {
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
             billing_surface_visible: true,
+            usage_command_visible: true,
             workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
@@ -689,16 +691,14 @@ mod tests {
             has_session_announcements: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
             billing_surface_visible: false,
+            usage_command_visible: true,
             workflows_available: true,
         };
         let items = cmd.suggest_args(&ctx, "").unwrap();
         assert_eq!(items.len(), 2);
 
         // The picker label combines the model name and provider; value stays provider/id.
-        let anthropic = items
-            .iter()
-            .find(|i| i.description == "anthropic")
-            .unwrap();
+        let anthropic = items.iter().find(|i| i.description == "anthropic").unwrap();
         assert_eq!(anthropic.display, "Claude Haiku 4.5 · anthropic");
         assert_eq!(anthropic.description, "anthropic");
         assert_eq!(anthropic.insert_text, "anthropic/claude-haiku-4-5");
@@ -740,6 +740,7 @@ mod tests {
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
             billing_surface_visible: true,
+            usage_command_visible: true,
             workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
@@ -771,6 +772,7 @@ mod tests {
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
             billing_surface_visible: true,
+            usage_command_visible: true,
             workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
@@ -791,6 +793,7 @@ mod tests {
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
             billing_surface_visible: true,
+            usage_command_visible: true,
             workflows_available: true,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };
@@ -811,10 +814,7 @@ mod tests {
             model_completion_search_text(&id, &info),
             "gpt-5.5 openai-codex openai-codex/gpt-5.5 openai-codex gpt-5.5 GPT 5.5"
         );
-        assert_eq!(
-            model_completion_token(&id, &info),
-            "openai-codex/gpt-5.5"
-        );
+        assert_eq!(model_completion_token(&id, &info), "openai-codex/gpt-5.5");
     }
 
     #[test]

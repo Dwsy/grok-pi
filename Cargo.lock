@@ -13276,6 +13276,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "xai-grok-extra-ca"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.24",
+ "rustls",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "xai-grok-hooks"
 version = "0.1.0"
 dependencies = [
@@ -13304,6 +13314,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "xai-grok-auth",
+ "xai-grok-extra-ca",
  "xai-grok-sampler",
  "xai-grok-telemetry",
  "xai-grok-version",
@@ -13370,6 +13381,7 @@ dependencies = [
  "xai-computer-hub-sdk",
  "xai-file-utils",
  "xai-grok-config",
+ "xai-grok-extra-ca",
  "xai-grok-telemetry",
  "xai-grok-tools",
  "xai-grok-version",
@@ -13441,7 +13453,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager"
-version = "0.2.112"
+version = "0.2.116"
 dependencies = [
  "agent-client-protocol",
  "ansi-to-tui",
@@ -13533,7 +13545,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager-bin"
-version = "0.2.112"
+version = "0.2.116"
 dependencies = [
  "anyhow",
  "clap",
@@ -13715,6 +13727,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "xai-grok-extra-ca",
  "xai-grok-sampling-types",
  "xai-grok-test-support",
  "xai-grok-version",
@@ -13803,7 +13816,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-shell"
-version = "0.2.112"
+version = "0.2.116"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -13909,6 +13922,7 @@ dependencies = [
  "xai-grok-compaction",
  "xai-grok-config",
  "xai-grok-config-types",
+ "xai-grok-extra-ca",
  "xai-grok-hooks",
  "xai-grok-http",
  "xai-grok-mcp",
@@ -14053,6 +14067,7 @@ dependencies = [
  "xai-grok-auth",
  "xai-grok-config",
  "xai-grok-env",
+ "xai-grok-extra-ca",
  "xai-grok-sampler",
  "xai-grok-secrets",
  "xai-mixpanel",
@@ -14153,6 +14168,7 @@ dependencies = [
  "xai-file-utils",
  "xai-grok-config",
  "xai-grok-env",
+ "xai-grok-extra-ca",
  "xai-grok-sandbox",
  "xai-grok-test-support",
  "xai-grok-tools-api",
@@ -14208,7 +14224,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-version"
-version = "0.2.112"
+version = "0.2.116"
 dependencies = [
  "semver",
 ]

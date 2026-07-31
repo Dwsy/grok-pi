@@ -251,6 +251,83 @@ async fn oidc_refresher_e2e_near_expiry_within_buffer_refreshes() {
     server.abort();
 }
 
+/// Contract: on `invalid_grant`, `OidcRefresher` must report **which refresh
+/// token it spent**, not just the access-token key.
+///
+/// `refresh_chain` uses `tried_refresh_token` to tell a lost rotation race
+/// apart from a revoked session; an unattributed outcome silently disables
+/// that check and turns any concurrent-refresh race into a machine-wide
+/// logout. This is the shape assertion that the previous demotion tests
+/// missed — they hand-built outcomes with `tried_key: None`, a shape this
+/// refresher never emits, so they passed while production was unprotected.
+#[tokio::test]
+async fn oidc_refresher_attributes_the_refresh_token_it_spent_on_invalid_grant() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let base_for_discovery = base_url.clone();
+
+    let app = axum::Router::new()
+        .route(
+            "/.well-known/openid-configuration",
+            axum::routing::get(move || {
+                let b = base_for_discovery.clone();
+                async move {
+                    axum::Json(serde_json::json!({
+                        "authorization_endpoint": format!("{b}/authorize"),
+                        "token_endpoint": format!("{b}/token"),
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/token",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({"error": "invalid_grant"})),
+                )
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(
+        AuthManager::new(dir.path(), GrokComConfig::default()).with_proxy_base_url(&base_url),
+    );
+    mgr.hot_swap(GrokAuth {
+        key: "spent-access-token".into(),
+        user_id: "user-42".into(),
+        refresh_token: Some("rt-spent".into()),
+        expires_at: Some(Utc::now() - Duration::minutes(1)),
+        oidc_issuer: Some(base_url.clone()),
+        oidc_client_id: Some("test-client".into()),
+        ..GrokAuth::test_default()
+    });
+
+    let outcome = OidcRefresher::new(mgr.clone())
+        .refresh(crate::auth::manager::RefreshReason::PreRequest)
+        .await;
+
+    match outcome {
+        RefreshOutcome::PermanentFailure {
+            tried_key,
+            tried_refresh_token,
+            ..
+        } => {
+            assert_eq!(
+                tried_refresh_token.as_deref(),
+                Some("rt-spent"),
+                "the RT actually sent to the IdP must be reported so \
+                 refresh_chain can detect a sibling rotation",
+            );
+            assert_eq!(tried_key.as_deref(), Some("spent-access-token"));
+        }
+        other => panic!("expected PermanentFailure, got: {other:?}"),
+    }
+
+    server.abort();
+}
+
 /// When the near-expiry token has a refresh_token but the IdP rejects
 /// the refresh (e.g. refresh_token revoked), silent refresh must fail.
 #[tokio::test]
@@ -1286,7 +1363,7 @@ fn transient_blip_budget_is_scoped_to_the_credential() {
     // Accrue blips up to just under the escalation threshold on credential A.
     for _ in 0..MAX_CONSECUTIVE_TRANSIENT_FAILURES - 1 {
         assert!(matches!(
-            refresher.record_transient_failure("blip".into(), key_a.clone()),
+            refresher.record_transient_failure("blip".into(), key_a.clone(), false),
             RefreshOutcome::TransientFailure { .. }
         ));
     }
@@ -1294,9 +1371,47 @@ fn transient_blip_budget_is_scoped_to_the_credential() {
     // Credential B's first blip must stay transient, not escalate to permanent.
     assert!(
         matches!(
-            refresher.record_transient_failure("blip".into(), Some("cred-b".to_owned())),
+            refresher.record_transient_failure("blip".into(), Some("cred-b".to_owned()), false),
             RefreshOutcome::TransientFailure { .. }
         ),
         "a fresh credential must not inherit a prior credential's blip count",
+    );
+}
+
+/// Network-unreachable failures (DNS/connect/timeout — the post-wake offline
+/// window) must never consume the escalation budget: no amount of them may
+/// produce a `PermanentFailure` ("Run `grok login`") verdict, because they
+/// prove nothing about the credential. Counted failures accrued before or
+/// after are unaffected (the budget is neither consumed nor reset).
+#[test]
+fn network_unreachable_blips_never_escalate() {
+    let refresher = OidcRefresher::new(Arc::new(EmptySnapshot));
+    let key = Some("cred-a".to_owned());
+
+    // Far more unreachable blips than the budget: all stay transient.
+    for _ in 0..MAX_CONSECUTIVE_TRANSIENT_FAILURES * 3 {
+        assert!(
+            matches!(
+                refresher.record_transient_failure("wifi down".into(), key.clone(), true),
+                RefreshOutcome::TransientFailure { .. }
+            ),
+            "a network-unreachable failure must never escalate to permanent",
+        );
+    }
+
+    // The budget was not consumed: counted (IdP-reaching) blips still get the
+    // full threshold before escalating.
+    for _ in 0..MAX_CONSECUTIVE_TRANSIENT_FAILURES - 1 {
+        assert!(matches!(
+            refresher.record_transient_failure("5xx".into(), key.clone(), false),
+            RefreshOutcome::TransientFailure { .. }
+        ));
+    }
+    assert!(
+        matches!(
+            refresher.record_transient_failure("5xx".into(), key.clone(), false),
+            RefreshOutcome::PermanentFailure { .. }
+        ),
+        "counted blips must still escalate at the threshold",
     );
 }

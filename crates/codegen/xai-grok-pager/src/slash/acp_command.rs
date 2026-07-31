@@ -100,19 +100,12 @@ impl SlashCommand for AcpSlashCommand {
                 } else {
                     item.label.clone()
                 },
-                match_text: format!(
-                    "{} {} {}",
-                    item.value, item.label, item.description
-                ),
+                match_text: format!("{} {} {}", item.value, item.label, item.description),
                 insert_text: item.value.clone(),
                 description: item.description.clone(),
             })
             .collect();
-        if items.is_empty() {
-            None
-        } else {
-            Some(items)
-        }
+        if items.is_empty() { None } else { Some(items) }
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -292,6 +285,7 @@ mod tests {
             bundle_state: &crate::app::bundle::BundleState::default(),
             screen_mode: crate::app::ScreenMode::Minimal,
             billing_surface_visible: true,
+            usage_command_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot::default(),
         };
         match acp_cmd.run(&mut ctx, "fix the branch") {
@@ -420,6 +414,7 @@ mod tests {
             bundle_state: bundle,
             screen_mode: crate::app::ScreenMode::Inline,
             billing_surface_visible: true,
+            usage_command_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: false,
                 yolo_mode: false,
@@ -680,6 +675,7 @@ mod tests {
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
             billing_surface_visible: true,
+            usage_command_visible: true,
             workflows_available: false,
             screen_mode: crate::app::ScreenMode::Fullscreen,
         };

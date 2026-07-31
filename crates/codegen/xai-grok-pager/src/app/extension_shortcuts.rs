@@ -276,8 +276,7 @@ pub fn key_id_matches_event(key_id: &str, event: &KeyEvent) -> bool {
         && only_alt_non_shift
         && key_part.len() == 1
         && let KeyCode::Char(event_ch) = event.code
-        && let Some(base) =
-            crate::input::keyboard_normalizer::mac_option_glyph_to_letter(event_ch)
+        && let Some(base) = crate::input::keyboard_normalizer::mac_option_glyph_to_letter(event_ch)
     {
         let event_non_shift = event.modifiers & !KeyModifiers::SHIFT;
         // Accept: no mods (classic Terminal.app) or only ALT bit present.

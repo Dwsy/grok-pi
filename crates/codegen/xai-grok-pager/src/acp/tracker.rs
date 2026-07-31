@@ -4663,8 +4663,9 @@ mod tests {
         );
         assert_eq!(tracker.last_stream_start_ms, Some(1_000));
         assert!(
-            sb.get(0)
-                .is_some_and(|e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())),
+            sb.get(0).is_some_and(
+                |e| matches!(&e.block, RenderBlock::Thinking(t) if t.text().is_empty())
+            ),
             "pre-create should be an empty streaming Thinking block"
         );
         crate::appearance::cache::set_show_thinking_blocks(true);

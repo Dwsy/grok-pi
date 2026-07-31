@@ -61,9 +61,10 @@ use super::session::fork::{
     dispatch_startup_fork_session,
 };
 use super::session::lifecycle::{
-    clear_startup_actions, dispatch_agent_type_mismatch_answered, dispatch_exit_session,
-    dispatch_new_session, dispatch_new_session_inner, dispatch_new_session_with_id,
-    dispatch_new_worktree_session, dispatch_trust_folder, open_new_session_question,
+    clear_startup_actions, dispatch_agent_type_mismatch_answered,
+    dispatch_delete_current_session_answered, dispatch_exit_session, dispatch_new_session,
+    dispatch_new_session_inner, dispatch_new_session_with_id, dispatch_new_worktree_session,
+    dispatch_trust_folder, open_delete_current_session_question, open_new_session_question,
 };
 use super::session::load::{
     dispatch_cycle_session_source_filter, dispatch_load_session, dispatch_pick_content_session,
@@ -90,23 +91,21 @@ use super::settings::setters::{
     set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
     set_model_slot, set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question,
     set_pi_ask_user_question_notifications, set_pi_bash_run_display, set_pi_btw,
-    set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal,
-    set_pi_herdr, set_pi_loop, set_pi_subagents, set_pi_tree_file_rollback,
-    set_pi_tree_skip_summary_prompt, set_pi_workflows,
+    set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal, set_pi_herdr, set_pi_loop,
+    set_pi_subagents, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt, set_pi_workflows,
     set_progress_bar, set_prompt_suggestions, set_psm_resume_index, set_recap_mermaid,
     set_recap_model, set_remember_tool_approvals, set_remote_tui_footer, set_render_mermaid,
     set_respect_manual_folds, set_review_file_tree, set_review_include_reads, set_screen_mode,
     set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
     set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme,
-    set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
-    set_voice_keybind_enabled, set_voice_stt_language,
+    set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
+    set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
     dispatch_open_model_picker, dispatch_open_pi_config, dispatch_open_pi_models,
-    dispatch_open_scoped_models_picker,
     dispatch_open_pi_shortcut_manager, dispatch_open_recap_model_picker,
-    dispatch_open_reset_confirm, dispatch_open_settings,
+    dispatch_open_reset_confirm, dispatch_open_scoped_models_picker, dispatch_open_settings,
     dispatch_open_shortcuts_help, dispatch_toggle_compact_mode, dispatch_toggle_mouse_capture,
     dispatch_toggle_multiline, dispatch_toggle_timestamps, dispatch_toggle_vim_mode,
 };
@@ -211,6 +210,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::NewSession => dispatch_new_session(app),
         Action::ChooseNewSessionMode => open_new_session_question(app),
         Action::ExitSession | Action::ExitSessionConfirmed => dispatch_exit_session(app),
+        Action::DeleteCurrentSession => open_delete_current_session_question(app),
+        Action::DeleteCurrentSessionAnswered { confirmed } => {
+            dispatch_delete_current_session_answered(app, confirmed)
+        }
         Action::NewWorktreeSession {
             load_session_id,
             label,
@@ -1080,7 +1083,11 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             custom_instructions,
         } => dispatch_send_recap(app, auto, custom_instructions),
         Action::ShowPrivacyInfo => dispatch_show_privacy_info(app),
-        Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(app, opted_in),
+        Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(
+            app,
+            opted_in,
+            xai_grok_telemetry::events::CodingDataConsentSource::Settings,
+        ),
         Action::ToggleYolo => dispatch_toggle_yolo(app),
         Action::ToggleMultiline => dispatch_toggle_multiline(app),
         Action::ToggleCompactMode => dispatch_toggle_compact_mode(app),
@@ -1326,6 +1333,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 source,
                 session_id,
                 cwd,
+                after: crate::app::actions::AfterSessionDelete::Stay,
             }]
         }
         Action::Fork(args) => dispatch_fork(app, args),

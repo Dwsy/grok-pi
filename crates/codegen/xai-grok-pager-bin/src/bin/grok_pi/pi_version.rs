@@ -183,11 +183,7 @@ fn is_windows_batch_shim(program: &str) -> bool {
 }
 
 fn node_program() -> &'static str {
-    if cfg!(windows) {
-        "node.exe"
-    } else {
-        "node"
-    }
+    if cfg!(windows) { "node.exe" } else { "node" }
 }
 
 #[cfg(windows)]

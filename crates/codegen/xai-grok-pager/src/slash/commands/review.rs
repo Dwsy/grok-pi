@@ -18,10 +18,6 @@ impl SlashCommand for ReviewSessionCommand {
         true
     }
 
-    fn available_in_minimal(&self) -> bool {
-        false
-    }
-
     fn usage(&self) -> &str {
         "/review-session"
     }
@@ -44,10 +40,6 @@ impl SlashCommand for ReviewMessageCommand {
 
     fn session_scoped(&self) -> bool {
         true
-    }
-
-    fn available_in_minimal(&self) -> bool {
-        false
     }
 
     fn usage(&self) -> &str {
@@ -84,6 +76,7 @@ mod tests {
             bundle_state: &DEFAULT_BUNDLE_STATE,
             screen_mode: crate::app::ScreenMode::Fullscreen,
             billing_surface_visible: true,
+            usage_command_visible: true,
             pager_state: PagerLocalSnapshot::default(),
         }
     }

@@ -47,9 +47,8 @@ impl FeatureConflictTable {
 
     /// Embedded defaults only (tests / no disk).
     pub fn load_embedded() -> Self {
-        Self::from_toml_str(EMBEDDED).unwrap_or_else(|e| {
-            panic!("embedded native_feature_conflicts.toml parse error: {e}")
-        })
+        Self::from_toml_str(EMBEDDED)
+            .unwrap_or_else(|e| panic!("embedded native_feature_conflicts.toml parse error: {e}"))
     }
 
     fn load_layered() -> Self {
@@ -145,9 +144,7 @@ impl FeatureConflictTable {
 /// Paths checked after embedded defaults (user → project).
 fn overlay_paths() -> Vec<PathBuf> {
     let mut paths = Vec::with_capacity(2);
-    paths.push(
-        xai_grok_tools::util::grok_home::grok_home().join(SIDECAR_FILE),
-    );
+    paths.push(xai_grok_tools::util::grok_home::grok_home().join(SIDECAR_FILE));
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(proj) = find_project_sidecar(&cwd) {
             paths.push(proj);
@@ -200,14 +197,16 @@ mod tests {
                 .any(|p| p.contains("rpiv-ask-user-question"))
         );
         assert!(t.packages_for("pi_goal").iter().any(|p| p == "npm:pi-goal"));
-        assert!(t
-            .packages_for("pi_subagents")
-            .iter()
-            .any(|p| p == "npm:pi-subagents"));
-        assert!(t
-            .packages_for("pi_workflows")
-            .iter()
-            .any(|p| p.contains("pi-dynamic-workflows")));
+        assert!(
+            t.packages_for("pi_subagents")
+                .iter()
+                .any(|p| p == "npm:pi-subagents")
+        );
+        assert!(
+            t.packages_for("pi_workflows")
+                .iter()
+                .any(|p| p.contains("pi-dynamic-workflows"))
+        );
         assert!(t.packages_for("pi_btw").iter().any(|p| p == "npm:pi-btw"));
     }
 
@@ -231,11 +230,16 @@ packages = ["npm:extra-goal-pkg"]
         )
         .unwrap();
         base.merge_overlay(&overlay);
-        assert!(base.packages_for("pi_goal").iter().any(|p| p == "npm:pi-goal"));
-        assert!(base
-            .packages_for("pi_goal")
-            .iter()
-            .any(|p| p == "npm:extra-goal-pkg"));
+        assert!(
+            base.packages_for("pi_goal")
+                .iter()
+                .any(|p| p == "npm:pi-goal")
+        );
+        assert!(
+            base.packages_for("pi_goal")
+                .iter()
+                .any(|p| p == "npm:extra-goal-pkg")
+        );
         assert_eq!(base.reason_for("pi_goal"), "custom reason");
     }
 

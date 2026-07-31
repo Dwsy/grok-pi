@@ -1,7 +1,7 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "0.2.112"
+version = "0.2.116"
 edition.workspace = true
 
 [features]
@@ -135,6 +135,7 @@ xai-interjection-core = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-chat-state = { path = "../xai-chat-state" }
 xai-grok-compaction = { path = "../../common/xai-grok-compaction" }
+xai-grok-extra-ca = { workspace = true }
 xai-grok-sampler = { path = "../xai-grok-sampler" }
 xai-sqlite-journal = { workspace = true }
 xai-token-estimation = { workspace = true }
@@ -222,7 +223,10 @@ name = "fork_copy"
 harness = false
 required-features = ["test-support"]
 
-# Consume `session::testkit`, so they need the gate (on by default under Bazel).
+[[test]]
+name = "test_leader_soak"
+required-features = ["test-support"]
+
 [[test]]
 name = "test_session_load_memory"
 required-features = ["test-support"]

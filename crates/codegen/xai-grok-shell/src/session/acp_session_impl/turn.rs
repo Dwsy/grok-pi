@@ -312,13 +312,7 @@ impl SessionActor {
                 .handle_direct_bash_command(prompt_id, bash_command, &prompt_blocks)
                 .await;
         }
-        let slash_skills = self
-            .agent
-            .borrow()
-            .tool_bridge()
-            .clone()
-            .slash_skills()
-            .await;
+        let slash_skills = self.slash_skills_for_resolve().await;
         let skill_rewrite = if crate::session::is_cursor_user_template(
             &self.agent.borrow().definition().user_message_template,
         ) {
@@ -837,6 +831,7 @@ impl SessionActor {
         .await;
         let turn_scope_guard =
             TurnSubagentScopeGuard::new(self.current_prompt_id.clone(), prompt_id.to_string());
+        self.open_subagent_spawn_admission();
         let turn_model_id = self.current_model_id().await;
         let doom_event_model = turn_model_id.clone();
         let turn_timer = std::time::Instant::now();
@@ -1157,7 +1152,7 @@ impl SessionActor {
             result,
             Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. })
         ) {
-            self.cancel_running_turn_subagents();
+            self.cancel_running_turn_subagents(prompt_id);
         }
         self.flush_to_disk().await;
         self.file_state_tracker
@@ -2035,6 +2030,37 @@ impl SessionActor {
                     snapshot: Box::new(snapshot),
                 });
             }
+            if identical_tool_calls.take_nudge() {
+                let run_len = identical_tool_calls.run_len;
+                let tool_name = identical_tool_calls.tool_name.clone();
+                tracing::warn!(
+                    session_id = %self.session_info.id,
+                    tool_name = %tool_name,
+                    run_len,
+                    "action stationarity: nudging model to break repeated identical tool calls"
+                );
+                xai_grok_telemetry::unified_log::warn(
+                    "shell.turn.action_stationarity_nudge",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(serde_json::json!({
+                        "loop_index": loop_index,
+                        "tool_name": tool_name,
+                        "run_len": run_len,
+                    })),
+                );
+                let reminder = self
+                    .tool_bridge_handle()
+                    .render_prompt(
+                        ACTION_STATIONARITY_NUDGE_TEMPLATE,
+                        &serde_json::json!({
+                            "tool_name": tool_name,
+                            "run_len": run_len,
+                        }),
+                    )
+                    .await
+                    .unwrap_or_else(|| ACTION_STATIONARITY_NUDGE_TEMPLATE.to_string());
+                self.push_system_reminder(&reminder);
+            }
             self.drain_pending_interjections().await;
             self.flush_pending_skill_reminders().await;
             self.inject_pending_monitor_events().await;
@@ -2283,6 +2309,7 @@ impl SessionActor {
                 );
             }
             self.record_response_token_usage(&response, Some(model_duration_ms));
+            let response_completed = self.response_completed_update(&response);
             if let Some(pt) = prompt_timing.take() {
                 let mcp_count = self.mcp_state.lock().await.configs.len() as u32;
                 let mcp_tools = self
@@ -2366,6 +2393,7 @@ impl SessionActor {
                 )
                 .await;
             }
+            self.send_buffered_xai_update(response_completed).await;
             if tool_calls.is_empty() {
                 if !schema_ok
                     && !turn_refused
@@ -2506,43 +2534,13 @@ impl SessionActor {
                 .map(|tc| tc.name.clone())
                 .unwrap_or_default();
             let is_true_noop = self.is_run_true_step(&tool_calls).await;
-            let identical_run_len =
-                identical_tool_calls.observe(&step_signature, &step_tool_name, is_true_noop);
+            identical_tool_calls.observe(&step_signature, &step_tool_name, is_true_noop);
             if is_true_noop {
                 xai_grok_telemetry::session_ctx::log_event(
                     xai_grok_telemetry::events::ShellTrueNoop {
                         tool_name: step_tool_name.clone(),
                     },
                 );
-            }
-            if identical_run_len == NUDGE_AFTER_IDENTICAL_TOOL_CALLS {
-                tracing::warn!(
-                    session_id = %self.session_info.id,
-                    tool_name = %step_tool_name,
-                    run_len = identical_run_len,
-                    "action stationarity: nudging model to break repeated identical tool calls"
-                );
-                xai_grok_telemetry::unified_log::warn(
-                    "shell.turn.action_stationarity_nudge",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "loop_index": loop_index,
-                        "tool_name": step_tool_name,
-                        "run_len": identical_run_len,
-                    })),
-                );
-                let reminder = self
-                    .tool_bridge_handle()
-                    .render_prompt(
-                        ACTION_STATIONARITY_NUDGE_TEMPLATE,
-                        &serde_json::json!({
-                            "tool_name": step_tool_name,
-                            "run_len": identical_run_len,
-                        }),
-                    )
-                    .await
-                    .unwrap_or_else(|| ACTION_STATIONARITY_NUDGE_TEMPLATE.to_string());
-                self.push_system_reminder(&reminder);
             }
             let tool_call_responses: Vec<ToolCallResponse> = tool_calls
                 .into_iter()
@@ -2627,13 +2625,13 @@ const MAX_CONSECUTIVE_TRUE_NOOPS: u32 = 4;
 const _: () = assert!(NUDGE_AFTER_IDENTICAL_TOOL_CALLS < MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS);
 const _: () = assert!(MAX_CONSECUTIVE_TRUE_NOOPS < NUDGE_AFTER_IDENTICAL_TOOL_CALLS);
 const ACTION_STATIONARITY_NUDGE_TEMPLATE: &str = "You have called the same tool \
-     (`${{ tool_name }}`) with the exact same arguments ${{ run_len }} times in a row, \
-     getting the same result each time — you appear to be stuck in a polling loop. Stop \
-     repeating this call. If you are waiting on a long-running job or command, use a \
-     background task${%- if tools.by_kind.monitor %} or the `${{ tools.by_kind.monitor }}` \
-     tool${%- endif %}, or run a single `sleep` and then check once — do not poll in a tight \
-     loop. If you cannot make progress, stop and tell the user what you are waiting for. This \
-     turn will be halted automatically if the identical call keeps repeating.";
+     (`${{ tool_name }}`) with the exact same arguments ${{ run_len }} times in a row — \
+     you appear to be stuck in a polling loop. Stop repeating this call. If you are \
+     waiting on a long-running job or command, use a background task${%- if tools.by_kind.monitor %} \
+     or the `${{ tools.by_kind.monitor }}` tool${%- endif %}, or run a single `sleep` and \
+     then check once — do not poll in a tight loop. If you cannot make progress, stop and \
+     tell the user what you are waiting for. This turn will be halted automatically if the \
+     identical call keeps repeating.";
 fn hash_step_signature(signature: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -2649,6 +2647,7 @@ struct IdenticalToolCallRun {
     tool_name: String,
     run_len: u32,
     is_true_noop_run: bool,
+    nudged: bool,
 }
 impl IdenticalToolCallRun {
     fn observe(&mut self, signature: &str, tool_name: &str, is_true_noop: bool) -> u32 {
@@ -2663,9 +2662,16 @@ impl IdenticalToolCallRun {
             self.run_len = 1;
             self.last_signature_hash = Some(hash);
             self.is_true_noop_run = is_true_noop;
+            self.nudged = false;
         }
         self.tool_name = tool_name.to_string();
         self.run_len
+    }
+    /// Once per identical run at/after the nudge threshold. Call only after results are committed.
+    fn take_nudge(&mut self) -> bool {
+        let fire = self.run_len >= NUDGE_AFTER_IDENTICAL_TOOL_CALLS && !self.nudged;
+        self.nudged |= fire;
+        fire
     }
     fn hard_stop_threshold(&self) -> u32 {
         if self.is_true_noop_run {
@@ -2679,7 +2685,7 @@ impl IdenticalToolCallRun {
 mod identical_tool_call_run_tests {
     use super::{
         IdenticalToolCallRun, MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS, MAX_CONSECUTIVE_TRUE_NOOPS,
-        command_is_true,
+        NUDGE_AFTER_IDENTICAL_TOOL_CALLS, command_is_true,
     };
     #[test]
     fn identical_non_true_resets_and_caps_at_16() {
@@ -2714,6 +2720,31 @@ mod identical_tool_call_run_tests {
         assert!(command_is_true(" TRUE "));
         assert!(!command_is_true("true && echo hi"));
         assert!(!command_is_true("lisa status"));
+    }
+    #[test]
+    fn nudge_latch_fires_once_per_run_after_threshold() {
+        let mut run = IdenticalToolCallRun::default();
+        for i in 1..NUDGE_AFTER_IDENTICAL_TOOL_CALLS {
+            assert_eq!(run.observe("poll", "get_task_output", false), i);
+            assert!(
+                !run.take_nudge(),
+                "must not nudge before threshold; run_len={i}"
+            );
+        }
+        assert_eq!(
+            run.observe("poll", "get_task_output", false),
+            NUDGE_AFTER_IDENTICAL_TOOL_CALLS
+        );
+        assert!(run.take_nudge());
+        assert!(!run.take_nudge());
+        assert_eq!(
+            run.observe("poll", "get_task_output", false),
+            NUDGE_AFTER_IDENTICAL_TOOL_CALLS + 1
+        );
+        assert!(!run.take_nudge());
+        assert_eq!(run.observe("other", "bash", false), 1);
+        assert!(!run.nudged);
+        assert!(!run.take_nudge());
     }
 }
 /// Backoff schedule for resubmits after a *successful* 401 auth recovery

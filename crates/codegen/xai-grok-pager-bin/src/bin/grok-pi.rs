@@ -28,6 +28,9 @@ mod home;
 mod loop_extension;
 #[path = "grok_pi/migrate_home.rs"]
 mod migrate_home;
+#[cfg(test)]
+#[path = "grok_pi/model_manager_tests.rs"]
+mod model_manager_tests;
 #[path = "grok_pi/native_commands_extension.rs"]
 mod native_commands_extension;
 #[path = "grok_pi/pi_version.rs"]
@@ -52,15 +55,12 @@ mod shortcut_manager_extension;
 mod subagent_extension;
 #[path = "grok_pi/tools_extension.rs"]
 mod tools_extension;
-#[path = "grok_pi/tutorial_profile.rs"]
-mod tutorial_profile;
 #[path = "grok_pi/tree_bridge.rs"]
 mod tree_bridge;
+#[path = "grok_pi/tutorial_profile.rs"]
+mod tutorial_profile;
 #[path = "grok_pi/workflow_extension.rs"]
 mod workflow_extension;
-#[cfg(test)]
-#[path = "grok_pi/model_manager_tests.rs"]
-mod model_manager_tests;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -498,9 +498,7 @@ async fn run(mut args: Args) -> Result<()> {
         rpc_compat_extension
             .as_ref()
             .map(|extension| extension.path()),
-        herdr_extension
-            .as_ref()
-            .map(|extension| extension.path()),
+        herdr_extension.as_ref().map(|extension| extension.path()),
         remote_tui_extension
             .as_ref()
             .map(|extension| extension.path()),
@@ -956,7 +954,7 @@ async fn run(mut args: Args) -> Result<()> {
     // print a diagnostic, and relaunch without it. ──────────────────────────
     let (process, bootstrap, pi_args) =
         spawn_with_extension_self_heal(&args, &cwd, pi_args, &env).await?;
-    
+
     if btw_extension.is_some() {
         env.push(("PI_GROK_BTW".to_string(), "1".to_string()));
         unsafe {
@@ -967,7 +965,7 @@ async fn run(mut args: Args) -> Result<()> {
             std::env::remove_var("PI_GROK_BTW");
         }
     }
-let bash_control_meta = bash_extension
+    let bash_control_meta = bash_extension
         .as_ref()
         .map(|extension| extension.control_meta_path().to_path_buf());
     let context_breakdown = context_extension

@@ -94,6 +94,14 @@ pub struct CacheControl {
     pub r#type: String, // "ephemeral"
 }
 
+impl CacheControl {
+    pub fn ephemeral() -> Self {
+        Self {
+            r#type: "ephemeral".to_owned(),
+        }
+    }
+}
+
 /// Content blocks used in both requests and responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -105,11 +113,15 @@ pub enum ContentBlock {
     },
     Image {
         source: ImageSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolResult {
         tool_use_id: String,
@@ -120,6 +132,13 @@ pub enum ContentBlock {
     Thinking {
         thinking: String,
         signature: String,
+    },
+    /// Encrypted reasoning the model chose to redact. Carries only an opaque
+    /// `data` blob (never plaintext). Added so a stream that includes one
+    /// deserializes instead of failing the whole event parse; behavior-preserving
+    /// for producers (never constructed by request-building or the sampler).
+    RedactedThinking {
+        data: String,
     },
 }
 
@@ -271,6 +290,13 @@ pub enum MessageStreamEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageDeltaBody {
     pub stop_reason: Option<StopReason>,
+    /// The stop sequence that was matched, present only when
+    /// `stop_reason == "stop_sequence"`; `None` otherwise. Previously discarded
+    /// at parse — captured so consumers can echo the matched string (Messages
+    /// API `message.stop_sequence`). Optional so its absence never fails the
+    /// terminal parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequence: Option<String>,
     /// Provider detail for the stop; on `refusal`, `explanation` carries the
     /// reason the request was blocked (e.g. an Anthropic ToS auto-refusal).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -398,6 +424,62 @@ mod tests {
             }
             other => panic!("expected MessageDelta, got {other:?}"),
         }
+    }
+
+    /// A `stop_sequence`-terminated `message_delta` must parse and preserve the
+    /// matched string (previously discarded), so consumers can echo it on the
+    /// Messages API `message.stop_sequence`.
+    #[test]
+    fn message_delta_captures_matched_stop_sequence() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"stop_sequence","stop_sequence":"END"},"usage":{"output_tokens":7}}"#,
+        )
+        .expect("stop_sequence message_delta must deserialize");
+        match event {
+            MessageStreamEvent::MessageDelta { delta, .. } => {
+                assert!(matches!(delta.stop_reason, Some(StopReason::StopSequence)));
+                assert_eq!(delta.stop_sequence.as_deref(), Some("END"));
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
+
+        // Absent `stop_sequence` stays `None` and never fails the parse.
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+        )
+        .expect("end_turn message_delta must deserialize");
+        match event {
+            MessageStreamEvent::MessageDelta { delta, .. } => {
+                assert_eq!(delta.stop_sequence, None);
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
+    }
+
+    /// A `redacted_thinking` content block must deserialize into the dedicated
+    /// variant (preserving the opaque `data`) instead of failing the whole
+    /// `content_block_start` parse and discarding an already-streamed response.
+    #[test]
+    fn redacted_thinking_content_block_parses() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"EvwBCkgY...opaque"}}"#,
+        )
+        .expect("redacted_thinking content_block_start must deserialize");
+        match event {
+            MessageStreamEvent::ContentBlockStart { content_block, .. } => match content_block {
+                ContentBlock::RedactedThinking { data } => {
+                    assert_eq!(data, "EvwBCkgY...opaque");
+                }
+                other => panic!("expected RedactedThinking, got {other:?}"),
+            },
+            other => panic!("expected ContentBlockStart, got {other:?}"),
+        }
+
+        // Round-trips to Claude's wire shape.
+        let json =
+            serde_json::to_value(ContentBlock::RedactedThinking { data: "abc".into() }).unwrap();
+        assert_eq!(json["type"], "redacted_thinking");
+        assert_eq!(json["data"], "abc");
     }
 
     #[test]

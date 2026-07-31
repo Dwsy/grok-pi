@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager"
-version = "0.2.112"
+version = "0.2.116"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -166,8 +166,8 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
-# Enable the render crate's test-only helpers for the pager's test build.
 xai-grok-pager-render = { path = "../xai-grok-pager-render", features = ["test-support"] }
+xai-grok-shell = { workspace = true, features = ["test-support"] }
 pretty_assertions = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
@@ -199,6 +199,10 @@ harness = false
 
 [[bench]]
 name = "edit_highlight"
+harness = false
+
+[[bench]]
+name = "resize"
 harness = false
 
 # PTY integration tests are split into coherent scheduling families. The test

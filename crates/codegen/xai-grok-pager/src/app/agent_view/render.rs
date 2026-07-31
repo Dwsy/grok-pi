@@ -110,7 +110,7 @@ impl AgentView {
                     ]
                 } else {
                     vec![
-                        HintItem::new(key!(Enter), "approve"),
+                        HintItem::new(key!('a'), "approve"),
                         HintItem::new(key!(Tab), "plan"),
                         HintItem::new(key!(Esc), "back"),
                     ]
@@ -718,6 +718,7 @@ impl AgentView {
             voice_interim,
             esc_owned_before_agent,
         } = app_params;
+        self.scrollback.begin_frame();
         self.in_dashboard_overlay = in_dashboard_overlay;
         let super::BannerSlotParams {
             height: banner_height,
@@ -3806,8 +3807,7 @@ impl AgentView {
                 .min(overlay_area.height.saturating_sub(1));
             let popup_x = overlay_area.x + (overlay_area.width.saturating_sub(popup_w)) / 2;
             // Prefer top-biased placement so modal sits flush above shortcuts.
-            let popup_y = overlay_area.y
-                + (overlay_area.height.saturating_sub(popup_h)).min(1);
+            let popup_y = overlay_area.y + (overlay_area.height.saturating_sub(popup_h)).min(1);
             let popup_area = Rect::new(popup_x, popup_y, popup_w, popup_h);
             crate::views::file_search::line_viewer::dim_area(buf, overlay_area, theme.bg_base, 0.5);
             Clear.render(popup_area, buf);

@@ -187,7 +187,8 @@ impl ModelState {
     /// ignoring catalog ids that are unavailable in this session.
     pub fn set_scoped_models(&mut self, entries: Vec<ScopedModel>) {
         let mut seen = std::collections::HashSet::new();
-        self.scoped_models = entries.into_iter()
+        self.scoped_models = entries
+            .into_iter()
             .filter(|entry| self.available.contains_key(&entry.model_id))
             .filter(|entry| seen.insert(entry.model_id.clone()))
             .collect();

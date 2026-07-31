@@ -444,6 +444,257 @@ async fn test_headless_streaming_json_output() {
     );
 }
 
+/// `streaming-messages-json` emits `system`/`init`, message wrapped assistant
+/// messages, and a terminal `result`.
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_headless_streaming_messages_json_output() {
+    let server = MockInferenceServer::start()
+        .await
+        .expect("start mock server");
+    let workdir = git_workdir();
+    let result = run_headless(
+        &server,
+        &[
+            "-p",
+            "say hello",
+            "--yolo",
+            "--output-format",
+            "streaming-messages-json",
+        ],
+        workdir.workspace(),
+    )
+    .await;
+
+    assert_headless_success(
+        &result,
+        "grok -p --output-format streaming-messages-json",
+        Some(&server),
+    );
+    assert_no_crashes(&result.stderr);
+
+    let messages: Vec<serde_json::Value> = result
+        .stdout
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|e| panic!("invalid streaming-messages-json line `{line}`: {e}"))
+        })
+        .collect();
+    fn type_of(m: &serde_json::Value) -> Option<&str> {
+        m.get("type").and_then(serde_json::Value::as_str)
+    }
+
+    let first = &messages[0];
+    assert_eq!(type_of(first), Some("system"), "{messages:?}");
+    assert_eq!(first["subtype"], "init", "{messages:?}");
+
+    let assistant = messages
+        .iter()
+        .find(|m| type_of(m) == Some("assistant"))
+        .unwrap_or_else(|| panic!("expected an assistant message: {messages:?}"));
+    assert!(assistant["message"]["content"].is_array(), "{assistant:?}");
+
+    let last = messages.last().expect("a result message");
+    assert_eq!(type_of(last), Some("result"), "{messages:?}");
+    assert_eq!(last["subtype"], "success", "{last:?}");
+    assert_eq!(last["is_error"], false, "{last:?}");
+}
+
+/// The Messages backend reports message id, thinking signature, verbatim stop
+/// reason, and per-response usage; all four must land on the assistant frame.
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_headless_streaming_messages_json_carries_per_response_metadata() {
+    use serde_json::json;
+    use xai_grok_test_support::scripted::{ScriptedResponse, SseEvent};
+
+    let model = "messages-compatible-model";
+    let server = single_model_server(model, "messages").await;
+    server.enqueue_response(
+        "/v1/messages",
+        ScriptedResponse::sse(vec![
+            SseEvent::data(
+                json!({"type":"message_start","message":{"id":"msg_e2e_9","type":"message","role":"assistant","content":[],"model":model,"stop_reason":null,"usage":{"input_tokens":12,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}).to_string(),
+            ),
+            SseEvent::data(
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}).to_string(),
+            ),
+            SseEvent::data(
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}).to_string(),
+            ),
+            SseEvent::data(
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-e2e-abc"}}).to_string(),
+            ),
+            SseEvent::data(json!({"type":"content_block_stop","index":0}).to_string()),
+            SseEvent::data(
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}).to_string(),
+            ),
+            SseEvent::data(
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello there"}}).to_string(),
+            ),
+            SseEvent::data(json!({"type":"content_block_stop","index":1}).to_string()),
+            SseEvent::data(
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7,"input_tokens":12}}).to_string(),
+            ),
+            SseEvent::data(json!({"type":"message_stop"}).to_string()),
+        ]),
+    );
+
+    let workdir = git_workdir();
+    let result = run_headless(
+        &server,
+        &[
+            "-p",
+            "say hi",
+            "--yolo",
+            "--model",
+            model,
+            "--max-turns",
+            "1",
+            "--output-format",
+            "streaming-messages-json",
+        ],
+        workdir.workspace(),
+    )
+    .await;
+
+    assert_headless_success(
+        &result,
+        "streaming-messages-json per-response metadata",
+        Some(&server),
+    );
+    assert_no_crashes(&result.stderr);
+
+    let messages: Vec<serde_json::Value> = result
+        .stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|e| panic!("invalid streaming-messages-json line `{line}`: {e}"))
+        })
+        .collect();
+
+    let assistant = messages
+        .iter()
+        .find(|m| m.get("type").and_then(serde_json::Value::as_str) == Some("assistant"))
+        .unwrap_or_else(|| panic!("expected an assistant message: {messages:?}"));
+    let message = &assistant["message"];
+    assert_eq!(
+        message["id"], "msg_e2e_9",
+        "real provider message id: {assistant:?}"
+    );
+    assert_eq!(
+        message["stop_reason"], "end_turn",
+        "verbatim wire stop reason: {assistant:?}"
+    );
+    assert_eq!(
+        message["usage"]["input_tokens"], 12,
+        "per-response usage: {assistant:?}"
+    );
+    assert_eq!(
+        message["usage"]["output_tokens"], 7,
+        "per-response usage: {assistant:?}"
+    );
+
+    let thinking = message["content"]
+        .as_array()
+        .unwrap_or_else(|| panic!("assistant content must be an array: {assistant:?}"))
+        .iter()
+        .find(|b| b["type"] == "thinking")
+        .unwrap_or_else(|| panic!("expected a thinking block: {assistant:?}"));
+    assert_eq!(
+        thinking["signature"], "sig-e2e-abc",
+        "thinking block must carry the reasoning signature: {assistant:?}"
+    );
+}
+
+/// End-to-end pipeline: a Messages-backend turn that stops on a configured stop
+/// sequence must carry the provider's matched sequence all the way through the
+/// sampler → shell `response_completed` → `streaming-messages-json` reducer, so
+/// the flushed `assistant` frame reads `stop_reason: "stop_sequence"` with the
+/// real `message.stop_sequence`. Drives the actual wire (a scripted
+/// `message_delta`), not a hand-built reducer event.
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_headless_streaming_messages_json_carries_stop_sequence() {
+    use serde_json::json;
+    use xai_grok_test_support::scripted::{ScriptedResponse, SseEvent};
+
+    let model = "messages-compatible-model";
+    let server = single_model_server(model, "messages").await;
+    server.enqueue_response(
+        "/v1/messages",
+        ScriptedResponse::sse(vec![
+            SseEvent::data(
+                json!({"type":"message_start","message":{"id":"msg_stop_seq","type":"message","role":"assistant","content":[],"model":model,"stop_reason":null,"usage":{"input_tokens":8,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}).to_string(),
+            ),
+            SseEvent::data(
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}).to_string(),
+            ),
+            SseEvent::data(
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"stopping here"}}).to_string(),
+            ),
+            SseEvent::data(json!({"type":"content_block_stop","index":0}).to_string()),
+            // The matched stop sequence rides the terminal `message_delta`.
+            SseEvent::data(
+                json!({"type":"message_delta","delta":{"stop_reason":"stop_sequence","stop_sequence":"<END>"},"usage":{"output_tokens":3,"input_tokens":8}}).to_string(),
+            ),
+            SseEvent::data(json!({"type":"message_stop"}).to_string()),
+        ]),
+    );
+
+    let workdir = git_workdir();
+    let result = run_headless(
+        &server,
+        &[
+            "-p",
+            "emit the stop token",
+            "--yolo",
+            "--model",
+            model,
+            "--max-turns",
+            "1",
+            "--output-format",
+            "streaming-messages-json",
+        ],
+        workdir.workspace(),
+    )
+    .await;
+
+    assert_headless_success(
+        &result,
+        "streaming-messages-json stop_sequence",
+        Some(&server),
+    );
+    assert_no_crashes(&result.stderr);
+
+    let messages: Vec<serde_json::Value> = result
+        .stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|e| panic!("invalid streaming-messages-json line `{line}`: {e}"))
+        })
+        .collect();
+
+    let assistant = messages
+        .iter()
+        .find(|m| m.get("type").and_then(serde_json::Value::as_str) == Some("assistant"))
+        .unwrap_or_else(|| panic!("expected an assistant message: {messages:?}"));
+    let message = &assistant["message"];
+    assert_eq!(
+        message["stop_reason"], "stop_sequence",
+        "verbatim stop reason: {assistant:?}"
+    );
+    assert_eq!(
+        message["stop_sequence"], "<END>",
+        "matched stop sequence carried end-to-end: {assistant:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore] // requires pre-built binary; run with --ignored
 async fn test_headless_json_reports_server_cost() {
@@ -1234,6 +1485,93 @@ async fn test_stdio_xcode_escaped_slash_methods_get_responses() {
         "mock server received no inference requests\nrequest log:\n{}\nstderr:\n{}",
         server.request_log_summary(),
         stderr_tail(&agent.stderr(), 1200)
+    );
+}
+
+/// `grok agent stdio` must initiate shutdown and exit when its client closes
+/// stdin (EOF) — a dead parent means closed pipes, so this is the primary
+/// orphan guard on every platform (the Linux `PR_SET_PDEATHSIG` binding in
+/// `run_stdio_agent` additionally covers an agent wedged mid-turn that never
+/// reads stdin again). Guards the `spawn_stdin_line_reader` → stdin_closed →
+/// simplex-shutdown → `handle_io` completion chain end to end.
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_stdio_agent_exits_on_stdin_eof() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    let server = MockInferenceServer::start()
+        .await
+        .expect("start mock server");
+    let mut sandbox = TestSandbox::builder().git().build();
+    sandbox.set_mock_url(server.url());
+
+    let mut cmd = tokio::process::Command::new(grok_binary());
+    cmd.args(["agent", "stdio"])
+        .current_dir(sandbox.workspace());
+    let mut process = TestProcess::spawn(
+        cmd,
+        &sandbox,
+        TestProcessConfig::new()
+            .label("grok agent stdio (eof)")
+            .stdin(TestStdin::Piped)
+            .stdout(TestOutput::Piped),
+    )
+    .expect("spawn grok agent stdio");
+
+    // Prove the agent is up and serving before the EOF (an exit during
+    // startup would trivially pass the wait below).
+    let mut stdin = process.take_stdin().expect("child stdin missing");
+    let stdout = process.take_stdout().expect("child stdout missing");
+    let mut reader = tokio::io::BufReader::new(stdout);
+    stdin
+        .write_all(
+            concat!(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"#,
+                r#""clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"#,
+                r#""_meta":{"startupHints":{"nonInteractive":true,"skipGitStatus":true,"skipProjectLayout":true},"#,
+                r#""clientType":"eof-test","clientVersion":"0.0.0"}}}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write initialize");
+    stdin.flush().await.expect("flush initialize");
+    let mut line = String::new();
+    tokio::time::timeout(scaled(Duration::from_secs(20)), reader.read_line(&mut line))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "no initialize response before EOF\nstderr:\n{}",
+                stderr_tail(&process.stderr_tail().text, 1200)
+            )
+        })
+        .expect("read initialize response");
+    assert!(
+        line.contains("\"result\""),
+        "initialize must respond with a result, got: {line}"
+    );
+
+    // Close the write end: the agent sees stdin EOF, exactly as when its
+    // parent dies and the inherited pipe closes.
+    drop(stdin);
+
+    // Exit path includes a bounded teardown (100ms simplex flush + 2s upload
+    // queue grace), so allow comfortably more than that.
+    let status = process
+        .wait_with_deadline(scaled(Duration::from_secs(30)))
+        .await
+        .expect("wait for agent exit")
+        .unwrap_or_else(|| {
+            panic!(
+                "grok agent stdio did not exit after stdin EOF\n{}",
+                process.diagnostic_summary()
+            )
+        });
+    assert!(
+        status.success(),
+        "agent should exit cleanly on stdin EOF, got {status:?}\nstderr:\n{}",
+        stderr_tail(&process.stderr_tail().text, 1200)
     );
 }
 

@@ -203,6 +203,7 @@ fn dispatch_load_session_ungated(
     agent_mut.apply_app_scoped_gates(
         app.sharing_enabled,
         app.usage_visible,
+        !app.has_external_auth_provider,
         app.chat_mode,
         app.screen_mode,
         &app.active_announcements,
@@ -418,6 +419,18 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
     }
     dispatch_new_worktree_session(app, Some(session_id), None, None, None, None, None)
 }
+fn keep_picker_entry(
+    entry: &crate::app::app_view::SessionPickerEntry,
+    source: &str,
+    session_id: &str,
+    match_id_only: bool,
+) -> bool {
+    if match_id_only {
+        entry.id != session_id
+    } else {
+        entry.source != source || entry.id != session_id
+    }
+}
 /// Remove a deleted session identity from the modal session picker and the
 /// welcome-screen picker, then re-anchor the selection on a real row.
 ///
@@ -427,6 +440,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
     app: &mut AppView,
     source: &str,
     session_id: &str,
+    match_id_only: bool,
 ) {
     use crate::views::modal::ActiveModal;
     use crate::views::session_picker::build_entry_map;
@@ -452,7 +466,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
             *pending_delete = None;
         }
         if let Some(list) = entries.as_mut() {
-            list.retain(|entry| entry.source != source || entry.id != session_id);
+            list.retain(|entry| keep_picker_entry(entry, source, session_id, match_id_only));
         }
         if let Some(hits) = content_results.as_mut() {
             hits.retain(|h| h.session_id != session_id);
@@ -474,7 +488,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
         reanchor_grouped_selection(state, &map);
     }
     if let Some(list) = app.session_picker_entries.as_mut() {
-        list.retain(|entry| entry.source != source || entry.id != session_id);
+        list.retain(|entry| keep_picker_entry(entry, source, session_id, match_id_only));
     }
     if let Some(hits) = app.session_picker_content_results.as_mut() {
         hits.retain(|h| h.session_id != session_id);
@@ -897,6 +911,7 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
             app.usage_visible,
+            !app.has_external_auth_provider,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,

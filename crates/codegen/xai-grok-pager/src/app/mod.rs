@@ -234,39 +234,60 @@ pub(crate) fn voice_mode_config_value() -> Option<bool> {
 }
 /// Resolve voice availability.
 ///
-/// Precedence: `env` override (`GROK_VOICE_MODE`) > `remote` (`voice_mode_enabled`)
-/// > default **on**. Remote `Some(false)` is a kill switch; `None` means GA
-/// default (on). Free-tier SuperGrok upsell for `/voice` / Ctrl+Space is a
-/// separate gate (`is_voice_tier_restricted`).
-pub(crate) fn resolve_voice_mode_enabled(env: Option<bool>, remote: Option<bool>) -> bool {
-    env.or(remote).unwrap_or(true)
+/// Precedence: requirements > `GROK_VOICE_MODE` > config/managed
+/// `[features] voice_mode` > remote `voice_mode_enabled` > default on.
+///
+/// When `is_api_key` and the only off-source is remote, force on. Requirement /
+/// env / config `false` still wins.
+pub(crate) fn resolve_voice_mode_enabled(
+    requirement: Option<bool>,
+    config: Option<bool>,
+    remote: Option<bool>,
+    is_api_key: bool,
+) -> bool {
+    use xai_grok_shell::agent::config::{BoolFlag, ConfigSource};
+    let resolved = BoolFlag::env("GROK_VOICE_MODE")
+        .requirement(requirement)
+        .config(config)
+        .feature_flag(remote)
+        .default(true)
+        .resolve();
+    if resolved.value {
+        return true;
+    }
+    is_api_key && resolved.source == ConfigSource::Remote
+}
+/// Resolve from live policy + env + remote + API-key state.
+pub(crate) fn resolve_voice_mode_live(remote: Option<bool>, is_api_key: bool) -> bool {
+    resolve_voice_mode_enabled(
+        voice_mode_requirement_pin(),
+        voice_mode_config_value(),
+        remote,
+        is_api_key,
+    )
 }
 #[cfg(test)]
 mod voice_gate_tests {
     use super::resolve_voice_mode_enabled;
     #[test]
-    fn voice_defaults_on_when_env_and_remote_absent() {
-        assert!(resolve_voice_mode_enabled(None, None));
+    fn api_key_force_on_over_remote_kill_only() {
+        assert!(resolve_voice_mode_enabled(None, None, Some(false), true));
+        assert!(!resolve_voice_mode_enabled(None, None, Some(false), false));
     }
     #[test]
-    fn voice_remote_false_is_kill_switch() {
-        assert!(!resolve_voice_mode_enabled(None, Some(false)));
-    }
-    #[test]
-    fn voice_remote_true_enables() {
-        assert!(resolve_voice_mode_enabled(None, Some(true)));
-    }
-    #[test]
-    fn voice_env_overrides_remote_kill_switch() {
-        assert!(resolve_voice_mode_enabled(Some(true), Some(false)));
-    }
-    #[test]
-    fn voice_env_force_off_overrides_remote_true() {
-        assert!(!resolve_voice_mode_enabled(Some(false), Some(true)));
-    }
-    #[test]
-    fn voice_env_force_off_overrides_default_on() {
-        assert!(!resolve_voice_mode_enabled(Some(false), None));
+    fn policy_false_outranks_api_key_force_on() {
+        assert!(!resolve_voice_mode_enabled(
+            Some(false),
+            Some(true),
+            Some(true),
+            true
+        ));
+        assert!(!resolve_voice_mode_enabled(
+            None,
+            Some(false),
+            Some(false),
+            true
+        ));
     }
 }
 /// Sticky banner shown while mouse reporting is off, telling the user how to
@@ -2241,6 +2262,12 @@ mod tests {
     #[test]
     fn cli_chat_flag_rejected_without_feature() {
         assert!(try_parse_pager(&["grok-pager", "--chat"]).is_err());
+    }
+    #[test]
+    fn cli_local_workspace_flags_rejected_without_feature() {
+        assert!(try_parse_pager(&["grok-pager", "--local-workspace-attach=srv"]).is_err());
+        assert!(try_parse_pager(&["grok-pager", "--local-workspace"]).is_err());
+        assert!(try_parse_pager(&["grok-pager", "--local-workspace-cwd=/tmp"]).is_err());
     }
     #[test]
     fn chat_mode_leader_guard_truth_table() {

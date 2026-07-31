@@ -40,11 +40,7 @@ impl ReviewKindFilter {
     }
 
     pub fn with_reads(self, include: bool) -> Self {
-        if include {
-            Self::All
-        } else {
-            Self::Changes
-        }
+        if include { Self::All } else { Self::Changes }
     }
 }
 
@@ -162,9 +158,8 @@ impl ReviewAskState {
     pub fn append_delta(&mut self, delta: &str) {
         if let Some(ReviewAskResponse::Loading { content, .. }) = self.response.as_mut() {
             let next = format!("{}{}", content.text(), delta);
-            *content = Box::new(
-                crate::scrollback::blocks::markdown_content::MarkdownContent::new(next),
-            );
+            *content =
+                Box::new(crate::scrollback::blocks::markdown_content::MarkdownContent::new(next));
         }
     }
 
@@ -203,7 +198,11 @@ impl ReviewAskState {
     pub fn max_response_scroll(&self, content_width: usize, visible_lines: usize) -> usize {
         let content = match &self.response {
             Some(ReviewAskResponse::Loading { content, .. })
-            | Some(ReviewAskResponse::Done { content, .. }) if content_width > 0 => content,
+            | Some(ReviewAskResponse::Done { content, .. })
+                if content_width > 0 =>
+            {
+                content
+            }
             _ => return 0,
         };
         let total = content.with_wrapped_lines(content_width, |w| w.lines.len());
@@ -234,7 +233,12 @@ fn next_char_boundary(text: &str, cursor: usize) -> usize {
     if cursor >= text.len() {
         return text.len();
     }
-    cursor + text[cursor..].chars().next().map(char::len_utf8).unwrap_or(0)
+    cursor
+        + text[cursor..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(0)
 }
 
 pub struct ReviewState {
@@ -600,7 +604,7 @@ pub fn handle_review_list_key(state: &mut ReviewState, key: &KeyEvent) -> Review
         // r toggles include-reads; caller persists via SetReviewIncludeReads.
         KeyCode::Char('r') if key.modifiers == KeyModifiers::NONE => {
             ReviewInput::ToggleIncludeReads
-        },
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             state.move_sel(-1);
             ReviewInput::Changed
@@ -825,10 +829,7 @@ pub fn extract_review_files(
     if matches!(filter, ReviewKindFilter::Shell) {
         return Vec::new();
     }
-    let want_changes = matches!(
-        filter,
-        ReviewKindFilter::Changes | ReviewKindFilter::All
-    );
+    let want_changes = matches!(filter, ReviewKindFilter::Changes | ReviewKindFilter::All);
     let want_reads = filter.includes_reads();
     if !want_changes && !want_reads {
         return Vec::new();
@@ -880,14 +881,11 @@ pub fn extract_review_files(
             }
             RenderBlock::ToolCall(ToolCallBlock::Read(read)) if want_reads => {
                 let path = read.path.clone();
-                let plain_fallback = read
-                    .content
-                    .clone()
-                    .unwrap_or_else(|| {
-                        read.error
-                            .clone()
-                            .unwrap_or_else(|| format!("(empty read) {path}\n"))
-                    });
+                let plain_fallback = read.content.clone().unwrap_or_else(|| {
+                    read.error
+                        .clone()
+                        .unwrap_or_else(|| format!("(empty read) {path}\n"))
+                });
                 upsert_review_item(
                     &mut by_path,
                     &mut index_of,
@@ -931,7 +929,9 @@ fn upsert_review_item(
         // Prefer latest change over pure read when both exist for same path.
         let replace = match (item.kind, kind) {
             (ReviewFileKind::Read, _) if prefer_kind_over_read => true,
-            (_, ReviewFileKind::Read) if !prefer_kind_over_read && item.kind != ReviewFileKind::Read => {
+            (_, ReviewFileKind::Read)
+                if !prefer_kind_over_read && item.kind != ReviewFileKind::Read =>
+            {
                 // Keep existing edit/write as primary viewer; still count op.
                 false
             }
@@ -1009,9 +1009,7 @@ pub fn render_review_modal(
         ReviewFocus::Preview => {
             " j/k scroll  /=search  f=filter  w=wrap  y=copy  a=ask  n/p file  ← list  Esc ".into()
         }
-        ReviewFocus::Ask => {
-            " Enter=send  ↑↓ scroll answer  Tab=files  Esc=back ".into()
-        }
+        ReviewFocus::Ask => " Enter=send  ↑↓ scroll answer  Tab=files  Esc=back ".into(),
     };
 
     let border = Block::default()
@@ -1350,9 +1348,7 @@ fn nerd_file_icon(path: &str, is_dir: bool) -> &'static str {
         ".gitignore" | ".gitattributes" | ".gitmodules" => return "\u{f1d3}",
         "dockerfile" | "docker-compose.yml" | "docker-compose.yaml" => return "\u{f308}",
         "makefile" | "justfile" => return "\u{f489}",
-        "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" => {
-            return "\u{e718}"
-        }
+        "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" => return "\u{e718}",
         "tsconfig.json" | "jsconfig.json" => return "\u{e628}",
         "readme.md" | "readme" => return "\u{f48a}",
         "security.md" => return "\u{f21b}",
@@ -1456,7 +1452,11 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
     let ask = &state.ask;
     let focused = state.focus == ReviewFocus::Ask;
 
-    let border_color = if focused { theme.warning } else { theme.gray_dim };
+    let border_color = if focused {
+        theme.warning
+    } else {
+        theme.gray_dim
+    };
     let status = match &ask.response {
         Some(ReviewAskResponse::Loading { .. }) => "streaming",
         Some(ReviewAskResponse::Done { .. }) => "answer",
@@ -1505,7 +1505,11 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
         ),
         Span::styled(
             truncate_str(
-                if placeholder { "Ask about this review…" } else { &ask.input },
+                if placeholder {
+                    "Ask about this review…"
+                } else {
+                    &ask.input
+                },
                 max_input_w,
             ),
             Style::default().fg(if placeholder {
@@ -1522,8 +1526,8 @@ fn render_ask_bar(buf: &mut Buffer, area: Rect, state: &ReviewState, theme: &The
     // The cursor belongs only to text currently being edited, never to a submitted question.
     if focused && !placeholder && max_input_w > 0 {
         let cursor = floor_char_boundary(&ask.input, ask.cursor);
-        let cursor_col = UnicodeWidthStr::width(&ask.input[..cursor])
-            .min(max_input_w.saturating_sub(1)) as u16;
+        let cursor_col =
+            UnicodeWidthStr::width(&ask.input[..cursor]).min(max_input_w.saturating_sub(1)) as u16;
         let cursor_x = inner.x + 2 + cursor_col;
         if cursor_x < inner.x + inner.width
             && let Some(cell) = buf.cell_mut((cursor_x, input_y))
@@ -1560,8 +1564,16 @@ fn render_ask_response(buf: &mut Buffer, area: Rect, ask: &ReviewAskState, theme
             content,
             scroll_offset,
         }) if content.text().is_empty() => {
-            let spinner = Line::from(Span::styled("  ⠿ thinking…", Style::default().fg(theme.gray)));
-            buf.set_line(response_area.x, response_area.y, &spinner, response_area.width);
+            let spinner = Line::from(Span::styled(
+                "  ⠿ thinking…",
+                Style::default().fg(theme.gray),
+            ));
+            buf.set_line(
+                response_area.x,
+                response_area.y,
+                &spinner,
+                response_area.width,
+            );
         }
         Some(ReviewAskResponse::Loading {
             content,
@@ -1614,13 +1626,23 @@ fn render_ask_content(
             if y >= area.y + area.height {
                 break;
             }
-            buf.set_line(area.x + 1, y, &wrapped.lines[line_idx], area.width.saturating_sub(1));
+            buf.set_line(
+                area.x + 1,
+                y,
+                &wrapped.lines[line_idx],
+                area.width.saturating_sub(1),
+            );
         }
         if total > visible {
             let pct = start * 100 / (total - visible);
             let indicator = format!(" {pct}% ");
             let ind_x = area.x + area.width.saturating_sub(indicator.len() as u16 + 1);
-            buf.set_string(ind_x, area.y, &indicator, Style::default().fg(theme.gray_dim));
+            buf.set_string(
+                ind_x,
+                area.y,
+                &indicator,
+                Style::default().fg(theme.gray_dim),
+            );
         }
     });
 }
@@ -1772,10 +1794,30 @@ pub fn strip_cwd_prefix(path: &str, cwd: &str) -> String {
 fn is_java_package_seg(s: &str) -> bool {
     // Common Maven/Gradle path folders must stay slash-joined, not dotted.
     const NOT_PKG: &[&str] = &[
-        "src", "main", "test", "java", "kotlin", "scala", "groovy",
-        "resources", "generated", "classes", "target", "build",
-        "out", "bin", "lib", "libs", "webapp", "static", "public",
-        "assets", "dist", "node_modules", "vendor", "pkg",
+        "src",
+        "main",
+        "test",
+        "java",
+        "kotlin",
+        "scala",
+        "groovy",
+        "resources",
+        "generated",
+        "classes",
+        "target",
+        "build",
+        "out",
+        "bin",
+        "lib",
+        "libs",
+        "webapp",
+        "static",
+        "public",
+        "assets",
+        "dist",
+        "node_modules",
+        "vendor",
+        "pkg",
     ];
     if NOT_PKG.iter().any(|p| *p == s) {
         return false;
@@ -2078,7 +2120,10 @@ mod tests {
         assert!(state.ask_area.width > 0);
         assert_eq!(state.ask_area.x, state.preview_area.x);
         assert_eq!(state.ask_area.width, state.preview_area.width);
-        assert_eq!(state.preview_area.y + state.preview_area.height, state.ask_area.y);
+        assert_eq!(
+            state.preview_area.y + state.preview_area.height,
+            state.ask_area.y
+        );
         let separator_y = state.ask_area.y + state.ask_area.height - 3;
         assert_eq!(buffer[(state.ask_area.x + 1, separator_y)].symbol(), "─");
     }
@@ -2089,7 +2134,10 @@ mod tests {
         ask.start_loading();
         ask.append_delta("first");
         ask.append_delta(" second");
-        assert!(matches!(ask.response, Some(ReviewAskResponse::Loading { .. })));
+        assert!(matches!(
+            ask.response,
+            Some(ReviewAskResponse::Loading { .. })
+        ));
         let content = match &ask.response {
             Some(ReviewAskResponse::Loading { content, .. }) => content.text(),
             _ => unreachable!(),
@@ -2242,7 +2290,10 @@ mod tests {
             row: 1,
             modifiers: KeyModifiers::CONTROL,
         };
-        assert!(matches!(handle_review_mouse(&mut state, &mouse), ReviewInput::OpenPath));
+        assert!(matches!(
+            handle_review_mouse(&mut state, &mouse),
+            ReviewInput::OpenPath
+        ));
         assert_eq!(state.selected, 0);
     }
 

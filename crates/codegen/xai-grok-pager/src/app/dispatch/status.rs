@@ -13,37 +13,10 @@ use crate::scrollback::block::RenderBlock;
 use crate::views::modal::ActiveModal;
 use crate::views::modal_window::ModalWindowState;
 
-/// Toggle YOLO mode (auto-approve all permissions).
-///
-/// When turning ON: auto-approve all currently queued permissions and
-/// restore the stashed prompt. Future incoming permissions will be
-/// auto-approved in `handle_permission_request`.
-///
-/// Share the current session via a public URL.
-///
-/// Produces Effect::ShareSession which spawns an async ACP ext request.
-/// On completion, TaskResult::ShareSessionComplete shows the URL in scrollback.
+/// Temporary kill switch: client share links are disabled.
 pub(super) fn dispatch_share_session(app: &mut AppView) -> Vec<Effect> {
-    if !app.sharing_enabled {
-        app.show_toast("Sharing is disabled");
-        return vec![];
-    }
-    let ActiveView::Agent(id) = app.active_view else {
-        return vec![];
-    };
-    let Some(agent) = app.agents.get_mut(&id) else {
-        return vec![];
-    };
-    let Some(session_id) = agent.session.session_id.clone() else {
-        // No active session — error should have been caught by slash command,
-        // but guard here just in case.
-        return vec![];
-    };
-
-    vec![Effect::ShareSession {
-        agent_id: id,
-        session_id,
-    }]
+    app.show_toast("Session sharing is temporarily disabled");
+    vec![]
 }
 
 /// Show session info: fetch via x.ai/session/info and display in scrollback.
@@ -149,9 +122,27 @@ fn is_current_coding_data_write(app: &AppView, seq: u64, agent_id: AgentId) -> b
     false
 }
 
+fn log_coding_data_consent_selected(
+    source: xai_grok_telemetry::events::CodingDataConsentSource,
+    opted_in: bool,
+    previous_opted_in: bool,
+) {
+    use xai_grok_telemetry::events::{CodingDataConsentChoice, CodingDataConsentSelected};
+    xai_grok_telemetry::session_ctx::log_event(CodingDataConsentSelected {
+        source,
+        choice: CodingDataConsentChoice::from_opted_in(opted_in),
+        previous_choice: CodingDataConsentChoice::from_opted_in(previous_opted_in),
+        changed: opted_in != previous_opted_in,
+    });
+}
+
 /// Set coding-data-sharing preference. SHELL-owned, auth-metadata-backed
 /// (persists via ACP ext-request, NOT `~/.grok/config.toml`).
-pub(super) fn set_coding_data_sharing(app: &mut AppView, opted_in: bool) -> Vec<Effect> {
+pub(super) fn set_coding_data_sharing(
+    app: &mut AppView,
+    opted_in: bool,
+    source: xai_grok_telemetry::events::CodingDataConsentSource,
+) -> Vec<Effect> {
     // ── Guard 1: Enterprise ZDR ──────────────────────────────────────
     if app.is_zdr {
         app.show_toast("\u{2717} Cannot change: Zero Data Retention enabled");
@@ -170,6 +161,7 @@ pub(super) fn set_coding_data_sharing(app: &mut AppView, opted_in: bool) -> Vec<
     }
     let agent_id = coding_data_sharing_agent_id(app);
     let prev = !app.coding_data_retention_opt_out;
+    log_coding_data_consent_selected(source, opted_in, prev);
 
     // ── Idempotent path: skip the ACP round-trip. ────────────────────
     if prev == opted_in {
@@ -509,7 +501,11 @@ pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_in(app: &mut AppView
     if app.privacy_banner_opt_in_inflight || !app.privacy_banner_should_show() {
         return vec![];
     }
-    let effects = set_coding_data_sharing(app, true);
+    let effects = set_coding_data_sharing(
+        app,
+        true,
+        xai_grok_telemetry::events::CodingDataConsentSource::PrivacyBanner,
+    );
     // should_show guarantees opted-out + unguarded, so effects is only empty
     // if a guard regresses; leaving inflight false keeps [Opt in] clickable.
     app.privacy_banner_opt_in_inflight = !effects.is_empty();
@@ -530,6 +526,12 @@ pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_out(app: &mut AppVie
     if app.privacy_banner_opt_in_inflight || !app.privacy_banner_should_show() {
         return vec![];
     }
+    let previous_opted_in = !app.coding_data_retention_opt_out;
+    log_coding_data_consent_selected(
+        xai_grok_telemetry::events::CodingDataConsentSource::PrivacyBanner,
+        false,
+        previous_opted_in,
+    );
     let mut effects = ack_privacy_banner(app);
     effects.push(Effect::SetCodingDataSharing {
         agent_id: coding_data_sharing_agent_id(app),

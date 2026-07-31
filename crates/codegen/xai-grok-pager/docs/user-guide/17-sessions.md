@@ -62,6 +62,14 @@ End the session and quit Grok:
 
 Alias: `/exit`. To leave the current session but stay in Grok, use `/home` to return to the welcome screen.
 
+### Delete the current session
+
+```
+/delete
+```
+
+Confirms, then permanently removes the session history and returns to the welcome screen. From `/resume`, press `d` then `y` on a row to delete a session you are not currently in.
+
 ---
 
 ## Resuming Sessions
@@ -78,7 +86,7 @@ This opens a session picker that lists recent sessions for the current workspace
 
 Typing in the picker filters the list by title and also searches your conversation content as you type; content matches appear under an "Extended search results" heading. Press `Ctrl+/` to search immediately without the brief pause.
 
-To switch between, rename, or close the sessions that are currently active (the parent session and any forks), use `/dashboard` (or its alias `/sessions`) instead.
+For the live top-level sessions in this pager (parent and forks) — switch, rename, peek, dispatch, or close — use the [Agent Dashboard](23-dashboard.md): `/dashboard` (aliases `/sessions`, `/agents-dashboard`) or `Ctrl+\`.
 
 ### From the Command Line
 
@@ -124,13 +132,14 @@ Alias: `/title`.
 
 ## The /rewind Command
 
-`/rewind` undoes recent changes by restoring files to their state at an earlier point in the conversation. Use it to recover from mistakes.
+`/rewind` (alias `/undo`) undoes recent changes by restoring files to their state at an earlier point in the conversation. Use it to recover from mistakes.
 
 ```
 /rewind
+/undo
 ```
 
-When you run `/rewind` (or press **Esc Esc** within 800ms while idle with an empty prompt and conversation messages), Grok:
+When you run `/rewind` or `/undo` (or press **Esc Esc** within 800ms while idle with an empty prompt and conversation messages), Grok:
 
 1. Shows a list of rewind points (one per user prompt)
 2. Lets you select which point to rewind to

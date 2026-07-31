@@ -4,8 +4,8 @@ use super::AgentView;
 use crate::app::actions::Action;
 use crate::app::app_view::InputOutcome;
 use crate::views::review::{
-    ReviewFocus, ReviewInput, handle_review_ask_key, handle_review_list_key,
-    handle_review_mouse, handle_review_preview_shell_key,
+    ReviewFocus, ReviewInput, handle_review_ask_key, handle_review_list_key, handle_review_mouse,
+    handle_review_preview_shell_key,
 };
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::Path;
@@ -53,9 +53,7 @@ impl AgentView {
                 InputOutcome::Action(Action::SetReviewIncludeReads(enabled))
             }
             ReviewInput::OpenPath => self.open_review_path(),
-            ReviewInput::AskSubmit(question) => {
-                InputOutcome::Action(Action::ReviewAsk(question))
-            }
+            ReviewInput::AskSubmit(question) => InputOutcome::Action(Action::ReviewAsk(question)),
             ReviewInput::Changed | ReviewInput::Consumed => {
                 if let Some(state) = self.review_state.as_mut() {
                     state.ensure_viewer(&self.scrollback);

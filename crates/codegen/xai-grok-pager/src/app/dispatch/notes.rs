@@ -289,9 +289,11 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
     if app.external_agent && !app.current_ui.pi_btw {
         if let Some(agent) = app.agents.get_mut(&id) {
             if app.screen_mode.is_minimal() {
-                agent.scrollback.push_block(crate::scrollback::block::RenderBlock::system(
-                    "Native /btw is off. F2 → Agent → Pi /btw → on, then restart grok-pi.",
-                ));
+                agent
+                    .scrollback
+                    .push_block(crate::scrollback::block::RenderBlock::system(
+                        "Native /btw is off. F2 → Agent → Pi /btw → on, then restart grok-pi.",
+                    ));
             } else {
                 agent.show_toast(
                     "Native /btw is off. F2 → Agent → Pi /btw → on, then restart grok-pi.",

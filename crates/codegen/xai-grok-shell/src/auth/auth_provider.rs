@@ -282,6 +282,7 @@ async fn run_capped(
     cmd: &mut tokio::process::Command,
     timeout: std::time::Duration,
 ) -> anyhow::Result<std::process::Output> {
+    #[allow(clippy::disallowed_methods)] // killed at the timeout this call reports
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("command failed to start: {e}"))?;
@@ -383,15 +384,7 @@ async fn mint_provider_token(
             cmd.args(args);
             cmd
         }
-        None => {
-            #[cfg(windows)]
-            let (shell, flag) = ("cmd", "/C");
-            #[cfg(not(windows))]
-            let (shell, flag) = ("sh", "-c");
-            let mut cmd = tokio::process::Command::new(shell);
-            cmd.args([flag, config.command.as_str()]);
-            cmd
-        }
+        None => crate::util::subprocess::shell_c(config.command.as_str()),
     };
     if let Some(ref dir) = cwd {
         cmd.current_dir(dir);
