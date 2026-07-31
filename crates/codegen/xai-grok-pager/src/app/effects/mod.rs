@@ -11,7 +11,9 @@ use super::session_title_resolve::worktree_resume_failure_message;
 #[allow(unused_imports)]
 use super::{agent, dispatch};
 pub use helpers::ConversationsPartial;
-pub(super) use helpers::parse_session_load_running_prompt_id;
+pub(super) use helpers::{
+    parse_session_load_running_prompt_id, parse_session_scheduler_background_loops,
+};
 pub(crate) use helpers::{
     EffectMeta, RestoreProgressMsg, SessionFlags, persist_permission_mode_and_notify,
     persist_setting, sanitize_user_error,
@@ -247,6 +249,9 @@ pub(crate) fn execute(
                                 agent_id,
                                 session_id: resp.session_id,
                                 models: resp.models,
+                                scheduler_background_loops: parse_session_scheduler_background_loops(
+                                    resp.meta.as_ref(),
+                                ),
                             }
                         }
                         Err(e) => {
@@ -541,6 +546,9 @@ pub(crate) fn execute(
                                 worktree_path: worktree_root,
                                 session_cwd,
                                 models: resp.models,
+                                scheduler_background_loops: parse_session_scheduler_background_loops(
+                                    resp.meta.as_ref(),
+                                ),
                             }
                         }
                         Err(e) => {
@@ -622,6 +630,9 @@ pub(crate) fn execute(
                                 restore_summary,
                                 restore_degree,
                                 running_prompt_id,
+                                scheduler_background_loops: parse_session_scheduler_background_loops(
+                                    resp.meta.as_ref(),
+                                ),
                             }
                         }
                         Err(e) => {
@@ -3968,7 +3979,12 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::SetCodingDataSharing { agent_id, opted_in, rollback_to_opted_in } => {
+        Effect::SetCodingDataSharing {
+            agent_id,
+            opted_in,
+            rollback_to_opted_in,
+            seq,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -3991,6 +4007,7 @@ pub(crate) fn execute(
                                         agent_id,
                                         error: format!("malformed response: {e}"),
                                         rollback_to_opted_in,
+                                        seq,
                                     };
                                 }
                             };
@@ -4006,6 +4023,7 @@ pub(crate) fn execute(
                                     agent_id,
                                     error: msg,
                                     rollback_to_opted_in,
+                                    seq,
                                 };
                             }
                             let confirmed_opted_in = wrapper
@@ -4016,6 +4034,7 @@ pub(crate) fn execute(
                             TaskResult::CodingDataSharingUpdated {
                                 agent_id,
                                 opted_in: confirmed_opted_in,
+                                seq,
                             }
                         }
                         Err(e) => {
@@ -4023,6 +4042,7 @@ pub(crate) fn execute(
                                 agent_id,
                                 error: format!("{e}"),
                                 rollback_to_opted_in,
+                                seq,
                             }
                         }
                     }
@@ -5093,10 +5113,11 @@ pub(crate) fn execute(
                                         .to_owned()
                                 });
                             xai_grok_shell::remote::fetch_settings_blocking(
-                                &proxy_base,
-                                &auth,
-                                None,
-                            )
+                                    &proxy_base,
+                                    &auth,
+                                    None,
+                                )
+                                .into_option()
                         })
                         .await
                         .ok()

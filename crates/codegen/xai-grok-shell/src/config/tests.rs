@@ -1010,6 +1010,81 @@ fn subagents_config_default_enabled() {
     });
 }
 #[test]
+fn subagents_max_depth_defaults_to_one() {
+    assert_eq!(
+            SubagentsConfig::resolve_max_depth(None, None, None),
+            SubagentsConfig::DEFAULT_MAX_DEPTH
+        );
+    assert_eq!(SubagentsConfig::DEFAULT_MAX_DEPTH, 1);
+}
+#[test]
+fn subagents_max_depth_env_beats_toml_and_remote() {
+    assert_eq!(
+            SubagentsConfig::resolve_max_depth(Some("3"), Some(2), Some(4)),
+            3
+        );
+}
+#[test]
+fn subagents_max_depth_toml_beats_remote() {
+    assert_eq!(
+            SubagentsConfig::resolve_max_depth(None, Some(2), Some(4)),
+            2
+        );
+}
+#[test]
+fn subagents_max_depth_remote_used_when_local_absent() {
+    assert_eq!(SubagentsConfig::resolve_max_depth(None, None, Some(5)), 5);
+}
+#[test]
+fn subagents_max_depth_clamps_below_one_to_one() {
+    assert_eq!(SubagentsConfig::clamp_max_depth(-3, "test"), 1);
+    assert_eq!(SubagentsConfig::clamp_max_depth(0, "test"), 1);
+    assert_eq!(
+            SubagentsConfig::resolve_max_depth(Some("-2"), None, None),
+            1
+        );
+    assert_eq!(
+            SubagentsConfig::resolve_max_depth(None, Some(0), Some(3)),
+            1
+        );
+    assert_eq!(
+            SubagentsConfig::resolve_max_depth(None, None, Some(0)),
+            1
+        );
+}
+#[test]
+fn subagents_max_depth_invalid_env_falls_through() {
+    assert_eq!(
+            SubagentsConfig::resolve_max_depth(Some("not-a-number"), Some(2), None),
+            2
+        );
+}
+#[test]
+fn subagents_config_parses_max_depth_from_toml() {
+    without_grok_subagents(|| {
+        let config: toml::Value = toml::from_str("[subagents]\nmax_depth = 2\n")
+            .unwrap();
+        let sa = SubagentsConfig::resolve(false, &config);
+        assert_eq!(sa.max_depth, Some(2));
+    });
+}
+#[test]
+fn subagents_config_parses_negative_max_depth_without_dropping_section() {
+    without_grok_subagents(|| {
+        let config: toml::Value = toml::from_str(
+                "[subagents]\nenabled = true\nmax_depth = -1\n",
+            )
+            .unwrap();
+        let sa = SubagentsConfig::resolve(false, &config);
+        assert!(sa.enabled);
+        assert_eq!(sa.max_depth, Some(-1));
+        assert_eq!(
+                SubagentsConfig::resolve_max_depth(None, sa.max_depth, None),
+                1
+            );
+    });
+}
+#[test]
 fn subagents_config_cli_flag_enables() {
     without_grok_subagents(|| {
         let config = toml::Value::Table(toml::map::Map::new());
@@ -3614,4 +3689,27 @@ fn kill_switched_cold_cwd_stays_allowed_through_plugins_config_read() {
             crate::agent::folder_trust::project_scope_allowed(cwd),
             "gate must still allow the kill-switched folder after the config read"
         );
+}
+/// Writeback requires grok.com auth: remote may advertise it, but a non-xai
+/// credential is downgraded to `Local`.
+#[test]
+#[serial_test::serial]
+fn from_remote_gated_requires_xai_auth_for_writeback() {
+    let _env = crate::env::EnvVarGuard::remove("GROK_STORAGE_MODE");
+    let writeback = crate::util::config::RemoteSettings {
+        writeback_enabled: Some(true),
+        ..Default::default()
+    };
+    assert_eq!(
+        StorageMode::from_remote_gated(Some(&writeback), true),
+        StorageMode::Writeback
+    );
+    assert_eq!(
+        StorageMode::from_remote_gated(Some(&writeback), false),
+        StorageMode::Local,
+    );
+    assert_eq!(
+        StorageMode::from_remote_gated(None, true),
+        StorageMode::Local
+    );
 }

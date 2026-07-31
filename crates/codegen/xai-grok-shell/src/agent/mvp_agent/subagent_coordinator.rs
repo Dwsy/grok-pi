@@ -326,11 +326,13 @@ impl MvpAgent {
             })
         }?;
         let available_models = self.models_manager.models();
-        let parent_lsp = {
+        let (parent_lsp, parent_process_scope) = {
             let sessions = self.sessions.borrow();
-            sessions
-                .get(&parent_sid)
-                .and_then(|h| h.tool_context.lsp.clone())
+            let parent = sessions.get(&parent_sid);
+            (
+                parent.and_then(|h| h.tool_context.lsp.clone()),
+                parent.and_then(|h| h.tool_context.process_scope.clone()),
+            )
         };
         let am = self.auth_manager.clone();
         let inference_idle_timeout_secs = {
@@ -407,6 +409,7 @@ impl MvpAgent {
         };
         Some(crate::agent::subagent::SubagentSpawnContext {
             lsp: parent_lsp,
+            process_scope: parent_process_scope,
             client_hooks: Default::default(),
             sampling_config: self.sampling_config.borrow().clone(),
             managed_mcp_proxy_base_url: parent_managed_mcp_proxy_base_url
@@ -426,6 +429,7 @@ impl MvpAgent {
             yolo_mode,
             subagent_event_tx: self.subagent_event_tx.clone(),
             parent_depth,
+            subagents_max_depth: self.cfg.borrow().subagents_max_depth,
             inference_idle_timeout_secs,
             auto_compact_threshold_tiers:
                 crate::agent::subagent::AutoCompactThresholdTiers::capture(&self.cfg.borrow()),

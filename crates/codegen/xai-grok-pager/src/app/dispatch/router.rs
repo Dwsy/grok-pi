@@ -112,7 +112,7 @@ use super::settings::ui::{
 };
 use super::status::{
     dispatch_copy_session_id, dispatch_manage_billing, dispatch_open_gboom, dispatch_open_tutorial,
-    dispatch_privacy_banner_accept, dispatch_privacy_banner_customize, dispatch_share_session,
+    dispatch_privacy_banner_opt_in, dispatch_privacy_banner_opt_out, dispatch_share_session,
     dispatch_show_context_info, dispatch_show_privacy_info, dispatch_show_queue,
     dispatch_show_release_notes, dispatch_show_session_info, dispatch_show_tasks,
     dispatch_show_usage, set_coding_data_sharing,
@@ -1184,8 +1184,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PreviewAutoLightTheme(v) => preview_auto_light_theme(app, v),
         Action::OpenSettings => dispatch_open_settings(app, None),
         Action::OpenSettingsFocus { key } => dispatch_open_settings(app, Some(key)),
-        Action::PrivacyBannerAccept => dispatch_privacy_banner_accept(app),
-        Action::PrivacyBannerCustomize => dispatch_privacy_banner_customize(app),
+        Action::PrivacyBannerOptIn => dispatch_privacy_banner_opt_in(app),
+        Action::PrivacyBannerOptOut => dispatch_privacy_banner_opt_out(app),
         Action::OpenPiConfig => dispatch_open_pi_config(app),
         Action::OpenPiModels => dispatch_open_pi_models(app),
         Action::OpenCommandPalette => dispatch_open_command_palette(app),

@@ -1,6 +1,9 @@
 //! `/gboom` easter egg: a tiny single-level raycaster shooter rendered in
 //! the terminal via the kitty graphics protocol.
 //!
+//! Not production code — this is for fun and is not maintained to the
+//! standards in `crates/codegen/AGENTS.md`.
+//!
 //! Typing `/gboom` (and nothing else) opens a modal overlay — the same
 //! surface the imagine-video player uses — and streams PNG frames via
 //! per-frame kitty `a=T` retransmission at the ~30 fps animation tick. The
@@ -103,6 +106,8 @@ impl GboomState {
         // On terminals that report key releases (Kitty keyboard protocol),
         // latch keys on press/release so the player can move and turn at
         // once; otherwise fall back to the repeat-bridging timer model.
+        // Deliberately `kitty_flags_pushed`, not `kitty_releases_reported`: the
+        // game pushes its own REPORT_ALL_KEYS layer over a downgraded base.
         game.set_release_aware(crate::terminal::kitty_flags_pushed());
         Self {
             game,

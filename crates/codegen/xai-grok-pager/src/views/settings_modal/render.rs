@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use super::state::{
     CONTENT_MIN_WIDTH, MAX_THOUGHTS_WIDTH_WIDENED_MARGIN, MODAL_TITLE, RowEntry,
     STANDARD_MAX_WIDTH, SettingsModalState, SettingsMode, SettingsModeKind,
-    TITLE_LEADING_DECORATION_W, effective_enum_choices, group_children,
+    TITLE_LEADING_DECORATION_W, effective_enum_choices, group_children, mode_is_consent_chooser,
 };
 use crate::render::line_utils::truncate_str;
 use crate::settings::{
@@ -122,10 +122,12 @@ pub fn render_settings_modal(
         footer_lines: 2,
     }
     .with_compact(compact);
+    // Must agree with the `docs_footer_area` split below — a mismatch
+    // would reserve a row nothing paints (or paint into the body).
     let has_tip_footer = !matches!(
         state.state.mode_kind(),
         SettingsModeKind::EditingString | SettingsModeKind::EditingInt
-    );
+    ) && !mode_is_consent_chooser(&state.state.mode);
     let footer_lines = if has_tip_footer {
         modal_window::footer_lines_with_tip_gap(full_area, &sizing, shortcuts)
     } else {
@@ -170,6 +172,8 @@ pub fn render_settings_modal(
 
     let (inner_area, docs_footer_area) = match state.state.mode_kind() {
         SettingsModeKind::EditingString | SettingsModeKind::EditingInt => (content_area, None),
+        // A consent chooser shows the disclosure and the choices only.
+        _ if mode_is_consent_chooser(&state.state.mode) => (content_area, None),
         _ => modal_window::split_content_for_tip_footer(content_area),
     };
 
@@ -2734,6 +2738,12 @@ fn render_setting_group_row(
 pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'static>> {
     match &state.state.mode {
         SettingsMode::Browse => {
+            // A locked row (ZDR / team-managed) accepts neither the edit keys
+            // nor `d`, so it advertises neither. `→ expand` stays — that is
+            // how the user reads the lock reason.
+            let locked = state
+                .focused_setting()
+                .is_some_and(|(key, _)| state.row_lock(key).is_some());
             let enter_label = match state.focused_setting() {
                 Some((_, meta)) if matches!(meta.kind, SettingKind::Bool { .. }) => "Enter toggle",
                 _ => "Enter edit",
@@ -2749,16 +2759,20 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                     clickable: false,
                     id: 0,
                 },
-                Shortcut {
+            ];
+            if !locked {
+                shortcuts.push(Shortcut {
                     label: "Space toggle",
                     clickable: false,
                     id: 0,
-                },
-                Shortcut {
+                });
+                shortcuts.push(Shortcut {
                     label: enter_label,
                     clickable: false,
                     id: 0,
-                },
+                });
+            }
+            shortcuts.extend([
                 Shortcut {
                     label: "\u{2192} expand",
                     clickable: false,
@@ -2769,17 +2783,19 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                     clickable: false,
                     id: 0,
                 },
-                Shortcut {
+            ]);
+            if !locked {
+                shortcuts.push(Shortcut {
                     label: "d reset",
                     clickable: false,
                     id: 0,
-                },
-                Shortcut {
-                    label: "F2/Esc close",
-                    clickable: false,
-                    id: 0,
-                },
-            ];
+                });
+            }
+            shortcuts.push(Shortcut {
+                label: "F2/Esc close",
+                clickable: false,
+                id: 0,
+            });
             // Browse is nav mode (filter inactive), so append `i search` last
             // (matching the shared pickers).
             modal_window::push_vim_nav_search_hint(&mut shortcuts, false);
@@ -2814,6 +2830,7 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
         ],
         SettingsMode::PickingEnum {
             supports_preview: sp,
+            key,
             ..
         } => {
             // Labels depend on whether the Enum supports live preview.
@@ -2823,14 +2840,18 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                 "\u{2191}/\u{2193} nav"
             };
             let esc_label = if *sp { "Esc revert" } else { "Esc cancel" };
-            vec![
+            let consent = crate::settings::is_consent_chooser(key);
+            let mut shortcuts = vec![
                 Shortcut {
                     label: nav_label,
                     clickable: false,
                     id: 0,
                 },
+                // A chooser picks one of the offered answers, so Enter
+                // "selects". The filter bar and the value editors, where
+                // Enter really does commit typed input, keep that wording.
                 Shortcut {
-                    label: "Enter commit",
+                    label: "Enter select",
                     clickable: false,
                     id: 0,
                 },
@@ -2839,12 +2860,17 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                     clickable: false,
                     id: 0,
                 },
-                Shortcut {
+            ];
+            // Consent choosers hide reset; the key is disabled there too, so
+            // this stays a description of what actually works on the pane.
+            if !consent {
+                shortcuts.push(Shortcut {
                     label: "d reset",
                     clickable: false,
                     id: 0,
-                },
-            ]
+                });
+            }
+            shortcuts
         }
 
         SettingsMode::EditingInt { min, max, .. } => {

@@ -8,7 +8,7 @@ use super::types::{ScheduledTask, SchedulerCommand, SchedulerHandle, scheduler_t
 // Canonical /loop wording lives in the light API crate so other consumers can
 // link it without the tools implementation crate; re-exported to keep paths stable.
 pub use xai_grok_tools_api::slash_commands::{
-    SCHEDULER_CREATE_TOOL_NAME, loop_schedule_instruction, loop_usage_message,
+    LoopFireMode, SCHEDULER_CREATE_TOOL_NAME, loop_schedule_instruction, loop_usage_message,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -143,7 +143,7 @@ impl xai_tool_runtime::Tool for SchedulerCreateTool {
     ) -> xai_tool_types::ToolDescription {
         xai_tool_types::ToolDescription::new(
             "scheduler_create",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn loop_schedule_instruction_holds_invariants() {
         let args = "every 30 minutes do x";
-        let instr = loop_schedule_instruction(args);
+        let instr = loop_schedule_instruction(args, LoopFireMode::Detached);
         assert!(
             !instr.contains("10m"),
             "instruction must not default: {instr}"

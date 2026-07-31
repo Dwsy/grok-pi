@@ -303,6 +303,11 @@ pub struct PagerLocalSnapshot {
     /// language actually in effect when `[ui].voice_stt_language` is unset but
     /// an explicit `[voice].language` applies.
     pub voice_stt_language: String,
+    /// Mirrors `AgentView::scheduler_background_loops` — the value the shell
+    /// pinned for THIS session — falling back to
+    /// `AppView::scheduler_background_loops_seed` before the session response
+    /// lands. `/loop` reads it to describe where a scheduled fire runs.
+    pub scheduler_background_loops: bool,
 }
 
 impl Default for PagerLocalSnapshot {
@@ -327,6 +332,8 @@ impl Default for PagerLocalSnapshot {
             auto_mode_gate: false,
             ask_user_question_timeout_enabled: None,
             voice_stt_language: xai_grok_voice::STT_LANGUAGE_DEFAULT.to_string(),
+            // Matches `resolve_scheduler_background_loops`'s default.
+            scheduler_background_loops: true,
         }
     }
 }
@@ -753,6 +760,11 @@ pub fn current_value_for(
 
         _ => None,
     }
+}
+
+/// Consent chooser: no docs tip, and no `d` reset (hint or key).
+pub fn is_consent_chooser(key: &str) -> bool {
+    key == "coding_data_sharing"
 }
 
 /// Default value for `key`, derived from the registry metadata.

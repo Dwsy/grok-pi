@@ -96,7 +96,9 @@ pub fn probe_at_startup() {
 /// CSI-intercepting multiplexers skip — the innermost layer answers as
 /// itself, which the `multiplexer` field already records. Transparent muxes
 /// (e.g. cmux) need no special case.
-fn gate_allows_probe(ctx: &super::TerminalContext) -> bool {
+///
+/// `pub(super)` for [`super::da2`], which must stay disjoint from this list.
+pub(super) fn gate_allows_probe(ctx: &super::TerminalContext) -> bool {
     use super::TerminalName::*;
     matches!(
         ctx.brand,
@@ -192,6 +194,10 @@ mod tests {
             assert!(
                 !gate_allows_probe(&ctx(brand, MultiplexerKind::Tmux)),
                 "{brand:?} under tmux should be skipped"
+            );
+            assert!(
+                !gate_allows_probe(&ctx(brand, MultiplexerKind::Herdr)),
+                "{brand:?} under herdr should be skipped"
             );
         }
         // JediTerm renders the query as garbage and must never be probed.

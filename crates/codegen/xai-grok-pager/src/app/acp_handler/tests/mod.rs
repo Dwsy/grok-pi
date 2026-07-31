@@ -1817,6 +1817,7 @@ pub(super) fn task_completed_notif(
                 explicitly_killed: false,
                 owner_session_id: None,
                 description: None,
+                is_backgrounded: false,
             },
             will_wake,
         },

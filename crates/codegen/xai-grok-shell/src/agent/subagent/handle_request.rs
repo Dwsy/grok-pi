@@ -381,8 +381,7 @@ pub(crate) async fn run_shell_child(
         .spawn_depth
         .unwrap_or(ctx.parent_depth + 1);
     let tools_before_policy = definition.tool_config.tools.len();
-    let allow_nested_subagents =
-        child_depth < xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH;
+    let allow_nested_subagents = child_depth < ctx.subagents_max_depth;
     xai_grok_subagent_resolution::apply_child_tool_policy(
         &mut definition,
         effective_runtime.capability_mode,
@@ -721,6 +720,7 @@ pub(crate) async fn run_shell_child(
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
     tool_ctx.subagent_depth = child_depth;
     tool_ctx.lsp = ctx.lsp.clone();
+    tool_ctx.process_scope = ctx.process_scope.clone();
     let parent_traceparent = xai_file_utils::trace_context::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
     let tracker_model_id = effective_model_id.0.to_string();
@@ -1097,6 +1097,7 @@ pub(crate) async fn run_shell_child(
         ctx.goal_enabled,
         ctx.background_workflows_enabled,
         true,
+        ctx.subagents_max_depth,
         ctx.ask_user_question_enabled,
         ctx.client_hooks.clone(),
         None,

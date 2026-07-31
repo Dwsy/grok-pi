@@ -104,6 +104,7 @@ fn session_loaded_with_restore_shows_summary_in_scrollback() {
             ),
             restore_degree: Some(xai_grok_workspace::session::git::RestoreDegree::Full),
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -246,6 +247,7 @@ fn session_loaded_without_adoption_finishes_replayed_running_entries() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -313,6 +315,7 @@ fn session_loaded_purges_replay_transient() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -337,6 +340,7 @@ fn session_loaded_during_open_reload_window_defers_to_window() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -446,6 +450,7 @@ fn session_loaded_with_restore_failure_shows_warning_banner() {
             ),
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -487,6 +492,7 @@ fn session_loaded_without_restore_no_summary() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -529,6 +535,7 @@ fn session_loaded_without_restore_resets_restore_degree() {
             restore_summary: Some("checked out abc".into()),
             restore_degree: Some(xai_grok_workspace::session::git::RestoreDegree::Full),
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -545,6 +552,7 @@ fn session_loaded_without_restore_resets_restore_degree() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -573,6 +581,7 @@ fn session_loaded_with_flag_emits_five_fetches_and_clears_flag() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -765,6 +774,7 @@ fn session_loaded_drains_pending_first_prompt_to_front() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -794,6 +804,7 @@ fn session_loaded_with_no_pending_first_prompt_does_not_enqueue() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -899,6 +910,7 @@ fn session_loaded_clears_stale_running_entries() {
             restore_summary: None,
             restore_degree: None,
             running_prompt_id: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -938,6 +950,7 @@ fn resume_focuses_existing_agent_for_open_session() {
             agent_id: agent_0,
             session_id: "wt-sess-1".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -955,6 +968,7 @@ fn resume_focuses_existing_agent_for_open_session() {
             agent_id: agent_1,
             session_id: "new-sess-2".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -985,6 +999,7 @@ fn resume_unknown_session_still_creates_new_agent() {
             agent_id: AgentId(0),
             session_id: "sess-aaa".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1015,6 +1030,7 @@ fn resume_open_session_does_not_rearm_stale_overlay() {
             agent_id: agent_0,
             session_id: "sess-a".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1025,6 +1041,7 @@ fn resume_open_session_does_not_rearm_stale_overlay() {
             agent_id: agent_1,
             session_id: "sess-b".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1050,6 +1067,7 @@ fn resume_conversation_does_not_focus_build_id_collision() {
             agent_id: agent_0,
             session_id: "shared-id".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1081,6 +1099,7 @@ fn duplicate_load_unbind_invalidates_old_minimal_btw_response() {
             agent_id: old_owner,
             session_id: "shared-id".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1124,6 +1143,7 @@ fn resume_under_chat_mode_focuses_despite_entry_false() {
             agent_id: agent_0,
             session_id: "chat-mode-sess".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1135,6 +1155,7 @@ fn resume_under_chat_mode_focuses_despite_entry_false() {
             agent_id: agent_1,
             session_id: "other".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1160,6 +1181,7 @@ fn resume_stale_attached_target_focuses_dashboard_row() {
             agent_id: agent_0,
             session_id: "sess-a".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1170,6 +1192,7 @@ fn resume_stale_attached_target_focuses_dashboard_row() {
             agent_id: agent_1,
             session_id: "sess-b".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1243,6 +1266,7 @@ fn session_restored_clears_stale_session_id() {
             agent_id: AgentId(0),
             session_id: "remote-sess".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );

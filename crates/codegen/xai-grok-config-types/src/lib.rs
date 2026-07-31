@@ -697,8 +697,9 @@ pub struct RemoteSettings {
     pub managed_mcps_enabled: Option<bool>,
     #[serde(default)]
     pub managed_mcp_gateway_tools_enabled: Option<bool>,
-    /// Fleet kill switch for the **external OTEL** stream (customer
-    /// collectors). Restrictive-only by construction: there is deliberately
+    /// Remote-policy disable lever for the **external OTEL** stream (customer
+    /// collectors); feeds `ExternalOtelRemotePolicy.force_disable`.
+    /// Restrictive-only by construction: there is deliberately
     /// no `external_otel_enabled` remote field — remote settings are fetched
     /// per-run and never persisted, so a remote "enable" could never reach
     /// init; org-wide enable ships via managed config instead. Applied
@@ -1000,6 +1001,9 @@ pub struct RemoteSettings {
     /// further override per the resolver chain.
     #[serde(default)]
     pub auto_compact_threshold_percent: Option<u8>,
+    /// Max subagent nesting depth (`grok_build_settings.subagents_max_depth`).
+    #[serde(default)]
+    pub subagents_max_depth: Option<u32>,
     /// Global system-prompt identity label. Per-model override wins; see
     /// `resolve_system_prompt_label`.
     #[serde(default)]
