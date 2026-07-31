@@ -33,37 +33,47 @@ Each entry records:
 
 <!-- entries below this line -->
 
-## [5da6962] — 2026-07-29
+## [dd04f39] — 2026-07-31
 
 > **Status:** Pending — not yet merged into grok-pi.
 
-- **Sync range:** `47348d1..5da6962` (`47348d13ec4508dcfe440e34c6d511bb02998fb2` → `5da6962e4adb9c857f3def762542b52b4ec3e522`)
-- **Upstream commits:** 3 (`Synced from monorepo`)
-- **SOURCE_REV (monorepo SHA):** `2a818575225183d8ca915f5632a09b8067b5156a` (was `d02693a856a54f1030695b36b91d276e96b30b23`)
-- **Diff size:** 315 files changed, +22006 / −7473
+- **Sync range:** `47348d1..dd04f39` (`47348d13ec4508dcfe440e34c6d511bb02998fb2` → `dd04f397b1d02f2272b092555669dfba1f01bc85`)
+- **Upstream commits:** 5 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `2a28b4a86cfc4a4c133c35b7fc2a6a9964387c39` (was `d02693a856a54f1030695b36b91d276e96b30b23`)
+- **Diff size:** 618 files changed, +55053 / −18012
 
 ### Summary
 
-This sync is dominated by Shell session-lifecycle and memory work, Pager startup/plan/terminal behavior, and broad tool cleanup. It bounds large-session and fork replay memory, reclaims session-owned child resources, makes startup and file search more resilient, expands terminal and subscription telemetry, and adds security hardening around the leader sandbox. The range overlaps Grok-Pi's highest-risk seams: Pager `app/`, external ACP/session lifecycle, plan and subagent projection, model/settings startup, tool definitions, MCP cleanup, and the local Herdr integration.
+This five-commit sync is dominated by Shell and Pager lifecycle, headless ACP, task/process cleanup, sampling/compaction, and tool-runtime work. It bounds large-session and fork memory, reclaims session-owned child resources, adds ACP session listing and background-task/tool streaming, improves startup and terminal-resize resilience, and expands security, certificate, dashboard, and telemetry behavior. The range overlaps 102 fork-modified files, including Grok-Pi's highest-risk Pager `app/`, external ACP/session, plan/settings, queue/subagent, model/sampling, headless, and event-loop seams.
 
 ### Areas touched
 
 | Area | Files | +/− | Added / Deleted | Notes |
 |------|------:|----:|-----------------|-------|
-| Shell (agent runtime) | 92 | +9702/−4596 | 20/0 | session memory/process reclamation, startup, search recovery, subagent scope |
-| Pager (TUI) | 98 | +6124/−2161 | 8/0 | instant startup, plan scrollback, terminal probing, settings and session UI |
-| Tools | 76 | +2848/−371 | 1/0 | session resource cleanup, schema/description fixes, shell wrapper correctness |
-| Workspace / Permission | 12 | +1736/−215 | 0/0 | task snapshots, file-search degradation, worker caps, git operations |
-| Other crates | 23 | +1127/−79 | 3/0 | HTTP, crash handling, test support, proxy/admin and shared infrastructure |
-| MCP | 1 | +142/−33 | 0/0 | CLI enable/disable and child-process cleanup |
-| Telemetry / Mixpanel | 4 | +98/−6 | 0/0 | terminal/source and subscription tier telemetry |
-| Other | 3 | +82/−0 | 1/0 | generated/protocol support outside mapped codegen areas |
-| Agent lifecycle | 1 | +58/−0 | 0/0 | agent builder lifecycle support |
-| Update / Version | 1 | +33/−9 | 0/0 | source-tagged terminal version reporting |
-| Root / meta | 2 | +28/−1 | 0/0 | lockfile and SOURCE_REV |
-| Sandbox | 1 | +22/−0 | 0/0 | leader-process sandbox profile enforcement |
-| Config | 1 | +6/−2 | 0/0 | configurable subagent nesting depth |
-| **Total** | **315** | **+22006/−7473** | **33/0** | |
+| Shell (agent runtime) | 163 | +17195/−5969 | 34/0 | session memory/process reclamation, startup recovery, persistence and ACP lifecycle |
+| Pager (TUI) | 234 | +16466/−5325 | 34/0 | plan/settings/session behavior, headless split, terminal resize and ACP projection |
+| Tools | 92 | +8861/−1283 | 9/0 | task/process cleanup, LSP diagnostics, monitoring and schema behavior |
+| Models / Sampling | 19 | +5131/−4765 | 7/0 | per-backend conversion modules and sampling infrastructure |
+| Other crates | 39 | +2006/−129 | 11/0 | HTTP, crash, proxy/admin, test and shared runtime infrastructure |
+| Workspace / Permission | 16 | +1930/−223 | 0/0 | task snapshots, git/workspace operations and preview metrics |
+| Compaction | 4 | +804/−17 | 1/0 | tokenizer-aligned counts and context-length recovery |
+| Telemetry / Mixpanel | 9 | +677/−49 | 0/0 | consent, insert IDs, terminal/source and subscription telemetry |
+| Worktree / GC | 7 | +485/−57 | 0/0 | resume-safe worktree pruning and worktree lifecycle |
+| MCP | 4 | +427/−90 | 0/0 | CLI controls, credentials and child-process cleanup |
+| Computer Hub | 4 | +292/−1 | 0/0 | hub metrics and task lifecycle integration |
+| Agent lifecycle | 3 | +199/−29 | 0/0 | parent-death cleanup and agent/session lifecycle support |
+| ACP / Protocol | 2 | +181/−31 | 0/0 | session listing and task/tool streaming protocol support |
+| Hooks / Plugins | 6 | +139/−7 | 0/0 | session-owned hook child cleanup |
+| Auth / Secrets | 2 | +113/−4 | 0/0 | provider command execution and token-refresh hardening |
+| Root / meta | 3 | +50/−5 | 0/0 | lockfile, workspace metadata and SOURCE_REV |
+| Update / Version | 2 | +36/−10 | 0/0 | source-tagged version reporting |
+| Sandbox | 1 | +22/−0 | 0/0 | leader-process sandbox enforcement |
+| Other | 1 | +12/−13 | 0/0 | generated/protocol support outside mapped crate areas |
+| Config | 2 | +11/−5 | 0/0 | subagent depth and forking settings |
+| Chat state | 2 | +10/−0 | 0/0 | history trailer and usage data |
+| Voice | 2 | +4/−0 | 0/0 | supporting capture/runtime changes |
+| Markdown / Mermaid | 1 | +2/−0 | 0/0 | supporting rendering changes |
+| **Total** | **618** | **+55053/−18012** | **96/0** | |
 
 ### Added
 
@@ -71,7 +81,7 @@ This sync is dominated by Shell session-lifecycle and memory work, Pager startup
 - Add a subagent lifecycle soak that bounds threads, file descriptors, and heap, and fail closed when soak metrics are absent.
 - Add source-tagged terminal version telemetry, DA2 terminal probing, and terminal-version feedback metadata.
 - Add reusable session test helpers and synthetic replay/round-trip coverage.
-- Add `computer_reason` to the `ConversationHistoryDone` trailer.
+- Add `computer_reason` to the `ConversationHistoryDone` trailer and forward it from history-load trailers.
 - Make maximum subagent nesting depth configurable.
 - Allow `/loop` to store prompts that can terminate the loop.
 - Add SuperGrok Plus identity, CLI, and analytics tier surfaces.
@@ -79,6 +89,15 @@ This sync is dominated by Shell session-lifecycle and memory work, Pager startup
 - Add CLI enable/disable controls for MCP servers.
 - Harden workspace git operations and add `git_sync_base`.
 - Add a feature-gated gRPC retry policy to the circuit breaker.
+- Add a project-level forking-settings toggle with backend and deploy-time controls.
+- Track coding-data consent decisions.
+- Ship the Agent Dashboard user guide.
+- Expose chat-product Skills through ACP `available_commands_update`.
+- Add opt-in extra root CAs through `GROK_EXTRA_CA_BUNDLE`.
+- Stream headless tool calls over ACP and bridge gateway task lifecycle for chat-session background tasks.
+- Add an ACP `session/list` method.
+- Add `/undo` as an alias for `/rewind`.
+- Read C# diagnostics while keeping Roslyn alive across edits.
 
 ### Changed
 
@@ -87,11 +106,29 @@ This sync is dominated by Shell session-lifecycle and memory work, Pager startup
 - Copy the complete approved plan with `y`, keep the whole plan in scrollback, and separate reasoning from output in minimal mode.
 - Make workspace task snapshots list only incomplete background tasks.
 - Run plan-mode exit last in mixed tool batches.
-- Reclaim retained/resident session state and session-owned processes, LSP servers, MCP children, and subagents when a session closes.
-- Inherit the parent session process scope into subagents.
+- Reclaim retained/resident session state and session-owned processes, LSP servers, MCP children, subagents, Bash/background commands, and hook children when a session closes.
+- Inherit the parent session process scope into subagents, cancel all session subagents when the user stops, and let session persistence exit when its session ends.
 - Build the `@` file-search matcher lazily and cap Shell/Workspace Tokio workers on many-core hosts.
 - Reuse spawn-time skill discovery for session telemetry.
 - Mark `/gboom` as non-production code and quiet routine auth, LSP, and config warnings.
+- Cache growing transcripts on the messages backend.
+- Tell the model when a wait was clamped instead of re-inviting it.
+- Deliver the stationarity nudge after the tool result and stop claiming results are identical.
+- Run auth-provider commands through the platform shell.
+- Keep monitor-tool stdout short and prescriptive.
+- Use UUIDs for analytics event insert IDs.
+- Allow deleting the current session from within that session.
+- Enable doom-loop recovery by default.
+- Kill agent children and the idle inhibitor when the parent process dies.
+- Temporarily disable TUI session-share link creation.
+- Split the headless Pager module into clearer submodules.
+- Use the compaction sampler tokenizer for item token counts.
+- Make fullscreen terminal resize substantially cheaper for long sessions.
+- Hide `/usage` for external-auth deployments.
+- Declare slash-command screen-mode support in one place.
+- Keep settings enum pickers on the committed value until Enter.
+- Give each sampling backend its own conversion module.
+- Suppress the cancelled marker on send-now wake turns.
 
 ### Fixed
 
@@ -104,13 +141,32 @@ This sync is dominated by Shell session-lifecycle and memory work, Pager startup
 - Stop leaking shell-wrapper positional parameters into sourced scripts, including persistent/static-shell Conda activation.
 - Self-heal a corrupt session-search SQLite cache.
 - Capture `SIGABRT` so panic-aborts leave crash reports.
+- Stop crashing at startup when the host cannot create more threads.
+- Fail open the access gate to avoid false CLI paywalls.
+- Fix multi-process credential wipes and orphaned session log writers.
+- Do not approve a plan when the revise prompt receives an empty Enter.
+- Return immediately from a blocking wait when the ACP task is already complete.
+- Stop worktree pruning from removing user registrations during resume.
+- Report honestly from `kill_task` when an ACP task does not exist.
+- Reap a PTY's full process tree.
+- Avoid truncated-history warnings for suppressed replay.
+- Fit full-replace summarizer input and recover from context-length errors.
+- Stop dropping agents for unrecognized frontmatter colors.
+- Harden sleep/wake token-refresh paths against forced re-login.
+- Treat an unenrolled child process as a lint error.
+
+### Removed / Deprecated
+
+- Remove the ineffective no-op tool reminder.
 
 ### Merge risk for grok-pi
 
-- Pager and Shell account for 190 changed files and overlap Grok-Pi `app/`, settings/model startup, plan/review scrollback, session lifecycle, subagent, external ACP, and event-loop seams.
+- Pager and Shell account for 397 changed files; 102 paths overlap fork modifications across `app/`, settings/model startup, plan/review scrollback, queue/subagent/session lifecycle, external ACP, headless, and event-loop seams.
+- The headless module split plus ACP `session/list`, tool-call streaming, and gateway-task lifecycle must preserve Pi as the only agent/session owner and keep `pi-grok-adapter` headless.
 - Upstream Herdr detection must be reconciled with the fork's existing Herdr integration rather than replacing product-specific behavior.
-- Session-close resource reclamation spans Tools, MCP, subprocess scope, LSP, and subagents; Pi remains the owner of Pi child sessions and adapter lifecycle.
-- PR #3 (`xai-org/main` → `Dwsy/main`) is currently conflict-dirty; conflict resolution must happen in an isolated integration worktree before the verified result is delivered to `main`.
+- Session-close and parent-death reclamation spans Tools, MCP, PTYs, hooks, subprocess scope, LSP, persistence, and subagents; Pi child-session ownership and adapter lifecycle must remain intact.
+- Sampling and compaction refactors overlap Grok-Pi model/thinking/context projection and require focused adapter plus Pager validation.
+- Conflict resolution must happen in an isolated integration worktree before any verified result is delivered to local `main`; no remote push is part of this recording step.
 
 ## [47348d1] — 2026-07-26
 
