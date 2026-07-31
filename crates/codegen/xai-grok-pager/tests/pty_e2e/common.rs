@@ -1111,6 +1111,9 @@ pub(crate) fn wait_for_exit_status(
 #[cfg(unix)]
 pub(crate) const WRAP_TIMEOUT: Duration = Duration::from_secs(120);
 
+#[cfg(unix)]
+const WRAP_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Run `grok wrap <wrap_args...>` to completion inside a PTY with an isolated
 /// `GROK_HOME`, returning the exit code (`None` only while still running at
 /// [`WRAP_TIMEOUT`]) and everything the wrap PTY emitted. `extra_env` is where
