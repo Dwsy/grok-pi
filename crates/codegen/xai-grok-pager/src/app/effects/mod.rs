@@ -4215,7 +4215,13 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::SendBtw { agent_id, session_id, question, models, minimal_request_id } => {
+        Effect::SendBtw {
+            agent_id,
+            session_id,
+            question,
+            models: _,
+            minimal_request_id,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
