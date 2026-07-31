@@ -17,18 +17,9 @@ impl SlashCommand for WorkflowsCommand {
         "/workflows"
     }
 
-    fn visible(&self, ctx: &crate::slash::command::AppCtx) -> bool {
-        // Match stock Grok: only offer when workflows are available for this session.
-        ctx.workflows_available
-    }
-
-    /// The run pane is drawn from `AgentView::show_workflows` on the full-TUI
-    /// path only; minimal never reads it, so the toggle would flip a flag
-    /// nothing renders.
-    fn mode_support(&self) -> ModeSupport {
-        ModeSupport::FullscreenOnly(Remedy::SwitchMode {
-            why: "the workflow run pane needs fullscreen",
-        })
+    fn visible(&self, _ctx: &crate::slash::command::AppCtx) -> bool {
+        // The runs pane remains useful while the launch catalog is unavailable or reloading.
+        true
     }
 
     /// The run pane is drawn from `AgentView::show_workflows` on the full-TUI
