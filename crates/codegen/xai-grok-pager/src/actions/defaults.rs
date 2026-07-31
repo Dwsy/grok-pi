@@ -988,8 +988,8 @@ pub(super) fn default_actions(
         },
         ActionDef {
             id: ActionId::DashboardStop,
-            label: "stop",
-            description: "Stop / Close agent",
+            label: "delete",
+            description: "Stop / Delete agent",
             default_key: key!('x', CONTROL),
             alt_keys: vec![],
             category: Category::Dashboard,
@@ -998,7 +998,7 @@ pub(super) fn default_actions(
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Stops the selected agent and removes its row from the dashboard; a running turn is interrupted first.\nUse it to clear finished or unwanted agents without attaching to them.\nThe in-overlay equivalent (Ctrl+X) confirms before stopping.",
+                "On a busy top-level row, Ctrl+X cancels the running turn. Once the row is idle, press Ctrl+X again within 2s to permanently delete the session.\nOn a subagent row, Ctrl+X kills the subagent.",
             ),
         },
         ActionDef {

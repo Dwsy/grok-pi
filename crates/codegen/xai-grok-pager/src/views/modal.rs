@@ -350,11 +350,9 @@ pub enum ActiveModal {
         entries_query: Option<String>,
         /// Source filter for the modal session picker.
         source_filter: crate::views::session_picker::SourceFilter,
-        /// Session armed for delete, captured as `(source, session_id, cwd)` when
-        /// `d` is pressed so the `y` confirm always has a valid cwd even if
-        /// the picker lists change underneath it. `Some` only while the
-        /// focused row is armed; cleared on cancel / completion.
-        pending_delete: Option<(String, String, String)>,
+        /// Session armed for delete via `d` (see
+        /// [`crate::views::session_picker::PendingDelete`]).
+        pending_delete: Option<crate::views::session_picker::PendingDelete>,
         /// Vertical scroll offset for the bottom preview pane.
         preview_scroll: u16,
         /// Whether the dedicated full-text search page is active (Ctrl+F).
