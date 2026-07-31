@@ -7,6 +7,37 @@
 
 ---
 
+## [0.0.14] - 2026-07-31
+
+范围：`v0.0.13` → `v0.0.14`（2026-07-30 → 2026-07-31）。
+
+### 亮点
+
+- **Pi 原生交互打磨** — 支持运行时模型映射、强化 ask-user 响应、Context 会话成本、工作流目录稳定性、可配置 Thinking 边框及提示词光标。
+- **Remote TUI 对齐** — `ctx.ui.custom()` 默认继续以内联方式呈现，并支持 Pager 原生 overlay、尺寸/位置元数据以及 Kitty 重复/释放按键序列。
+- **EditTool review** — external-only F2 开关可在宽终端并排显示 EditTool diff，窄终端自动回退 unified；code review 保持 unified 双 gutter 布局。
+
+### 新增
+
+- EditTool 并排渲染：old/new 两列、`-`/`+` 标记、全屏 viewer、patch-copy 保留，以及默认关闭的 **Side-by-side edit diffs** 设置。
+- Remote TUI overlay 定位、宽高约束、锚点、偏移和重复/释放输入转发。
+- 可配置 Thinking 边框颜色和提示词光标外观。
+- Context 信息中的会话成本和运行时 Pi 模型映射。
+
+### 修复
+
+- Pi `ask_user` 响应处理，以及失效/重复的会话 handler。
+- 目录 reload 期间的工作流可见性，以及意外准入 `pi-open-tui` renderer。
+- Native verifier 对声明的 EditTool renderer 接缝进行准确计数。
+
+### 变更
+
+- 同步 Grok Build 至 `dd04f39`，同时保留 Pi-Grok 的原生 Pager 接缝。
+
+### 说明
+
+- EditTool 并排 diff 由 Pager 所有，仅 external-only、进程内生效且默认关闭；窄终端和 code-review 表面继续使用原生 unified renderer。
+
 ## [0.0.13] - 2026-07-30
 
 范围：`v0.0.12` → `v0.0.13`（2026-07-28 → 2026-07-30）。

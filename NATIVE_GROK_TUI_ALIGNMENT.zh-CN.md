@@ -13,7 +13,7 @@
 | 输入编辑器 | `views/prompt_widget` | Pi prompt 与 `set_editor_text` 进入 PromptWidget |
 | 斜杠补全 | `slash` + `views/completion_dropdown` | Pi `get_commands` 转 ACP AvailableCommand 后合并 |
 | Markdown/代码 | `xai-grok-markdown` | AgentMessageChunk/AgentThoughtChunk 进入原生 scrollback pipeline |
-| 工具与 diff | `acp/tracker`、原生 RenderBlock | Pi tool lifecycle 转 ACP ToolCall/ToolCallUpdate |
+| 工具与 diff | `acp/tracker`、原生 RenderBlock/EditToolCallBlock | Pi tool lifecycle 转 ACP ToolCall/ToolCallUpdate；external-only F2 开关（默认关闭）在宽度足够时委托 sibling 并排布局 renderer，关闭或窄布局继续使用原生 unified renderer |
 | 问答弹层 | `views/question_view` | select/confirm/input/editor 转 `x.ai/ask_user_question` |
 | 状态与通知 | 原生 toast/sticky surface | notify/setStatus/setWidget 转窄 ACP notification |
 | 滚动与 transcript | 原生 scrollback/transcript | 历史和实时事件均作为 ACP SessionUpdate |
@@ -23,9 +23,9 @@
 
 验证清单对上传的 Grok 源码建立 SHA-256 baseline：
 
-- 283 个 renderer/input/Markdown 文件保持逐字节一致；
-- 2698 个非接缝 Grok 文件保持逐字节一致；
-- 允许修改的 17 个文件只位于 workspace manifest、ACP connection、App 状态/dispatch/effect 和 slash profile 接缝；
+- renderer/input/Markdown 文件在声明接缝之外保持逐字节一致；EditTool hook、viewer 元数据、模块注册和 sibling 布局 renderer 均精确列入 verifier；
+- verifier 从当前 manifest 动态计算未改文件数量，不依赖硬编码总数；
+- 允许修改集合保持显式且语义化：workspace/ACP/App/dispatch/slash 接缝，以及窄范围 EditTool 设置、hook、viewer 与 renderer 接缝；
 - `pi-grok-adapter` 中不存在 Ratatui/Crossterm、Terminal、Frame、Widget、draw、event::read 或 raw-mode 调用；
 - `grok-pi.rs` 中不存在任何直接绘制或输入循环。
 
@@ -43,7 +43,7 @@ ACP 标准没有覆盖 Pi 的全部 UI/命令语义，因此需要窄接缝：
 8. screen-mode 边界：Grok 原生 minimal/fullscreen renderer 保留，但原版 slash re-exec 会重建 Grok 自有 `--resume` argv，无法携带 `grok-pi` 的 Pi 启动参数，因此仅保留启动选项，不暴露失效的 `/minimal`、`/fullscreen`。
 9. 教程内容 profile：stock Grok 保留默认 onboarding；grok-pi 只注入 18 个静态产品能力主题，继续复用原生 `TutorialState`、modal、picker、Markdown renderer 与输入路由。
 
-这些接缝没有新建 renderer，也没有复制 PromptWidget、QuestionView、Markdown、tool 或 diff 组件。
+这些接缝没有新建第二套 TUI 或 scrollback pipeline，也没有复制 PromptWidget、QuestionView、Markdown 或 tool-card 基础设施。可选 sibling EditTool 布局 renderer 复用原生 diff 数据、高亮 helper、输出行、unified 回退、选择与全屏 viewer 行为。
 
 ## 不做的事情
 

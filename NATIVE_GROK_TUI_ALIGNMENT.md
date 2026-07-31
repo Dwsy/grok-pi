@@ -13,7 +13,7 @@ The current entry point is not a self-drawn Ratatui shell. `grok-pi` lives insid
 | Input editor | `views/prompt_widget` | Pi prompt and `set_editor_text` enter the PromptWidget |
 | Slash completion | `slash` + `views/completion_dropdown` | Pi `get_commands` converted to ACP `AvailableCommand` then merged |
 | Markdown / code | `xai-grok-markdown` | `AgentMessageChunk`/`AgentThoughtChunk` enter the native scrollback pipeline |
-| Tools and diffs | `acp/tracker`, native `RenderBlock` | Pi tool lifecycle converted to ACP `ToolCall`/`ToolCallUpdate` |
+| Tools and diffs | `acp/tracker`, native `RenderBlock`/`EditToolCallBlock` | Pi tool lifecycle converted to ACP `ToolCall`/`ToolCallUpdate`; an external-only F2 opt-in (default off) delegates edit rows to a sibling side-by-side layout renderer when wide enough, while disabled/narrow layouts stay on the native unified renderer |
 | Q&A overlay | `views/question_view` | `select`/`confirm`/`input`/`editor` converted to `x.ai/ask_user_question` |
 | Status and notifications | native toast / sticky surface | `notify`/`setStatus`/`setWidget` converted to narrow ACP notifications |
 | Voice dictation | native Pager Voice pipeline | opt-in external profile captures speech through xAI STT and inserts text into PromptWidget; Pi receives only the user-submitted prompt |
@@ -24,9 +24,9 @@ The current entry point is not a self-drawn Ratatui shell. `grok-pi` lives insid
 
 The verification checklist establishes a SHA-256 baseline against the uploaded Grok source:
 
-- 283 renderer/input/Markdown files remain byte-for-byte identical;
-- 2698 non-seam Grok files remain byte-for-byte identical;
-- the 17 allowed-to-change files live only in workspace manifest, ACP connection, App state/dispatch/effect, and slash profile seams;
+- renderer/input/Markdown files remain byte-for-byte identical outside declared seams; the EditTool hook, viewer metadata, module registration, and sibling layout renderer are explicit verifier entries;
+- the verifier derives the unchanged-file count from the current manifest instead of relying on a hard-coded total;
+- the allowed-to-change set remains explicit and semantic: workspace/ACP/App/dispatch/slash seams plus the narrow EditTool setting, hook, viewer, and renderer seams;
 - `pi-grok-adapter` contains no Ratatui/Crossterm, Terminal, Frame, Widget, draw, `event::read`, or raw-mode calls;
 - `grok-pi.rs` contains no direct drawing or input loop.
 
@@ -45,7 +45,7 @@ The ACP standard does not cover all of Pi's UI/command semantics, so narrow seam
 9. voice dictation: the Pi external profile explicitly opts into the existing Pager-only `/voice` / Ctrl+Space/F8 flow. Its STT bearer comes from the local Grok login or API key; it inserts transcript text into PromptWidget and never changes Pi's model, session, or agent ownership.
 10. tutorial copy profile: stock Grok retains its default onboarding content; grok-pi installs 18 static product-specific capability topics while reusing the native `TutorialState`, modal, picker, Markdown renderer and input routing.
 
-These seams do not create a new renderer, nor copy the PromptWidget, QuestionView, Markdown, tool, or diff components.
+These seams do not create a second TUI or scrollback pipeline, nor copy PromptWidget, QuestionView, Markdown, or tool-card infrastructure. The optional sibling EditTool layout renderer reuses native diff data, highlighting helpers, output rows, unified fallback, selection, and fullscreen viewer behavior.
 
 ## What Is Not Done
 

@@ -4,6 +4,39 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.14] - 2026-07-31
+
+Range: `v0.0.13` → `v0.0.14` (2026-07-30 → 2026-07-31).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Highlights
+
+- **Native Pi interaction polish** — runtime model mapping, hardened ask-user responses, session cost context, workflow catalog stability, configurable thinking borders, and prompt cursor controls.
+- **Remote TUI parity** — `ctx.ui.custom()` remains inline by default and now supports native Pager overlays, sizing/position metadata, and Kitty repeat/release key sequences.
+- **EditTool review** — an external-only F2 opt-in renders wide EditTool diffs side by side with unified fallback on narrow terminals; code review keeps its unified dual-gutter layout.
+
+### Added
+
+- Side-by-side EditTool rendering with old/new columns, `-`/`+` markers, fullscreen viewer support, patch-copy preservation, and a default-off **Side-by-side edit diffs** setting.
+- Remote TUI overlay placement, width/height constraints, anchors, offsets, and repeat/release input forwarding.
+- Configurable thinking border colors and prompt cursor appearance.
+- Session cost in context information and runtime Pi model mappings.
+
+### Fixed
+
+- Pi `ask_user` response handling and stale/duplicate session handlers.
+- Workflow visibility during catalog reload and accidental `pi-open-tui` renderer admission.
+- Native verifier accounting for the declared EditTool renderer seams.
+
+### Changed
+
+- Synced Grok Build through `dd04f39` while retaining the Pi-Grok native Pager seams.
+
+### Notes
+
+- Side-by-side EditTool diffs are Pager-owned, external-only, process-local, and default off; narrow terminals and code-review surfaces use the native unified renderer.
+
 ## [0.0.13] - 2026-07-30
 
 Range: `v0.0.12` → `v0.0.13` (2026-07-28 → 2026-07-30).
