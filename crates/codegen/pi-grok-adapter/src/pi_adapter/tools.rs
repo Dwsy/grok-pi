@@ -136,10 +136,10 @@ impl PiAgent {
 
     /// Bridge Pi extension `ask_user_question` to native Grok QuestionView.
     ///
-    /// Writes `{outcome,message}` under `PI_GROK_ASK_USER_DIR/<toolCallId>.json`
-    /// so the injected extension can complete its blocking execute.
+    /// Writes `{outcome,message}` under a hashed filename in
+    /// `PI_GROK_ASK_USER_DIR` so opaque provider ids stay valid on Windows.
     pub(super) async fn request_ask_user_question(&self, tool_call_id: &str, args: Option<Value>) {
-        let Some(dir) = std::env::var_os("PI_GROK_ASK_USER_DIR") else {
+        let Some(_dir) = std::env::var_os("PI_GROK_ASK_USER_DIR") else {
             write_ask_user_response(
                 tool_call_id,
                 json!({
@@ -212,11 +212,7 @@ impl PiAgent {
             }
         };
         let result = outer.get("result").unwrap_or(&outer);
-        let payload = format_ask_user_tool_result(result);
-        let path = std::path::Path::new(&dir).join(format!("{tool_call_id}.json"));
-        if let Err(error) = std::fs::write(&path, payload.to_string()) {
-            tracing::warn!(%error, path = %path.display(), "failed to write ask_user_question response");
-        }
+        write_ask_user_response(tool_call_id, format_ask_user_tool_result(result));
     }
 
     /// Bridge Pi's extension-owned `exit_plan_mode` tool to the Pager's

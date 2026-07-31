@@ -56,14 +56,8 @@ pub(crate) fn collect_cache_session_metrics(entries_payload: &Value) -> Value {
             continue;
         }
 
-        let (
-            mut input,
-            mut output,
-            mut cache_read,
-            mut cache_write,
-            mut total_tokens,
-            mut estimated,
-        ) = extract_usage(message);
+        let (mut input, mut output, cache_read, cache_write, mut total_tokens, mut estimated) =
+            extract_usage(message);
 
         // Provider wrote zeros / omitted usage — estimate from content so resume
         // graphs are not a flat zero timeline (context bar already estimates).

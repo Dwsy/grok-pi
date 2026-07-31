@@ -43,6 +43,7 @@ use agent_client_protocol as acp;
 use anyhow::{Result, anyhow, bail};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -433,10 +434,9 @@ fn build_model_catalog(
         let reasoning_efforts = model_reasoning_efforts(model);
         if !reasoning_efforts.is_empty() {
             meta.insert("supportsReasoningEffort".into(), json!(true));
-            meta.insert(
-                "reasoningEffort".into(),
-                json!(pi_effort_to_acp(thinking_level)),
-            );
+            if let Some(effort) = model.acp_effort_for_pi_level(thinking_level) {
+                meta.insert("reasoningEffort".into(), json!(effort));
+            }
             meta.insert("reasoningEfforts".into(), Value::Array(reasoning_efforts));
         }
         let description = model_catalog_description(model);
@@ -1000,41 +1000,37 @@ fn message_role(event: &Value) -> Option<&str> {
 }
 
 fn model_reasoning_efforts(model: &PiModel) -> Vec<Value> {
-    let mut efforts = Vec::new();
-    for level in &model.thinking_levels {
-        let entry = match level.as_str() {
-            "off" => Some(json!({ "id": "off", "value": "none", "label": "Off" })),
-            "minimal" => Some(json!({ "id": "minimal", "value": "minimal", "label": "Minimal" })),
-            "low" => Some(json!({ "id": "low", "value": "low", "label": "Low" })),
-            "medium" => Some(json!({ "id": "medium", "value": "medium", "label": "Medium" })),
-            "high" => Some(json!({ "id": "high", "value": "high", "label": "High" })),
-            "xhigh" | "max" => {
-                if efforts.iter().any(|value: &Value| {
-                    value.get("value").and_then(Value::as_str) == Some("xhigh")
-                }) {
-                    None
-                } else {
-                    Some(json!({ "id": "xhigh", "value": "xhigh", "label": "Extra high" }))
-                }
-            }
-            _ => None,
-        };
-        if let Some(entry) = entry {
-            efforts.push(entry);
-        }
-    }
-    efforts
+    model
+        .thinking_levels
+        .iter()
+        .filter_map(|level| {
+            let effort = model.acp_effort_for_pi_level(level)?;
+            Some(json!({
+                "id": level,
+                "value": effort,
+                "label": thinking_level_label(level),
+            }))
+        })
+        .collect()
 }
 
-fn pi_effort_to_acp(level: &str) -> &str {
-    match level.to_ascii_lowercase().as_str() {
-        "off" | "none" => "none",
-        "minimal" => "minimal",
-        "low" => "low",
-        "high" => "high",
-        "xhigh" | "max" => "xhigh",
-        _ => "medium",
+fn thinking_level_label(level: &str) -> String {
+    let mut label = String::with_capacity(level.len());
+    let mut capitalize = true;
+    for ch in level.chars() {
+        if ch == '_' || ch == '-' || ch.is_whitespace() {
+            if !label.is_empty() && !label.ends_with(' ') {
+                label.push(' ');
+            }
+            capitalize = true;
+        } else if capitalize {
+            label.extend(ch.to_uppercase());
+            capitalize = false;
+        } else {
+            label.push(ch);
+        }
     }
+    label.trim().to_string()
 }
 
 fn compaction_start_notification(
@@ -1261,6 +1257,21 @@ fn extension_resource_picker(title: &str) -> Option<Value> {
 
 const ASK_USER_CANCEL_TEXT: &str = "User declined to answer the questions. Continue with the task using your best judgment, or ask different questions.";
 
+/// Convert the opaque Pi tool id to a bounded, portable response filename.
+/// Provider/model ids may contain Windows-reserved characters or exceed the
+/// per-component filename limit, so never use the raw id as a path component.
+fn ask_user_response_file_name(tool_call_id: &str) -> String {
+    let digest = Sha256::digest(tool_call_id.as_bytes());
+    let mut name = String::with_capacity(4 + digest.len() * 2 + 5);
+    name.push_str("ask-");
+    use std::fmt::Write as _;
+    for byte in digest {
+        write!(name, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    name.push_str(".json");
+    name
+}
+
 fn write_ask_user_response(tool_call_id: &str, payload: Value) {
     let Some(dir) = std::env::var_os("PI_GROK_ASK_USER_DIR") else {
         tracing::warn!(
@@ -1269,7 +1280,7 @@ fn write_ask_user_response(tool_call_id: &str, payload: Value) {
         );
         return;
     };
-    let path = std::path::Path::new(&dir).join(format!("{tool_call_id}.json"));
+    let path = std::path::Path::new(&dir).join(ask_user_response_file_name(tool_call_id));
     if let Err(error) = std::fs::write(&path, payload.to_string()) {
         tracing::warn!(%error, path = %path.display(), "failed to write ask_user_question response");
     }
@@ -1519,3 +1530,24 @@ fn utc_now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ask_user_response_file_tests {
+    use super::ask_user_response_file_name;
+
+    #[test]
+    fn hashes_opaque_ids_into_portable_bounded_filename() {
+        let name = ask_user_response_file_name("ask_user_question:1753958400000:abc/def|+=");
+        assert_eq!(
+            name,
+            "ask-9bbafc01081c04c51639e387a27b0e3b6b3f052b59b87131c04217b9c0817ba2.json"
+        );
+        assert_eq!(name.len(), 73);
+        let digest_name = name
+            .strip_prefix("ask-")
+            .and_then(|name| name.strip_suffix(".json"))
+            .expect("hashed response filename");
+        assert_eq!(digest_name.len(), 64);
+        assert!(digest_name.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+}

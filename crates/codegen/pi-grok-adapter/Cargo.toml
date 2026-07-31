@@ -20,6 +20,7 @@ serde = { workspace = true, features = ["derive"] }
 # default serde_json recursion limit (~128) fails on long sessions and left
 # /tree stuck on "Fetching Pi get_tree…".
 serde_json = { workspace = true, features = ["unbounded_depth"] }
+sha2 = { workspace = true }
 rusqlite = { version = "0.37", features = ["bundled"] }
 chrono = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "macros", "time"] }

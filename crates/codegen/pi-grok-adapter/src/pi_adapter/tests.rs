@@ -195,6 +195,12 @@ fn model_catalog_includes_provider_and_detail_description() {
         cost_cache_read: Some(0.1),
         cost_cache_write: Some(1.25),
         thinking_levels: vec!["off".into(), "low".into(), "medium".into(), "high".into()],
+        thinking_level_efforts: std::collections::HashMap::from([
+            ("off".into(), "none".into()),
+            ("low".into(), "low".into()),
+            ("medium".into(), "medium".into()),
+            ("high".into(), "high".into()),
+        ]),
     }];
     let (available, current) = build_model_catalog(&models, models.first(), "medium");
     assert!(current.is_some());
@@ -230,6 +236,39 @@ fn model_catalog_includes_provider_and_detail_description() {
         Some(200_000)
     );
     assert_eq!(meta.get("maxTokens").and_then(|v| v.as_u64()), Some(64_000));
+}
+
+#[test]
+fn model_catalog_uses_runtime_thinking_level_ids_and_mappings() {
+    let models = vec![PiModel {
+        provider: "demo".into(),
+        id: "reasoning-model".into(),
+        label: "Reasoning Model".into(),
+        reasoning: true,
+        thinking_levels: vec!["balanced".into(), "deep_mode".into()],
+        thinking_level_efforts: std::collections::HashMap::from([
+            ("balanced".into(), "medium".into()),
+            ("deep_mode".into(), "max".into()),
+        ]),
+        ..PiModel::default()
+    }];
+
+    let (available, _) = build_model_catalog(&models, models.first(), "deep_mode");
+    let info = available
+        .get(&acp::ModelId::new("demo::reasoning-model"))
+        .expect("catalog entry");
+    let meta = info.meta.as_ref().expect("meta");
+    assert_eq!(
+        meta.get("reasoningEffort").and_then(Value::as_str),
+        Some("max")
+    );
+    assert_eq!(
+        meta.get("reasoningEfforts"),
+        Some(&json!([
+            { "id": "balanced", "value": "medium", "label": "Balanced" },
+            { "id": "deep_mode", "value": "max", "label": "Deep Mode" }
+        ]))
+    );
 }
 
 #[test]

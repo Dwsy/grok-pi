@@ -769,47 +769,63 @@ pub struct PiModel {
     /// standard levels default to enabled, `null` disables a level, and the
     /// extended `xhigh`/`max` levels are opt-in.
     pub thinking_levels: Vec<String>,
+    /// Runtime mapping from Pi's selectable level id to the canonical ACP
+    /// reasoning effort. This keeps custom Pi level ids data-driven instead of
+    /// forcing the adapter to maintain a fixed menu.
+    pub thinking_level_efforts: HashMap<String, String>,
 }
 
 impl PiModel {
-    pub fn supports_thinking_level(&self, level: &str) -> bool {
-        self.thinking_levels
+    /// Resolve a Pi level id to the canonical effort exposed through ACP.
+    pub fn acp_effort_for_pi_level(&self, level: &str) -> Option<&str> {
+        if let Some((_, effort)) = self
+            .thinking_level_efforts
             .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(level))
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(level))
+        {
+            return Some(effort.as_str());
+        }
+        canonical_acp_effort(level)
     }
 
-    /// Grok's native effort enum has one top slot (`xhigh`) while Pi may expose
-    /// `xhigh`, `max`, or both. Prefer Pi's strongest available level so the
-    /// native selector never sends an unsupported token.
-    pub fn pi_level_for_acp_effort(&self, effort: &str) -> Option<&'static str> {
-        let requested = match effort.to_ascii_lowercase().as_str() {
-            "none" | "off" => {
-                if self.supports_thinking_level("off") {
-                    "off"
-                } else {
-                    "low"
-                }
-            }
-            "minimal" => {
-                if self.supports_thinking_level("minimal") {
-                    "minimal"
-                } else {
-                    "low"
-                }
-            }
-            "low" => "low",
-            "medium" => "medium",
-            "high" => "high",
-            "xhigh" | "max" => {
-                if self.supports_thinking_level("max") {
-                    "max"
-                } else {
-                    "xhigh"
-                }
-            }
+    /// Resolve a canonical ACP effort back to the actual Pi level id supported
+    /// by this model. Exact runtime mappings win; aliases are only compatibility
+    /// fallbacks for models exposing one top slot or no off/minimal slot.
+    pub fn pi_level_for_acp_effort(&self, effort: &str) -> Option<&str> {
+        let requested = canonical_acp_effort(effort)?;
+        if let Some(level) = self.thinking_levels.iter().find(|level| {
+            self.acp_effort_for_pi_level(level)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(requested))
+        }) {
+            return Some(level.as_str());
+        }
+
+        let fallback = match requested {
+            "none" | "minimal" => "low",
+            "xhigh" => "max",
+            "max" => "xhigh",
             _ => return None,
         };
-        self.supports_thinking_level(requested).then_some(requested)
+        self.thinking_levels
+            .iter()
+            .find(|level| {
+                self.acp_effort_for_pi_level(level)
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(fallback))
+            })
+            .map(String::as_str)
+    }
+}
+
+fn canonical_acp_effort(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "none" | "off" => Some("none"),
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        "max" => Some("max"),
+        _ => None,
     }
 }
 
@@ -1060,6 +1076,7 @@ fn collect_models(value: &Value, provider_hint: &str, out: &mut Vec<PiModel>) {
             accepts_images: false,
             input: Vec::new(),
             thinking_levels: Vec::new(),
+            thinking_level_efforts: HashMap::new(),
             ..PiModel::default()
         }),
         _ => {}
@@ -1127,7 +1144,7 @@ pub fn parse_model(value: &Value) -> Option<PiModel> {
     let cost_cache_write = cost
         .and_then(|c| c.get("cacheWrite").or_else(|| c.get("cache_write")))
         .and_then(Value::as_f64);
-    let thinking_levels = supported_thinking_levels(value, reasoning);
+    let (thinking_levels, thinking_level_efforts) = supported_thinking_levels(value, reasoning);
     Some(PiModel {
         provider: provider.to_string(),
         id: id.to_string(),
@@ -1144,39 +1161,84 @@ pub fn parse_model(value: &Value) -> Option<PiModel> {
         cost_cache_read,
         cost_cache_write,
         thinking_levels,
+        thinking_level_efforts,
     })
 }
 
-fn supported_thinking_levels(value: &Value, reasoning: bool) -> Vec<String> {
+fn supported_thinking_levels(
+    value: &Value,
+    reasoning: bool,
+) -> (Vec<String>, HashMap<String, String>) {
     if !reasoning {
-        return vec!["off".to_string()];
+        return (
+            vec!["off".to_string()],
+            HashMap::from([("off".to_string(), "none".to_string())]),
+        );
     }
     let map = value.get("thinkingLevelMap").and_then(Value::as_object);
     let mut levels = Vec::new();
-    // Pi accepts `off` only when the provider/model maps it. Reasoning models
-    // commonly expose low..max without an off level; advertising off causes a
-    // provider 400 when the Pager initializes or switches effort.
+    let mut efforts = HashMap::new();
+
+    // Match Pi's defaults for the standard slots, while retaining the actual
+    // runtime mapping for each enabled level.
     for level in ["off", "minimal", "low", "medium", "high"] {
-        let supported = map
-            .and_then(|entries| entries.get(level))
-            .map(|mapped| !mapped.is_null())
-            .unwrap_or(true);
+        let mapped = map.and_then(|entries| entries.get(level));
+        let supported = mapped.map(|value| !value.is_null()).unwrap_or(true);
         if supported {
             levels.push(level.to_string());
+            if let Some(effort) = mapped_acp_effort(level, mapped) {
+                efforts.insert(level.to_string(), effort.to_string());
+            }
         }
     }
     for level in ["xhigh", "max"] {
-        let supported = map
-            .and_then(|entries| entries.get(level))
-            .is_some_and(|mapped| !mapped.is_null());
-        if supported {
+        let mapped = map.and_then(|entries| entries.get(level));
+        if mapped.is_some_and(|value| !value.is_null()) {
             levels.push(level.to_string());
+            if let Some(effort) = mapped_acp_effort(level, mapped) {
+                efforts.insert(level.to_string(), effort.to_string());
+            }
         }
     }
+
+    // Pi extensions may add their own selectable ids. Include any extra entry
+    // that maps to a canonical effort understood by ACP.
+    if let Some(entries) = map {
+        for (level, mapped) in entries {
+            if mapped.is_null()
+                || levels
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(level))
+            {
+                continue;
+            }
+            let Some(effort) = mapped_acp_effort(level, Some(mapped)) else {
+                continue;
+            };
+            levels.push(level.clone());
+            efforts.insert(level.clone(), effort.to_string());
+        }
+    }
+
     if map.is_none() {
         levels.retain(|level| level != "off");
+        efforts.remove("off");
     }
-    levels
+    (levels, efforts)
+}
+
+fn mapped_acp_effort(level: &str, mapped: Option<&Value>) -> Option<&'static str> {
+    let mapped_effort = mapped.and_then(|mapped| {
+        mapped.as_str().or_else(|| {
+            mapped
+                .get("reasoning_effort")
+                .or_else(|| mapped.get("reasoningEffort"))
+                .and_then(Value::as_str)
+        })
+    });
+    mapped_effort
+        .and_then(canonical_acp_effort)
+        .or_else(|| canonical_acp_effort(level))
 }
 
 pub fn parse_commands(value: &Value) -> Vec<PiCommand> {

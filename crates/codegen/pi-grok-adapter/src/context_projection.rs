@@ -570,6 +570,10 @@ mod tests {
             cost_cache_read: None,
             cost_cache_write: None,
             thinking_levels: vec!["off".into()],
+            thinking_level_efforts: std::collections::HashMap::from([(
+                "off".into(),
+                "none".into(),
+            )]),
         };
         let stats = json!({
             "sessionId": "sess-1",

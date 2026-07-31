@@ -3,15 +3,16 @@
  *
  * Registers `ask_user_question` so the model can open Grok's QuestionView.
  * The adapter opens `x.ai/ask_user_question` on tool_execution_start and writes
- * the result into PI_GROK_ASK_USER_DIR/<toolCallId>.json; this extension waits
- * for that file and returns the model-facing tool result.
+ * the result into a hashed filename under PI_GROK_ASK_USER_DIR; this extension
+ * waits for that file and returns the model-facing tool result.
  *
  * F2 `[ui].pi_ask_user_question` (default off) gates injection at startup.
  */
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 
 const CANCEL_TEXT =
 	"User declined to answer the questions. Continue with the task using your best judgment, or ask different questions.";
@@ -54,6 +55,11 @@ function controlDir(): string | undefined {
 	return value || undefined;
 }
 
+function responseFileName(toolCallId: string): string {
+	const digest = createHash("sha256").update(toolCallId, "utf8").digest("hex");
+	return `ask-${digest}.json`;
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) {
@@ -80,7 +86,7 @@ async function waitForResponse(toolCallId: string, signal?: AbortSignal): Promis
 			message: "ask_user_question is unavailable (host control missing). Enable F2 Pi Q&A and restart grok-pi.",
 		};
 	}
-	const path = join(dir, `${toolCallId}.json`);
+	const path = join(dir, responseFileName(toolCallId));
 	// Adapter opens the native overlay on tool_start; poll until it writes.
 	const deadline = Date.now() + 30 * 60 * 1000;
 	while (Date.now() < deadline) {

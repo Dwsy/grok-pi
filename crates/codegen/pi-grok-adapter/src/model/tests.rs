@@ -504,6 +504,43 @@ fn parse_model_keeps_provider_and_api_separate_with_cost() {
 }
 
 #[test]
+fn model_uses_dynamic_thinking_level_mappings() {
+    let model = parse_model(&json!({
+        "id": "reasoning-model",
+        "provider": "demo",
+        "reasoning": true,
+        "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": null,
+            "max": null,
+            "balanced": { "reasoning_effort": "medium" },
+            "deep_mode": { "reasoning_effort": "max" }
+        }
+    }))
+    .expect("model");
+
+    assert!(
+        model
+            .thinking_levels
+            .iter()
+            .any(|level| level == "balanced")
+    );
+    assert!(
+        model
+            .thinking_levels
+            .iter()
+            .any(|level| level == "deep_mode")
+    );
+    assert_eq!(model.acp_effort_for_pi_level("deep_mode"), Some("max"));
+    assert_eq!(model.pi_level_for_acp_effort("medium"), Some("balanced"));
+    assert_eq!(model.pi_level_for_acp_effort("max"), Some("deep_mode"));
+}
+
+#[test]
 fn parse_state_reads_streaming_and_compacting_flags() {
     let state = parse_state(&json!({
         "sessionId": "s1",
