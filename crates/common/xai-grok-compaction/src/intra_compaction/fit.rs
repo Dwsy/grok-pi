@@ -188,10 +188,10 @@ fn plan_ok<T: Clone>(
 /// Fit `history ++ steps` into `budget` **tokens** for FullReplace summarizer input.
 ///
 /// **Ordered ladder** (strict — later only if earlier still insufficient):
-/// 1. [`FitRung::HistoryTurnSelected`] — drop oldest history first
-/// 2. [`FitRung::ToolTruncated`] — then shrink oversized payloads
-/// 3. [`FitRung::StepTurnsSelected`] — then drop oldest steps
-/// 4. [`FitRung::Emergency`] — finally hard-shrink newest item
+/// 1. [`FitRung::HistoryTurnSelected`] — drop oldest history first  
+/// 2. [`FitRung::ToolTruncated`] — then shrink oversized payloads  
+/// 3. [`FitRung::StepTurnsSelected`] — then drop oldest steps  
+/// 4. [`FitRung::Emergency`] — finally hard-shrink newest item  
 ///
 /// Output `llm_turns` is always chronological: remaining history then remaining steps.
 /// [`FitPlan::rung`] is the highest stage that was required.

@@ -948,9 +948,6 @@ pub(crate) async fn run(
         app.voice_ui_active = false;
     }
     app.apply_voice_mode_enabled(voice_mode_enabled);
-
-    // Fallback: prefetch may have gate info the shell's AuthMeta missed.
-    // Errs on the side of blocking if stale.
     if app.gate.is_none()
         && let Some(rs) = remote_settings.as_ref()
     {

@@ -31,6 +31,15 @@ impl SlashCommand for WorkflowsCommand {
         })
     }
 
+    /// The run pane is drawn from `AgentView::show_workflows` on the full-TUI
+    /// path only; minimal never reads it, so the toggle would flip a flag
+    /// nothing renders.
+    fn mode_support(&self) -> ModeSupport {
+        ModeSupport::FullscreenOnly(Remedy::SwitchMode {
+            why: "the workflow run pane needs fullscreen",
+        })
+    }
+
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
         CommandResult::Action(Action::ToggleWorkflows)
     }

@@ -326,6 +326,15 @@ impl AuthManager {
             .map(PathBuf::from)
             .unwrap_or_else(|_| grok_home.join("auth.json"));
 
+        // GROK_AUTH_PATH: custom file path (overrides default $GROK_HOME/auth.json).
+        // Resolved before the GROK_AUTH branch so inline-credential managers
+        // also honor it: their later refresh persistence (`update()`) writes to
+        // this path, and previously the inline branch hardcoded the default —
+        // silently splitting reads (inline) from writes (default path).
+        let path = std::env::var("GROK_AUTH_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| grok_home.join("auth.json"));
+
         // GROK_AUTH: inline JSON credentials (highest priority, read-only).
         if let Ok(inline_json) = std::env::var("GROK_AUTH") {
             if let Ok(auth) = serde_json::from_str::<GrokAuth>(&inline_json) {
