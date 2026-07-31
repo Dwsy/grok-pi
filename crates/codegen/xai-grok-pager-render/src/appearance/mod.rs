@@ -24,9 +24,9 @@ mod watcher;
 
 pub use config::{
     AnimationConfig, AppearanceConfig, BlockBackground, BlocksConfig, EditBlockConfig,
-    ExecuteHeaderStyle, FollowIndicator, LayoutConfig, PromptConfig, PromptViewConfig,
-    RawAltScreenMode, RawAppearanceConfig, RawTerminalConfig, ScrollConfig, ScrollbackConfig,
-    ScrollbarConfig, TodoBadgeFormat, TodoConfig, ToolBullet, ToolConfig,
+    ExecuteHeaderStyle, FollowIndicator, LayoutConfig, PromptConfig, PromptCursor,
+    PromptViewConfig, RawAltScreenMode, RawAppearanceConfig, RawTerminalConfig, ScrollConfig,
+    ScrollbackConfig, ScrollbarConfig, TodoBadgeFormat, TodoConfig, ToolBullet, ToolConfig,
     persist_respect_manual_folds,
 };
 pub use execute_header_content::ExecuteHeaderContent;

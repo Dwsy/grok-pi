@@ -26,6 +26,40 @@ pub mod tokyonight;
 pub use color_support::quantize;
 pub use tokyonight::{Theme, pulse_brightness, wave_brightness};
 
+/// Canonical Pi thinking levels used to tint the prompt border.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+/// Pi's built-in thinking-border palette, selected by theme polarity.
+fn pi_thinking_border_color(dark: bool, level: ThinkingLevel) -> ratatui::style::Color {
+    use ratatui::style::Color;
+
+    match (dark, level) {
+        (true, ThinkingLevel::Off) => Color::DarkGray,
+        (true, ThinkingLevel::Minimal) => Color::Rgb(110, 110, 110),
+        (true, ThinkingLevel::Low) => Color::Rgb(95, 135, 175),
+        (true, ThinkingLevel::Medium) => Color::Rgb(129, 162, 190),
+        (true, ThinkingLevel::High) => Color::Rgb(178, 148, 187),
+        (true, ThinkingLevel::Xhigh) => Color::Rgb(209, 131, 232),
+        (true, ThinkingLevel::Max) => Color::Rgb(255, 95, 255),
+        (false, ThinkingLevel::Off) => Color::Gray,
+        (false, ThinkingLevel::Minimal) => Color::Rgb(118, 118, 118),
+        (false, ThinkingLevel::Low) => Color::Blue,
+        (false, ThinkingLevel::Medium) => Color::Rgb(90, 128, 128),
+        (false, ThinkingLevel::High) => Color::Rgb(135, 95, 135),
+        (false, ThinkingLevel::Xhigh) => Color::Rgb(139, 0, 139),
+        (false, ThinkingLevel::Max) => Color::Rgb(175, 0, 95),
+    }
+}
+
 /// Available theme variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ThemeKind {
@@ -448,6 +482,21 @@ impl Theme {
             == crate::theme::system_appearance::SystemAppearance::Dark
     }
 
+    /// Pi-compatible prompt-border color for the active thinking level.
+    ///
+    /// The source palette mirrors Pi's built-in dark/light themes, then runs
+    /// through the pager's terminal capability quantizer so the signal remains
+    /// usable on truecolor, 256-color, ANSI16, and no-color terminals.
+    pub fn thinking_border_color(&self, level: ThinkingLevel) -> ratatui::style::Color {
+        let dark = crate::render::color::resolve_to_rgb(self.bg_base)
+            .map(|(r, g, b)| {
+                crate::theme::osc11::classify_luminance(r, g, b)
+                    == crate::theme::system_appearance::SystemAppearance::Dark
+            })
+            .unwrap_or_else(|| self.is_dark());
+        color_support::quantize(pi_thinking_border_color(dark, level))
+    }
+
     /// Pin chrome and semantic-accent colors to ANSI-named entries so
     /// they survive 16-color quantization. `dark` flips polarity along
     /// two axes:
@@ -732,6 +781,42 @@ mod tests {
         assert!(Theme::rosepine_moon().is_dark());
         assert!(Theme::oscura_midnight().is_dark());
         assert!(!Theme::grokday().is_dark());
+    }
+
+    #[test]
+    fn pi_thinking_border_palette_matches_dark_theme() {
+        use ratatui::style::Color;
+
+        let expected = [
+            (ThinkingLevel::Off, Color::DarkGray),
+            (ThinkingLevel::Minimal, Color::Rgb(110, 110, 110)),
+            (ThinkingLevel::Low, Color::Rgb(95, 135, 175)),
+            (ThinkingLevel::Medium, Color::Rgb(129, 162, 190)),
+            (ThinkingLevel::High, Color::Rgb(178, 148, 187)),
+            (ThinkingLevel::Xhigh, Color::Rgb(209, 131, 232)),
+            (ThinkingLevel::Max, Color::Rgb(255, 95, 255)),
+        ];
+        for (level, color) in expected {
+            assert_eq!(pi_thinking_border_color(true, level), color);
+        }
+    }
+
+    #[test]
+    fn pi_thinking_border_palette_matches_light_theme() {
+        use ratatui::style::Color;
+
+        let expected = [
+            (ThinkingLevel::Off, Color::Gray),
+            (ThinkingLevel::Minimal, Color::Rgb(118, 118, 118)),
+            (ThinkingLevel::Low, Color::Blue),
+            (ThinkingLevel::Medium, Color::Rgb(90, 128, 128)),
+            (ThinkingLevel::High, Color::Rgb(135, 95, 135)),
+            (ThinkingLevel::Xhigh, Color::Rgb(139, 0, 139)),
+            (ThinkingLevel::Max, Color::Rgb(175, 0, 95)),
+        ];
+        for (level, color) in expected {
+            assert_eq!(pi_thinking_border_color(false, level), color);
+        }
     }
 
     #[test]

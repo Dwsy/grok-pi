@@ -2,10 +2,11 @@
 //! hints and the subagent fullscreen view.
 use super::{
     ActivePane, AgentPane, AgentView, AgentViewLayout, CtaPhase, InlineMediaHitAreas,
-    MODE_BANNER_FADE_TICKS, PromptMode, collect_citation_links, dropdown_items_width,
-    record_dot_pulse, render_dropdown_chrome, supports_osc22,
+    MODE_BANNER_FADE_TICKS, PromptInputMode, PromptMode, collect_citation_links,
+    dropdown_items_width, record_dot_pulse, render_dropdown_chrome, supports_osc22,
 };
 use crate::actions::{ActionId, ActionRegistry};
+use crate::appearance::PromptCursor;
 use crate::key;
 use crate::render::SafeBuf;
 use crate::render::line_utils::truncate_line;
@@ -16,7 +17,7 @@ use crate::scrollback::text_selection::{
     ResolvedSelectionBoundaries, ResolvedSelectionModel, render_active_selection_overlay,
     render_block_drag_overlay, render_persistent_selection_overlay,
 };
-use crate::theme::Theme;
+use crate::theme::{Theme, ThinkingLevel};
 use crate::views::btw_overlay::BTW_OVERLAY_ENTRY_IDX;
 use crate::views::modal;
 use crate::views::plan_approval_view::PlanApprovalFocus;
@@ -26,11 +27,12 @@ use crate::views::shortcuts_bar::{HintItem, PendingHint, ShortcutsBar};
 use crate::views::{agent, turn_status};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 use std::collections::HashSet;
 use std::time::Instant;
+use xai_grok_shell::sampling::types::ReasoningEffort;
 /// AppView-owned per-frame inputs to [`AgentView::draw`] — state the agent
 /// view cannot see itself (the voice pipeline and app-level Esc ownership).
 /// Grouped (mirroring `WelcomeRenderParams`) so the next app-level render
@@ -52,6 +54,202 @@ pub struct AppRenderParams<'a> {
     /// advertises `Esc cancel` while an app-level owner would consume it.
     pub esc_owned_before_agent: bool,
 }
+
+fn thinking_level_for_effort(effort: Option<ReasoningEffort>) -> ThinkingLevel {
+    match effort.unwrap_or(ReasoningEffort::None) {
+        ReasoningEffort::None => ThinkingLevel::Off,
+        ReasoningEffort::Minimal => ThinkingLevel::Minimal,
+        ReasoningEffort::Low => ThinkingLevel::Low,
+        ReasoningEffort::Medium => ThinkingLevel::Medium,
+        ReasoningEffort::High => ThinkingLevel::High,
+        ReasoningEffort::Xhigh => ThinkingLevel::Xhigh,
+        ReasoningEffort::Max => ThinkingLevel::Max,
+    }
+}
+
+fn prompt_border_color_override(
+    theme: &Theme,
+    input_mode: PromptInputMode,
+    plan_tinted: bool,
+    thinking_border_colors: bool,
+    effort: Option<ReasoningEffort>,
+) -> Option<Color> {
+    if plan_tinted {
+        crate::render::color::blend_color(theme.bg_base, theme.accent_plan, 0.4)
+    } else if thinking_border_colors && input_mode == PromptInputMode::Normal {
+        Some(theme.thinking_border_color(thinking_level_for_effort(effort)))
+    } else {
+        None
+    }
+}
+
+/// Paint a configured software cursor and return the hardware-cursor position.
+/// `Native` is a strict passthrough, preserving the existing terminal cursor.
+/// Every other variant paints into the buffer and returns `None`, which makes
+/// the frame writer hide the hardware cursor for that frame.
+fn paint_prompt_cursor(
+    buf: &mut Buffer,
+    cursor_pos: Option<(u16, u16)>,
+    cursor: PromptCursor,
+    color: Color,
+) -> Option<(u16, u16)> {
+    if cursor == PromptCursor::Native {
+        return cursor_pos;
+    }
+    let (x, y) = cursor_pos?;
+    let cell = buf.cell_mut((x, y))?;
+    match cursor {
+        PromptCursor::Native => unreachable!("native cursor returned above"),
+        PromptCursor::Block => {
+            if cell.symbol().trim().is_empty() {
+                cell.set_symbol("█");
+                cell.set_fg(color);
+            } else {
+                cell.modifier.insert(Modifier::REVERSED);
+            }
+        }
+        PromptCursor::Underline => {
+            if cell.symbol().trim().is_empty() {
+                cell.set_char('_');
+                cell.set_fg(color);
+            } else {
+                cell.modifier.insert(Modifier::UNDERLINED);
+            }
+        }
+        PromptCursor::Bar => {
+            cell.set_symbol("│");
+            cell.set_fg(color);
+        }
+        PromptCursor::Custom(ch) => {
+            cell.set_char(ch);
+            cell.set_fg(color);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod thinking_border_tests {
+    use super::*;
+
+    #[test]
+    fn maps_every_reasoning_effort_to_the_matching_pi_level() {
+        let expected = [
+            (None, ThinkingLevel::Off),
+            (Some(ReasoningEffort::None), ThinkingLevel::Off),
+            (Some(ReasoningEffort::Minimal), ThinkingLevel::Minimal),
+            (Some(ReasoningEffort::Low), ThinkingLevel::Low),
+            (Some(ReasoningEffort::Medium), ThinkingLevel::Medium),
+            (Some(ReasoningEffort::High), ThinkingLevel::High),
+            (Some(ReasoningEffort::Xhigh), ThinkingLevel::Xhigh),
+            (Some(ReasoningEffort::Max), ThinkingLevel::Max),
+        ];
+        for (effort, level) in expected {
+            assert_eq!(thinking_level_for_effort(effort), level);
+        }
+    }
+
+    #[test]
+    fn normal_prompt_uses_thinking_color_but_special_modes_keep_their_chrome() {
+        let theme = Theme::groknight();
+        assert_eq!(
+            prompt_border_color_override(
+                &theme,
+                PromptInputMode::Normal,
+                false,
+                true,
+                Some(ReasoningEffort::High),
+            ),
+            Some(theme.thinking_border_color(ThinkingLevel::High))
+        );
+        assert_eq!(
+            prompt_border_color_override(
+                &theme,
+                PromptInputMode::Bash,
+                false,
+                true,
+                Some(ReasoningEffort::High),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn disabled_thinking_colors_leave_normal_prompt_border_unmodified() {
+        let theme = Theme::groknight();
+        assert_eq!(
+            prompt_border_color_override(
+                &theme,
+                PromptInputMode::Normal,
+                false,
+                false,
+                Some(ReasoningEffort::High),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn plan_border_keeps_precedence_over_thinking_color() {
+        let theme = Theme::groknight();
+        assert_eq!(
+            prompt_border_color_override(
+                &theme,
+                PromptInputMode::Normal,
+                true,
+                false,
+                Some(ReasoningEffort::Max),
+            ),
+            crate::render::color::blend_color(theme.bg_base, theme.accent_plan, 0.4)
+        );
+    }
+}
+
+#[cfg(test)]
+mod prompt_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn native_cursor_preserves_hardware_position_and_buffer() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        buf.cell_mut((1, 0)).unwrap().set_char('x');
+        assert_eq!(
+            paint_prompt_cursor(&mut buf, Some((1, 0)), PromptCursor::Native, Color::Red),
+            Some((1, 0))
+        );
+        assert_eq!(buf.cell((1, 0)).unwrap().symbol(), "x");
+    }
+
+    #[test]
+    fn block_cursor_reverses_existing_cell_and_hides_hardware_cursor() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        buf.cell_mut((1, 0)).unwrap().set_char('x');
+        assert_eq!(
+            paint_prompt_cursor(&mut buf, Some((1, 0)), PromptCursor::Block, Color::Red),
+            None
+        );
+        let cell = buf.cell((1, 0)).unwrap();
+        assert_eq!(cell.symbol(), "x");
+        assert!(cell.modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn underline_bar_and_custom_cursor_paint_expected_symbols() {
+        for (cursor, expected) in [
+            (PromptCursor::Underline, "_"),
+            (PromptCursor::Bar, "│"),
+            (PromptCursor::Custom('•'), "•"),
+        ] {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+            assert_eq!(
+                paint_prompt_cursor(&mut buf, Some((1, 0)), cursor, Color::Red),
+                None
+            );
+            assert_eq!(buf.cell((1, 0)).unwrap().symbol(), expected);
+        }
+    }
+}
+
 impl AgentView {
     pub(crate) fn update_scrollback_selection_state(
         &mut self,
@@ -832,11 +1030,13 @@ impl AgentView {
             } else {
                 None
             },
-            border_color_override: if effective_plan || casual_commenting {
-                crate::render::color::blend_color(theme.bg_base, theme.accent_plan, 0.4)
-            } else {
-                None
-            },
+            border_color_override: prompt_border_color_override(
+                &theme,
+                self.prompt_input_mode,
+                effective_plan || casual_commenting,
+                crate::appearance::cache::load_thinking_border_colors(),
+                self.session.models.reasoning_effort,
+            ),
             prefix_override: if let Some(p) = self.prompt_input_mode.prefix_override(&theme) {
                 Some(p)
             } else if casual_commenting
@@ -4438,7 +4638,12 @@ impl AgentView {
         let cursor = if self.inline_edit.is_some() {
             inline_edit_cursor
         } else {
-            prompt_cursor_pos
+            paint_prompt_cursor(
+                buf,
+                prompt_cursor_pos,
+                appearance.prompt.cursor,
+                prompt_style.accent_color(&theme),
+            )
         };
         (cursor, prompt_post_flush)
     }

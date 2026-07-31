@@ -79,6 +79,46 @@ impl Default for TurnStatusConfig {
     }
 }
 
+/// Cursor rendered at the prompt's insertion point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PromptCursor {
+    /// Preserve the terminal's existing hardware cursor shape and behavior.
+    #[default]
+    Native,
+    /// Solid/reversed block cursor.
+    Block,
+    /// Underline the current cell, or draw `_` on an empty cell.
+    Underline,
+    /// Draw a vertical bar (`│`).
+    Bar,
+    /// Draw a user-provided single-column character.
+    Custom(char),
+}
+
+impl PromptCursor {
+    /// Parse a pager.toml value. Preset names are case-insensitive; any other
+    /// single-column character becomes a custom cursor. Invalid or wide values
+    /// fall back to [`Self::Native`] so a bad dev config never hides the caret.
+    pub fn from_config(value: &str) -> Self {
+        let trimmed = value.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "native" | "default" => Self::Native,
+            "block" | "box" => Self::Block,
+            "underline" | "underscore" | "line" => Self::Underline,
+            "bar" | "pipe" | "vertical" => Self::Bar,
+            _ => {
+                let mut chars = trimmed.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) if unicode_width::UnicodeWidthChar::width(ch) == Some(1) => {
+                        Self::Custom(ch)
+                    }
+                    _ => Self::Native,
+                }
+            }
+        }
+    }
+}
+
 /// Prompt input view configuration (the editor widget, not the scrollback block).
 #[derive(Debug, Clone, Copy)]
 pub struct PromptViewConfig {
@@ -89,6 +129,8 @@ pub struct PromptViewConfig {
     pub mouse_hover: bool,
     /// Show the ❯ prefix character in the prompt editor.
     pub show_prefix: bool,
+    /// Cursor shown at the prompt insertion point.
+    pub cursor: PromptCursor,
     /// Compact mode: remove top padding and reduce info block padding.
     /// Toggled at runtime via `/compact-mode`. This is the DERIVED render
     /// value, which the app may force on for short terminals (the persisted
@@ -103,6 +145,7 @@ impl Default for PromptViewConfig {
             collapse_unfocused: true,
             mouse_hover: true,
             show_prefix: true,
+            cursor: PromptCursor::Native,
             compact: false,
         }
     }
@@ -840,6 +883,10 @@ pub struct RawPromptViewConfig {
     pub mouse_hover: bool,
     /// Show the ❯ prefix character in the prompt editor.
     pub show_prefix: bool,
+    /// Cursor at the input position. Presets: "native" (current behavior),
+    /// "block", "underline", and "bar". A single-column character such as
+    /// "_", "▏", or "•" is also accepted as a custom cursor.
+    pub cursor: String,
 }
 
 impl Default for RawPromptViewConfig {
@@ -848,6 +895,7 @@ impl Default for RawPromptViewConfig {
             collapse_unfocused: true,
             mouse_hover: true,
             show_prefix: true,
+            cursor: "native".to_string(),
         }
     }
 }
@@ -1399,6 +1447,7 @@ impl From<RawAppearanceConfig> for AppearanceConfig {
                 collapse_unfocused: raw.prompt.collapse_unfocused,
                 mouse_hover: raw.prompt.mouse_hover,
                 show_prefix: raw.prompt.show_prefix,
+                cursor: PromptCursor::from_config(&raw.prompt.cursor),
                 compact: false, // runtime-only, not persisted in TOML
             },
             scrollback: ScrollbackConfig {
@@ -2210,6 +2259,33 @@ gutter_bg = true
     }
 
     #[test]
+    fn prompt_cursor_parses_presets_aliases_and_custom_characters() {
+        assert_eq!(PromptCursor::from_config("native"), PromptCursor::Native);
+        assert_eq!(PromptCursor::from_config("BLOCK"), PromptCursor::Block);
+        assert_eq!(PromptCursor::from_config("line"), PromptCursor::Underline);
+        assert_eq!(PromptCursor::from_config("pipe"), PromptCursor::Bar);
+        assert_eq!(PromptCursor::from_config("▏"), PromptCursor::Custom('▏'));
+        assert_eq!(PromptCursor::from_config("•"), PromptCursor::Custom('•'));
+    }
+
+    #[test]
+    fn prompt_cursor_rejects_empty_multi_character_and_wide_values() {
+        assert_eq!(PromptCursor::from_config(""), PromptCursor::Native);
+        assert_eq!(PromptCursor::from_config("ab"), PromptCursor::Native);
+        assert_eq!(PromptCursor::from_config("光"), PromptCursor::Native);
+    }
+
+    #[test]
+    fn prompt_cursor_defaults_to_current_native_behavior() {
+        assert_eq!(PromptViewConfig::default().cursor, PromptCursor::Native);
+        let raw: RawAppearanceConfig = toml::from_str("").unwrap();
+        assert_eq!(
+            AppearanceConfig::from(raw).prompt.cursor,
+            PromptCursor::Native
+        );
+    }
+
+    #[test]
     fn test_to_toml_with_comments() {
         let toml = RawAppearanceConfig::to_toml_with_comments();
         // Check scrollback sections — check for key names rather than section
@@ -2295,6 +2371,10 @@ gutter_bg = true
         assert!(
             toml.contains("mouse_hover = "),
             "Missing mouse_hover in:\n{toml}"
+        );
+        assert!(
+            toml.contains("cursor = "),
+            "Missing prompt cursor in:\n{toml}"
         );
         // Check blocks are under scrollback
         assert!(
