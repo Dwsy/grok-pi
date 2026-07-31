@@ -57,6 +57,8 @@ pub struct ContextInfoBlock {
     pub snapshot: ContextInfo,
     /// Active model name at the time of capture (display-only).
     pub model: String,
+    /// Session-wide cost reported alongside the context snapshot.
+    pub cost_usd: Option<f64>,
 }
 
 /// Shape of the categorical bar — how the 100 cells are laid out.
@@ -260,7 +262,14 @@ impl ContextInfoBlock {
         Self {
             snapshot,
             model: model.into(),
+            cost_usd: None,
         }
+    }
+
+    /// Attach the session-wide cost returned by `x.ai/session/info`.
+    pub fn with_cost(mut self, cost_usd: Option<f64>) -> Self {
+        self.cost_usd = cost_usd.filter(|cost| cost.is_finite() && *cost >= 0.0);
+        self
     }
 
     /// Build the styled lines using the supplied theme and bar layout.
@@ -515,6 +524,12 @@ impl ContextInfoBlock {
             ),
             muted,
         )));
+        if let Some(cost_usd) = self.cost_usd {
+            lines.push(Line::from(Span::styled(
+                format!("Cost: ${cost_usd:.3}"),
+                muted,
+            )));
+        }
 
         // Approaching-auto-compact tip: only show in the gap between the
         // "getting close" mark (80%) and the actual auto-compact threshold.
@@ -708,6 +723,17 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()).chain(["\n"]))
             .collect()
+    }
+
+    #[test]
+    fn build_lines_shows_session_cost_when_reported() {
+        let block = ContextInfoBlock::new(snapshot(), "grok-4").with_cost(Some(0.053));
+        let lines = block.build_lines(&test_theme(), BarLayout::WIDE);
+        assert!(all_text(&lines).contains("Cost: $0.053"));
+
+        let zero_cost = ContextInfoBlock::new(snapshot(), "grok-4").with_cost(Some(0.0));
+        let lines = zero_cost.build_lines(&test_theme(), BarLayout::WIDE);
+        assert!(all_text(&lines).contains("Cost: $0.000"));
     }
 
     #[test]

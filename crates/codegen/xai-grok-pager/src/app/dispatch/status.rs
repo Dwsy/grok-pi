@@ -584,8 +584,10 @@ pub(super) fn handle_context_info_complete(
             crate::views::cache_graph::CacheGraphView::Breakdown
         };
         // Context is a transient inspection surface, not conversation history.
+        let cost_usd = info.session_stats.as_ref().map(|stats| stats.cost);
         agent.active_modal = Some(ActiveModal::ContextInfo {
-            block: crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model),
+            block: crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model)
+                .with_cost(cost_usd),
             scroll: 0,
             window: ModalWindowState::new(),
             cache_metrics,
