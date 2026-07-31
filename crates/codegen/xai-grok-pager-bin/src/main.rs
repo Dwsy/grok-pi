@@ -28,10 +28,12 @@ mod jemalloc_malloc_conf {
 use anyhow::Result;
 use std::env;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use tokio_util::sync::CancellationToken;
 use xai_grok_pager::app::{
-    AgentCmd, Command, HeadlessArgs, LeaderTargetArgs, PagerArgs, join_early_prefetch,
-    resolve_use_leader,
+    AgentCmd, Command, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand, LeaderMode,
+    LeaderTargetArgs, PagerArgs, join_early_prefetch, resolve_leader_mode, resolve_use_leader,
+    warn_leader_disabled_by_sandbox,
 };
 use xai_grok_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use xai_grok_pager::client_identity::PAGER_CLIENT_VERSION;
@@ -331,6 +333,20 @@ fn fetch_remote_settings() -> Option<xai_grok_shell::util::config::RemoteSetting
     join_early_prefetch(xai_grok_shell::agent::models::start_early_prefetch(None))
 }
 async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
+    if matches!(
+        &args.command,
+        WorkspaceMgmtCommand::Start(_)
+            | WorkspaceMgmtCommand::Restart(_)
+            | WorkspaceMgmtCommand::Resume { .. }
+    ) && let Some(profile) = xai_grok_sandbox::requested_confinement_profile()
+    {
+        anyhow::bail!(
+            "`grok workspace` start/restart/resume is unavailable under sandbox profile '{profile}': \
+             those commands (re)activate shared-leader workspace exposure that this session cannot \
+             prove is confined by that profile. Disable the profile at the source that selected it \
+             (CLI, env, config, or a managed requirement)."
+        );
+    }
     let env_override = workspace_command_env_override();
     let remote_settings = if env_override.is_none() {
         fetch_remote_settings()
@@ -441,6 +457,7 @@ async fn workspace_start(
         &raw_config,
         remote_settings.as_ref(),
         true,
+        xai_grok_sandbox::requested_confinement_profile(),
     );
     if !use_leader {
         anyhow::bail!(
@@ -941,6 +958,12 @@ async fn run_agent_command(
             }
         }
     });
+    if matches!(
+        agent_args.mode,
+        Some(AgentCmd::Leader(_) | AgentCmd::Stdio | AgentCmd::Headless(_) | AgentCmd::Serve(_))
+    ) {
+        xai_grok_shell::agent::app::suppress_otel();
+    }
     init_tracing_simple("agent");
     let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
     xai_grok_telemetry::instrumentation::install_panic_hook();
@@ -1031,14 +1054,29 @@ async fn run_agent_command(
         &agent_args.mode,
         None | Some(AgentCmd::Stdio) | Some(AgentCmd::Headless(_))
     );
-    let (use_leader, policy_disable_reason) = resolve_use_leader(
+    let requested_confinement = xai_grok_sandbox::requested_confinement_profile();
+    let LeaderMode {
+        use_leader,
+        policy_disable_reason,
+        disabled_by_confinement,
+    } = resolve_leader_mode(
         agent_args.leader,
         agent_args.no_leader,
         &raw_config,
         remote_settings.as_ref(),
         leader_eligible,
+        requested_confinement,
     );
-    tracing::info!(use_leader, ?policy_disable_reason, "leader mode resolved");
+    tracing::info!(
+        use_leader,
+        ?policy_disable_reason,
+        sandbox_profile = ?requested_confinement,
+        leader_disabled_by_sandbox = disabled_by_confinement.is_some(),
+        "leader mode resolved"
+    );
+    if let Some(profile) = disabled_by_confinement {
+        warn_leader_disabled_by_sandbox(profile);
+    }
     let managed_install = is_managed_install(
         std::env::current_exe().ok(),
         &xai_grok_shell::util::grok_home::grok_home(),
@@ -1400,6 +1438,90 @@ fn flag_dashboard_at_startup_if_requested(args: &mut PagerArgs) -> Result<()> {
     Ok(())
 }
 const RUNTIME_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+const GROK_WORKER_THREADS_ENV: &str = "GROK_WORKER_THREADS";
+/// tokio defaults to one worker per logical CPU. On a host with hundreds of
+/// CPUs that can exhaust a cgroup thread budget at startup and abort under
+/// `panic = "abort"`. A terminal UI is I/O-bound, so cap at 8.
+const DEFAULT_MAX_WORKER_THREADS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+/// How `GROK_WORKER_THREADS` resolved.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkerCount {
+    Accepted(NonZeroUsize),
+    Clamped {
+        requested: i128,
+        used: NonZeroUsize,
+        cores: NonZeroUsize,
+    },
+    Ignored {
+        value: String,
+        used: NonZeroUsize,
+    },
+}
+impl WorkerCount {
+    fn used(&self) -> NonZeroUsize {
+        match self {
+            Self::Accepted(used) | Self::Clamped { used, .. } | Self::Ignored { used, .. } => *used,
+        }
+    }
+    fn notice(&self) -> Option<String> {
+        match self {
+            Self::Accepted(_) => None,
+            Self::Clamped {
+                requested,
+                used,
+                cores,
+            } => Some(format!(
+                "grok: clamped {GROK_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
+            )),
+            Self::Ignored { value, .. } => Some(format!(
+                "grok: ignoring {GROK_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
+            )),
+        }
+    }
+}
+fn cli_worker_threads() -> NonZeroUsize {
+    let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    let resolved = match std::env::var(GROK_WORKER_THREADS_ENV) {
+        Ok(value) => worker_threads_from(Some(&value), cores),
+        Err(std::env::VarError::NotPresent) => worker_threads_from(None, cores),
+        Err(std::env::VarError::NotUnicode(value)) => WorkerCount::Ignored {
+            value: value.to_string_lossy().into_owned(),
+            used: default_worker_threads(cores),
+        },
+    };
+    if let Some(notice) = resolved.notice() {
+        eprintln!("{notice}");
+    }
+    resolved.used()
+}
+fn worker_threads_from(env_override: Option<&str>, cores: NonZeroUsize) -> WorkerCount {
+    match env_override {
+        Some(value) => resolve_worker_override(value, cores),
+        None => WorkerCount::Accepted(default_worker_threads(cores)),
+    }
+}
+fn default_worker_threads(cores: NonZeroUsize) -> NonZeroUsize {
+    cores.min(DEFAULT_MAX_WORKER_THREADS)
+}
+fn resolve_worker_override(value: &str, cores: NonZeroUsize) -> WorkerCount {
+    let Ok(requested) = value.trim().parse::<i128>() else {
+        return WorkerCount::Ignored {
+            value: value.to_owned(),
+            used: default_worker_threads(cores),
+        };
+    };
+    let clamped = requested.clamp(1, cores.get() as i128) as usize;
+    let used = NonZeroUsize::new(clamped).expect("clamp floor of 1 guarantees non-zero");
+    if requested == used.get() as i128 {
+        WorkerCount::Accepted(used)
+    } else {
+        WorkerCount::Clamped {
+            requested,
+            used,
+            cores,
+        }
+    }
+}
 /// A plain runtime drop blocks forever on an uncancellable in-flight blocking
 /// task; `shutdown_timeout` abandons it after `grace` so exit can't hang.
 fn run_and_shutdown<F: std::future::Future>(
@@ -1633,10 +1755,15 @@ fn main() {
             "Found crashed sessions from a previous run"
         );
     }
+    let workers = cli_worker_threads();
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers.get())
         .enable_all()
         .build()
-        .unwrap_or_else(|e| panic!("failed to start tokio runtime: {e}"));
+        .unwrap_or_else(|e| {
+            eprintln!("grok: failed to start tokio runtime with {workers} workers: {e}");
+            shutdown_and_flush_telemetry(1);
+        });
     let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
     xai_grok_telemetry::debug_log::flush();
     if let Err(e) = result {
@@ -2230,6 +2357,86 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_caps_the_core_count() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        assert_eq!(default_worker_threads(nz(360)), DEFAULT_MAX_WORKER_THREADS);
+        assert_eq!(default_worker_threads(nz(4)), nz(4));
+    }
+    #[test]
+    fn worker_threads_from_selects_default_or_override() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        let cores = nz(360);
+        assert_eq!(
+            worker_threads_from(None, cores),
+            WorkerCount::Accepted(default_worker_threads(cores))
+        );
+        assert_eq!(
+            worker_threads_from(Some("16"), cores),
+            WorkerCount::Accepted(nz(16))
+        );
+    }
+    #[test]
+    fn override_in_range_is_used_without_a_notice() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        let cores = nz(360);
+        assert_eq!(
+            resolve_worker_override("16", cores),
+            WorkerCount::Accepted(nz(16))
+        );
+        assert_eq!(resolve_worker_override("16", cores).notice(), None);
+        assert_eq!(resolve_worker_override(" 8 ", cores).used().get(), 8);
+        assert_eq!(
+            resolve_worker_override("360", cores),
+            WorkerCount::Accepted(cores)
+        );
+    }
+    #[test]
+    fn override_out_of_range_is_clamped_with_a_notice() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        let cores = nz(360);
+        assert_eq!(
+            resolve_worker_override("100000", cores),
+            WorkerCount::Clamped {
+                requested: 100000,
+                used: cores,
+                cores
+            }
+        );
+        assert_eq!(
+            resolve_worker_override("0", cores),
+            WorkerCount::Clamped {
+                requested: 0,
+                used: nz(1),
+                cores
+            }
+        );
+        assert_eq!(
+            resolve_worker_override("-1", cores),
+            WorkerCount::Clamped {
+                requested: -1,
+                used: nz(1),
+                cores
+            }
+        );
+        assert_eq!(
+            resolve_worker_override("100000", cores).notice().unwrap(),
+            "grok: clamped GROK_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
+        );
+    }
+    #[test]
+    fn override_unparseable_is_ignored_with_a_notice() {
+        let cores = NonZeroUsize::new(360).unwrap();
+        for value in ["abc", "", "99999999999999999999999999999999999999999"] {
+            let ignored = resolve_worker_override(value, cores);
+            assert!(matches!(ignored, WorkerCount::Ignored { .. }), "{value}");
+            assert_eq!(ignored.used(), default_worker_threads(cores), "{value}");
+        }
+        assert_eq!(
+            resolve_worker_override("abc", cores).notice().unwrap(),
+            "grok: ignoring GROK_WORKER_THREADS=\"abc\" (not a valid integer)"
+        );
+    }
     #[test]
     fn version_output_writer_preserves_channel_aware_contract() {
         for (label, expected_suffix) in [

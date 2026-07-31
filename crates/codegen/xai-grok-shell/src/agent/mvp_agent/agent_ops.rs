@@ -3,7 +3,9 @@
 //! Inherent [`MvpAgent`] helpers (MCP/clients/gateway, settings/models, session ops, spawn).
 //! Co-located child of `mvp_agent` (`use super::*`).
 use super::*;
+use crate::auth::PreferredAuthMethod;
 use xai_grok_tools::implementations::grok_build::task::backend::SubagentBackend;
+use xai_tty_utils::ProcessScope;
 /// `preferred` model, else catalog `current`, else first with own credentials.
 fn byok_from_models(
     models: &indexmap::IndexMap<String, ModelEntry>,
@@ -15,6 +17,23 @@ fn byok_from_models(
         .and_then(|m| m.own_credential())
         .or_else(|| models.get(current).and_then(|m| m.own_credential()))
         .or_else(|| models.values().find_map(|m| m.own_credential()))
+}
+struct MissingSessionCtx {
+    has_session_key: bool,
+    has_own_credentials: bool,
+    is_session_based_auth: bool,
+    preferred: Option<PreferredAuthMethod>,
+}
+/// Warn only when a missing session is a real failure, not on API-key hosts.
+fn should_warn_missing_session(ctx: MissingSessionCtx) -> bool {
+    if ctx.has_session_key || ctx.has_own_credentials {
+        return false;
+    }
+    match ctx.preferred {
+        Some(PreferredAuthMethod::Oidc) => true,
+        Some(PreferredAuthMethod::ApiKey) => false,
+        None => ctx.is_session_based_auth,
+    }
 }
 impl MvpAgent {
     pub fn reload_skills_all_sessions(&self) -> usize {
@@ -701,7 +720,7 @@ impl MvpAgent {
     /// Most recently allocated turn number for `sid`, or `None` if the
     /// session has not started a turn yet.
     pub(crate) fn session_turn_number(&self, sid: &acp::SessionId) -> Option<u64> {
-        self.session_turn_numbers.borrow().get(sid).copied()
+        self.retained_resources.borrow().get(sid).and_then(|d| d.turn_number)
     }
     /// Return the current GrokAuth credentials, if authenticated and not expired.
     pub(crate) fn current_auth(&self) -> Option<crate::auth::GrokAuth> {
@@ -715,7 +734,7 @@ impl MvpAgent {
     }
     /// `true` when the agent runs in writeback storage mode.
     pub(crate) fn is_writeback_storage(&self) -> bool {
-        matches!(self.storage_mode, StorageMode::Writeback)
+        matches!(self.storage_mode.get(), StorageMode::Writeback)
     }
     /// Resolved cli-chat-proxy base for session features (via
     /// `proxy_url`). Not for the deployment-config fetch.
@@ -885,19 +904,178 @@ impl MvpAgent {
     pub(crate) fn deployment_key(&self) -> Option<String> {
         self.cfg.borrow().endpoints.deployment_key.clone()
     }
-    /// Re-fetch remote settings and re-init the telemetry client.
+    /// Apply settings side effects + push `x.ai/settings/update` to clients.
+    /// Shared tail for every settings-arrival site.
+    pub(super) fn on_remote_settings_changed(&self) {
+        crate::agent::config::apply_remote_settings_side_effects(
+            self.cfg.borrow().remote_settings.as_ref(),
+        );
+        if let Some(identity) = self
+            .auth_manager
+            .current_or_expired()
+            .filter(|a| a.is_xai_auth())
+            .map(|a| a.user_id)
+        {
+            self.tier_allowed
+                .set(
+                    super::settings_allow_access(
+                        self.cfg.borrow().remote_settings.as_ref(),
+                    ),
+                );
+            *self.allow_access_resolved_for.borrow_mut() = Some(identity);
+        }
+        self.reapply_storage_mode();
+        self.reapply_official_marketplace();
+        {
+            let cfg_snapshot = self.cfg.borrow().clone();
+            if self.sessions.borrow().is_empty() {
+                self.models_manager.apply_config_reselecting_default(cfg_snapshot);
+            } else {
+                self.models_manager.apply_config(cfg_snapshot);
+            }
+        }
+        self.sync_collection_config_gate();
+        self.emit_settings_update_notification();
+        self.emit_announcements(AnnouncementsPushMode::IfChanged);
+        self.reconfigure_heap_profile_monitor();
+    }
+    /// Re-evaluates the official-marketplace auto-register gate now that
+    /// remote settings exist. `init_process` ran the same gate at boot without
+    /// them, so a settings-targeted (not env-set) team would otherwise never
+    /// register. Idempotent: a no-op once installed.
+    fn reapply_official_marketplace(&self) {
+        if self.cfg.borrow().resolve_official_marketplace_auto_register().value {
+            crate::extensions::marketplace::ensure_official_marketplace_source(
+                &crate::util::grok_home::grok_home(),
+            );
+        }
+    }
+    /// Upgrade storage mode from newly-arrived remote settings. Mirrors the
+    /// `resolve_config` gate: only upgrades from `Local`, writeback needs xai auth.
+    fn reapply_storage_mode(&self) {
+        if self.storage_mode.get() != StorageMode::Local {
+            return;
+        }
+        let resolved_mode = {
+            let cfg = self.cfg.borrow();
+            if cfg.mode == crate::agent::config::AgentMode::Generic {
+                return;
+            }
+            let has_xai_auth = self
+                .auth_manager
+                .current_or_expired()
+                .is_some_and(|a| a.is_xai_auth());
+            StorageMode::from_remote_gated(cfg.remote_settings.as_ref(), has_xai_auth)
+        };
+        if resolved_mode == self.storage_mode.get() {
+            return;
+        }
+        tracing::info!(?resolved_mode, "storage mode upgraded from remote settings");
+        self.storage_mode.set(resolved_mode);
+        if resolved_mode == StorageMode::Writeback {
+            for handle in self.sessions.borrow().values() {
+                let _ = handle
+                    .persistence_tx
+                    .send(crate::session::persistence::PersistenceMsg::UpgradeToWriteback {
+                        auth_manager: self.auth_manager.clone(),
+                    });
+            }
+        }
+    }
+    /// Run the blocking `/settings` fetch for `auth` off the runtime thread.
+    async fn fetch_settings(
+        &self,
+        auth: &crate::auth::GrokAuth,
+    ) -> crate::remote::SettingsFetch {
+        let (base_url, alpha) = {
+            let cfg = self.cfg.borrow();
+            (cfg.endpoints.proxy_url(), cfg.endpoints.alpha_test_key.clone())
+        };
+        let auth = auth.clone();
+        match tokio::task::spawn_blocking(move || crate::remote::fetch_settings_blocking(
+                &base_url,
+                &auth,
+                alpha.as_deref(),
+            ))
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                tracing::warn!(error = %e, "settings fetch task panicked");
+                crate::remote::SettingsFetch::Retry
+            }
+        }
+    }
+    /// Fetch remote settings for `auth` and drive the external-OTEL gate from
+    /// the outcome. Re-closes the gate first only on an account switch, then
+    /// hands the outcome to [`OtelGate::resolve`], which returns the settings
+    /// only on a successful fetch for the still-live identity. Single seam for
+    /// both post-auth callers.
     ///
-    /// Called unconditionally from both auth handlers so that:
-    /// - First install / expired OIDC token: settings are fetched for
-    ///   the first time (the early prefetch had no auth to use).
-    /// - Reauth / account switch: settings are refreshed to reflect
-    ///   the new user's remote settings targeting attributes.
+    /// [`OtelGate::resolve`]: crate::agent::otel_gate::OtelGate::resolve
+    pub(super) async fn fetch_settings_resolving_gate(
+        &self,
+        auth: &crate::auth::GrokAuth,
+    ) -> Option<crate::util::config::RemoteSettings> {
+        let identity = auth.user_id.clone();
+        self.otel_gate.rearm_on_switch(&identity);
+        let outcome = self.fetch_settings_self_healing_401(auth).await;
+        let live = self.auth_manager.current_or_expired().map(|a| a.user_id);
+        self.otel_gate.resolve(&identity, outcome, live.as_deref())
+    }
+    /// Fetch settings; on a `401` try one self-healing [`AuthManager::auth`]
+    /// refresh and re-fetch if it yields a *different* token (recovers a 401
+    /// from a token that expired mid-fetch). The refresh is bounded by
+    /// `STARTUP_AUTH_REFRESH_TIMEOUT` so a wedged IdP can't hang the caller; on
+    /// timeout or error the original `Rejected` stands.
+    async fn fetch_settings_self_healing_401(
+        &self,
+        auth: &crate::auth::GrokAuth,
+    ) -> crate::remote::SettingsFetch {
+        let outcome = self.fetch_settings(auth).await;
+        if matches!(outcome, crate::remote::SettingsFetch::Rejected)
+            && let Ok(Ok(fresh)) = tokio::time::timeout(
+                    crate::http::STARTUP_AUTH_REFRESH_TIMEOUT,
+                    self.auth_manager.auth(),
+                )
+                .await && fresh.key != auth.key
+        {
+            return self.fetch_settings(&fresh).await;
+        }
+        outcome
+    }
+    /// Writes remote settings into `cfg` along with the fields derived from
+    /// them, so no derived field drifts between post-fetch callers.
+    pub(super) fn store_remote_settings(
+        &self,
+        settings: crate::util::config::RemoteSettings,
+    ) {
+        let mut cfg = self.cfg.borrow_mut();
+        cfg.remote_settings = Some(settings);
+        crate::util::config::sync_campaign_fields(&mut cfg);
+        if let Some(v) = cfg
+            .remote_settings
+            .as_ref()
+            .and_then(|s| s.path_not_found_hints)
+        {
+            cfg.path_not_found_hints = v;
+        }
+    }
+    /// Stores settings and fans out side effects via
+    /// [`Self::on_remote_settings_changed`]. Shared tail for callers that do
+    /// not also re-init the telemetry client (those use
+    /// [`Self::refresh_remote_settings`]).
+    pub(super) fn install_remote_settings(
+        &self,
+        settings: crate::util::config::RemoteSettings,
+    ) {
+        self.store_remote_settings(settings);
+        self.on_remote_settings_changed();
+    }
+    /// Re-fetch remote settings, re-init the telemetry client, apply side
+    /// effects, and push `x.ai/settings/update` to clients. Called from both
+    /// auth handlers (first install + reauth/account switch).
     ///
-    /// This only refreshes `cfg.remote_settings` and re-inits the
-    /// telemetry client (the only global static). Other settings
-    /// derived from `remote_settings` (`is_trace_upload_enabled`,
-    /// `web_fetch_enabled`, etc.) are resolved lazily per-turn from
-    /// `cfg` and pick up the new values automatically.
     /// Agent-level fields materialised at startup (`worktree_type`,
     /// `restore_code`) are NOT re-resolved here; that requires a
     /// broader refactor of the init path.
@@ -910,11 +1088,11 @@ impl MvpAgent {
         let user_id = auth.user_id.clone();
         let team_id = auth.team_id.clone();
         let remote_was_absent = self.cfg.borrow().remote_settings.is_none();
-        let Some(settings) = self.fetch_remote_settings(auth.clone()).await else {
-            tracing::warn!("post-auth settings refresh failed (HTTP or parse error)");
+        let Some(settings) = self.fetch_settings_resolving_gate(auth).await else {
             return;
         };
         tracing::info!("post-auth settings refreshed");
+        self.store_remote_settings(settings);
         let (
             telemetry_config,
             telemetry_mode,
@@ -923,11 +1101,9 @@ impl MvpAgent {
             deployment_key,
             subscription_tier,
         ) = {
-            let mut cfg = self.cfg.borrow_mut();
-            cfg.remote_settings = Some(settings);
-            crate::util::config::sync_campaign_fields(&mut cfg);
-            crate::agent::config::apply_remote_settings_side_effects(
-                cfg.remote_settings.as_ref(),
+            let cfg = self.cfg.borrow();
+            crate::util::config::cache_remote_mcp_startup_timeout_secs(
+                cfg.remote_settings.as_ref().and_then(|s| s.mcp_startup_timeout_secs),
             );
             let telemetry_mode = cfg.resolve_telemetry_mode();
             let trace_upload = cfg.resolve_trace_upload();
@@ -953,7 +1129,6 @@ impl MvpAgent {
                 subscription_tier_display,
             )
         };
-        self.sync_collection_config_gate();
         let subscription_tier = resolve_subscription_tier_for_telemetry(
             subscription_tier,
             self.auth_manager.current_or_expired().as_ref(),
@@ -970,8 +1145,7 @@ impl MvpAgent {
             crate::http::shared_client(),
         );
         crate::auth::credential_provider::sync_external_otel_identity();
-        self.emit_announcements(AnnouncementsPushMode::IfChanged);
-        self.reconfigure_heap_profile_monitor();
+        self.on_remote_settings_changed();
         if remote_was_absent {
             self.spawn_auto_worktree_gc();
         }
@@ -1003,6 +1177,82 @@ impl MvpAgent {
         self.emit_settings_update_notification();
         self.emit_announcements(AnnouncementsPushMode::Force);
         self.reconfigure_heap_profile_monitor();
+    }
+    /// Spawns a background task coalesced on `in_flight`: a request while one
+    /// is in flight is dropped. The task is bounded by
+    /// `SETTINGS_REAPPLY_TIMEOUT`. Returns whether a task was spawned.
+    fn spawn_coalesced_settings_task(
+        &self,
+        in_flight: &std::rc::Rc<std::cell::Cell<bool>>,
+        task: impl std::future::Future<Output = ()> + 'static,
+    ) -> bool {
+        if in_flight.replace(true) {
+            return false;
+        }
+        let in_flight = in_flight.clone();
+        tokio::task::spawn_local(async move {
+            struct ClearOnDrop(std::rc::Rc<std::cell::Cell<bool>>);
+            impl Drop for ClearOnDrop {
+                fn drop(&mut self) {
+                    self.0.set(false);
+                }
+            }
+            let _clear = ClearOnDrop(in_flight);
+            let _ = tokio::time::timeout(crate::http::SETTINGS_REAPPLY_TIMEOUT, task)
+                .await;
+        });
+        true
+    }
+    /// Fire-and-forget remote settings refresh for new sessions (at most one
+    /// in flight).
+    pub(super) fn spawn_settings_reapply(&self) {
+        let agent_ref = LocalRef::new(self);
+        let auth_manager = self.auth_manager.clone();
+        let _spawned = self
+            .spawn_coalesced_settings_task(
+                &self.settings_reapply_in_flight,
+                async move {
+                    let auth_result = tokio::time::timeout(
+                            crate::http::STARTUP_FETCH_TIMEOUT,
+                            auth_manager.auth(),
+                        )
+                        .await;
+                    if let Ok(Ok(auth)) = auth_result {
+                        let agent = agent_ref.get();
+                        if agent.post_auth_settings_in_flight.get() {
+                            return;
+                        }
+                        agent.refresh_settings_and_reapply(&auth).await;
+                    }
+                },
+            );
+        #[cfg(test)]
+        if _spawned {
+            self.settings_reapply_spawn_count
+                .set(self.settings_reapply_spawn_count.get() + 1);
+        }
+    }
+    /// Resolve post-auth remote settings in the background so a slow or hung
+    /// `/settings` can't gate `authenticate` (and thus the client's first draw).
+    /// The external-OTEL gate stays fail-closed until this resolves; the result
+    /// reaches clients via `x.ai/settings/update`. Its own guard keeps an
+    /// in-flight reapply from coalescing away the authenticated identity.
+    pub(super) fn spawn_post_auth_settings(&self, auth: crate::auth::GrokAuth) {
+        let agent_ref = LocalRef::new(self);
+        let _spawned = self
+            .spawn_coalesced_settings_task(
+                &self.post_auth_settings_in_flight,
+                async move {
+                    let agent = agent_ref.get();
+                    agent.refresh_remote_settings(&auth).await;
+                    agent.maybe_fetch_post_auth_settings().await;
+                },
+            );
+        #[cfg(test)]
+        if _spawned {
+            self.post_auth_settings_spawn_count
+                .set(self.post_auth_settings_spawn_count.get() + 1);
+        }
     }
     /// Spawn the periodic remote-settings poll that pushes mid-session
     /// announcement changes to connected clients. Idempotent; plain loop (no
@@ -1165,7 +1415,7 @@ impl MvpAgent {
             ))
             .await
         {
-            Ok(settings) => settings,
+            Ok(outcome) => outcome.into_option(),
             Err(e) => {
                 tracing::warn!(error = %e, "settings fetch task panicked");
                 None
@@ -1234,9 +1484,11 @@ impl MvpAgent {
         origin_client: Option<crate::http::OriginClientInfo>,
     ) -> SamplingConfig {
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
+        let prefers_oidc = preferred == Some(PreferredAuthMethod::Oidc);
+        let is_session_based_auth = self.is_session_based_auth();
         let session = match preferred {
-            Some(crate::auth::PreferredAuthMethod::ApiKey) => None,
-            _ if self.is_session_based_auth() => self.auth_manager.current_or_expired(),
+            Some(PreferredAuthMethod::ApiKey) => None,
+            _ if is_session_based_auth => self.auth_manager.current_or_expired(),
             _ => None,
         };
         let has_session_key = session.is_some();
@@ -1244,8 +1496,7 @@ impl MvpAgent {
             model,
             session.as_ref().map(|a| a.key.as_str()),
         );
-        if matches!(preferred, Some(crate::auth::PreferredAuthMethod::Oidc))
-            && !model.has_own_credentials()
+        if prefers_oidc && !model.has_own_credentials()
             && credentials.auth_type == xai_chat_state::AuthType::ApiKey
         {
             credentials.api_key = None;
@@ -1257,7 +1508,7 @@ impl MvpAgent {
             session.as_ref().map(|a| a.key.as_str()),
         );
         if !has_session_key && credentials.auth_type == xai_chat_state::AuthType::ApiKey
-            && !model.has_own_credentials() && self.is_session_based_auth()
+            && !model.has_own_credentials() && is_session_based_auth
         {
             tracing::info!(
                 model = model.info().model.as_str(),
@@ -1270,7 +1521,12 @@ impl MvpAgent {
             );
             credentials.auth_type = xai_chat_state::AuthType::SessionToken;
         }
-        if !has_session_key && !model.has_own_credentials() {
+        if should_warn_missing_session(MissingSessionCtx {
+            has_session_key,
+            has_own_credentials: model.has_own_credentials(),
+            is_session_based_auth,
+            preferred,
+        }) {
             tracing::warn!(
                 model = model.info().model.as_str(),
                 is_expired = self.auth_manager.is_expired(),
@@ -1622,7 +1878,7 @@ impl MvpAgent {
             sessions: RefCell::new(HashMap::new()),
             activity,
             loading_sessions: RefCell::new(HashMap::new()),
-            dispatch_locks: RefCell::new(HashMap::new()),
+            retained_resources: RefCell::new(HashMap::new()),
             session_threads: RefCell::new(HashMap::new()),
             resident_roster_titles: RefCell::new(HashMap::new()),
             initialize_request: OnceLock::new(),
@@ -1657,7 +1913,9 @@ impl MvpAgent {
                 RefCell::new(std::collections::HashSet::new()),
             ),
             tier_allowed: std::cell::Cell::new(true),
-            storage_mode,
+            allow_access_resolved_for: std::cell::RefCell::new(None),
+            storage_mode: std::cell::Cell::new(storage_mode),
+            otel_gate: crate::agent::otel_gate::OtelGate::default(),
             default_yolo_mode,
             default_auto_mode,
             trace_upload_live: Arc::new(
@@ -1668,12 +1926,10 @@ impl MvpAgent {
             relay_sync_enabled,
             buffering_settings: RefCell::new(None),
             background_copy_context: BackgroundCopyContext::new(),
-            session_turn_numbers: RefCell::new(HashMap::new()),
-            permission_event_receivers: RefCell::new(HashMap::new()),
             codebase_indexes: Arc::new(
                 parking_lot::Mutex::new(CodebaseIndexManager::new()),
             ),
-            session_index_claims: RefCell::new(HashMap::new()),
+            resident_resources: RefCell::new(HashMap::new()),
             worktree_type,
             restore_code,
             session_registry_local,
@@ -1689,17 +1945,16 @@ impl MvpAgent {
             subagent_presentation: RefCell::new(
                 crate::agent::subagent::SubagentPresentation::new(),
             ),
-            monitor_event_buffer: xai_grok_tools::implementations::grok_build::task::types::MonitorEventBuffer::default(),
+            monitor_event_buffer: xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer::default(),
             bundle_sync_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             post_unblock_jwt_retry_in_flight: Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
             workspace_ops: RefCell::new(None),
-            require_gateway_sessions: Rc::new(
-                RefCell::new(std::collections::HashSet::new()),
-            ),
             session_live_state: RefCell::new(HashMap::new()),
             supervisor_started: std::cell::Cell::new(false),
+            settings_reapply_in_flight: std::rc::Rc::new(std::cell::Cell::new(false)),
+            post_auth_settings_in_flight: std::rc::Rc::new(std::cell::Cell::new(false)),
             announcements_gen: std::cell::Cell::new(0),
             last_emitted_announcements: RefCell::new(Vec::new()),
             announcements_refresh_started: std::cell::Cell::new(false),
@@ -1713,6 +1968,10 @@ impl MvpAgent {
             roster_delta_spy: RefCell::new(Vec::new()),
             #[cfg(test)]
             supervisor_spawn_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            settings_reapply_spawn_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            post_auth_settings_spawn_count: std::cell::Cell::new(0),
         };
         instance
             .auth_manager
@@ -1795,9 +2054,8 @@ impl MvpAgent {
                 continue;
             }
             self.request_session_shutdown(&id);
-            if self.sessions.borrow_mut().remove(&id).is_some() {
-                self.session_index_claims.borrow_mut().remove(&id);
-                self.require_gateway_sessions.borrow_mut().remove(&id);
+            if self.take_session(&id).is_some() {
+                self.resident_resources.borrow_mut().remove(&id);
                 self.set_session_live_state(&id, SessionLiveState::Dormant);
                 unloaded += 1;
                 tracing::debug!(session_id = %id.0, "idle session unloaded to disk on disconnect");
@@ -1930,7 +2188,7 @@ impl MvpAgent {
     }
     /// Returns the storage mode configured for this agent
     pub fn storage_mode(&self) -> StorageMode {
-        self.storage_mode
+        self.storage_mode.get()
     }
     /// Returns the background copy context for managing background file copy tasks.
     pub fn background_copy_context(&self) -> BackgroundCopyContext {
@@ -2499,17 +2757,18 @@ impl MvpAgent {
             current_effort,
         )
     }
-    /// Build the `x.ai/sessionConfig` and `x.ai/sessionDetail` `_meta` values
-    /// shared by `new_session` and `load_session`, returned as
-    /// `(sessionConfig, sessionDetail)`. Keeping both response paths on this one
+    /// Insert the per-session `_meta` keys (`x.ai/sessionConfig`,
+    /// `x.ai/sessionDetail`, `x.ai/schedulerBackgroundLoops`) shared by
+    /// `new_session` and `load_session`. Keeping both response paths on this one
     /// builder stops them drifting.
-    pub(super) fn session_config_meta(
+    pub(super) fn insert_session_config_meta(
         &self,
+        meta: &mut serde_json::Map<String, serde_json::Value>,
         session_id: &acp::SessionId,
         cwd: String,
         title: Option<String>,
         model_state: &acp::SessionModelState,
-    ) -> (serde_json::Value, serde_json::Value) {
+    ) {
         let config_options = self.session_config_options(Some(session_id), model_state);
         let detail = session_config::GrokSessionDetail::build(
             session_id.0.to_string(),
@@ -2517,7 +2776,22 @@ impl MvpAgent {
             model_state.current_model_id.0.to_string(),
             title,
         );
-        (serde_json::json!({ "options": config_options }), serde_json::json!(detail))
+        meta.insert(
+            "x.ai/sessionConfig".to_string(),
+            serde_json::json!({ "options": config_options }),
+        );
+        meta.insert("x.ai/sessionDetail".to_string(), serde_json::json!(detail));
+        if let Some(background_loops) = self
+            .sessions
+            .borrow()
+            .get(session_id)
+            .map(|handle| handle.scheduler_background_loops)
+        {
+            meta.insert(
+                SCHEDULER_BACKGROUND_LOOPS_META_KEY.to_string(),
+                serde_json::json!(background_loops),
+            );
+        }
     }
     /// Seed the global sampling config with login auth when available.
     ///
@@ -2607,27 +2881,20 @@ impl MvpAgent {
     }
     /// Read a session's next trace turn number without advancing the counter.
     fn peek_turn_number(&self, session_id: &acp::SessionId) -> u64 {
-        self.session_turn_numbers.borrow().get(session_id).copied().unwrap_or(0u64)
+        self.session_turn_number(session_id).unwrap_or(0u64)
     }
-    /// Set a session's next trace turn number. The sole writer of the
-    /// `session_turn_numbers` counter, shared by `allocate_turn_number` and the
-    /// batched harness-sibling allocation so both honor the same storage.
-    fn set_turn_number(&self, session_id: &acp::SessionId, next: u64) {
-        self.session_turn_numbers.borrow_mut().insert(session_id.clone(), next);
+    /// Set a session's next trace turn number.
+    pub(super) fn set_turn_number(&self, session_id: &acp::SessionId, next: u64) {
+        self
+            .retained_resources
+            .borrow_mut()
+            .entry(session_id.clone())
+            .or_default()
+            .turn_number = Some(next);
     }
-    /// Upload each drained harness trace turn (the goal planner at setup, and
-    /// each verifier skeptic panel) as its OWN sibling `turn_{N}` artifact.
-    ///
-    /// These phases run inside the single user-facing goal turn but are
-    /// recorded out-of-band (synthetic `task` pairs in a side buffer), so the
-    /// normal per-round `turn_messages.json` never references them. Giving each
-    /// phase its own monotonic turn number — from the SAME `session_turn_numbers`
-    /// counter the model turns use (see [`Self::allocate_turn_number`]), via
-    /// [`Self::get_trace_context`] + [`upload_turn_messages`] — makes the
-    /// subagents discoverable in remote/web clients
-    /// via the `<subagent_result>` footer each synthetic `task` result carries.
-    /// The advanced counter is persisted via `SetNextTraceTurn` so the siblings
-    /// survive a restart. Best-effort and non-blocking.
+    /// Upload each drained harness trace turn as its own `turn_{N}` artifact,
+    /// numbered from the same counter as model turns so subagents interleave
+    /// correctly in remote clients. Best-effort and non-blocking.
     pub(super) async fn upload_harness_trace_turns(
         &self,
         session_id: &acp::SessionId,
@@ -3254,6 +3521,7 @@ impl MvpAgent {
                 session_env,
             )
             .with_hunk_tracking_enabled(hunk_tracking_enabled);
+        tool_ctx.process_scope = Some(ProcessScope::new());
         let workspace_ops = self
             .resolve_workspace_ops()
             .map_err(|_| {
@@ -3468,8 +3736,9 @@ impl MvpAgent {
             if servers.is_empty() {
                 let user_path = xai_grok_tools::util::grok_home::grok_home()
                     .join("lsp.json");
-                let project_path = xai_grok_config::project_config_dir(tool_ctx.cwd.as_path()).join("lsp.json");
-                tracing::warn!(
+                let project_path =
+                    xai_grok_config::project_config_dir(tool_ctx.cwd.as_path()).join("lsp.json");
+                tracing::debug!(
                     cwd = %tool_ctx.cwd,
                     user_lsp_path = %user_path.display(),
                     project_lsp_path = %project_path.display(),
@@ -3482,11 +3751,12 @@ impl MvpAgent {
                 let mgr = std::sync::Arc::new(
                     tokio::sync::Mutex::new(
                         LspManager::new(
-                            servers,
-                            tool_ctx.cwd.as_path().to_path_buf(),
-                            true,
-                            xai_grok_tools::notification::ToolNotificationHandle::noop(),
-                        ),
+                                servers,
+                                tool_ctx.cwd.as_path().to_path_buf(),
+                                true,
+                                xai_grok_tools::notification::ToolNotificationHandle::noop(),
+                            )
+                            .with_process_scope(tool_ctx.process_scope.clone()),
                     ),
                 );
                 let adapter = std::sync::Arc::new(LspBackendAdapter::new(mgr));
@@ -3519,6 +3789,7 @@ impl MvpAgent {
         let goal_enabled = self.cfg.borrow().resolve_goal().value;
         let background_workflows_enabled = self.cfg.borrow().resolve_workflows().value;
         let subagents_enabled = self.cfg.borrow().subagents_enabled;
+        let subagents_max_depth = self.cfg.borrow().subagents_max_depth;
         let ask_user_question_enabled = crate::upload::turn::parse_ask_user_question_from_meta(
                 session_meta,
             )
@@ -3756,6 +4027,7 @@ impl MvpAgent {
                     goal_enabled,
                     background_workflows_enabled,
                     subagents_enabled,
+                    subagents_max_depth,
                     ask_user_question_enabled,
                     client_hooks,
                     prompt_display_cwd,
@@ -3872,9 +4144,12 @@ impl MvpAgent {
                 }
             });
         }
-        self.permission_event_receivers
+        self
+            .retained_resources
             .borrow_mut()
-            .insert(session_info.id.clone(), permission_events_rx);
+            .entry(session_info.id.clone())
+            .or_default()
+            .permission_event_receiver = Some(permission_events_rx);
         if handle_display_cwd.is_some() {
             handle.display_cwd = handle_display_cwd;
         }
@@ -3886,7 +4161,14 @@ impl MvpAgent {
             });
         self.notify_session_cwd_for_watch(std::path::Path::new(&session_info.cwd));
         self.activity.register_session(&session_info.id.0, &handle);
-        self.sessions.borrow_mut().insert(session_info.id.clone(), handle);
+        if let Some(old) = self
+            .sessions
+            .borrow_mut()
+            .insert(session_info.id.clone(), handle)
+            && let Some(scope) = &old.tool_context.process_scope
+        {
+            scope.kill_all();
+        }
         self.spawn_managed_gateway_tool_catalog_fetch();
         let cwd_for_maintenance = session_info.cwd.clone();
         tokio::spawn(async move {
@@ -3902,10 +4184,10 @@ impl MvpAgent {
         session_id: &acp::SessionId,
     ) -> Vec<PermissionEvent> {
         let mut events = Vec::new();
-        if let Some(rx) = self
-            .permission_event_receivers
-            .borrow_mut()
+        let mut retained = self.retained_resources.borrow_mut();
+        if let Some(rx) = retained
             .get_mut(session_id)
+            .and_then(|d| d.permission_event_receiver.as_mut())
         {
             while let Ok(event) = rx.try_recv() {
                 events.push(event);

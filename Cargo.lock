@@ -5477,6 +5477,15 @@ dependencies = [
 
 [[package]]
 name = "itertools"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -7899,6 +7908,18 @@ dependencies = [
  "procfs",
  "protobuf",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "prometheus-parse"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "811031bea65e5a401fb2e1f37d802cca6601e204ac463809a3189352d13b78a5"
+dependencies = [
+ "chrono",
+ "itertools 0.12.1",
+ "once_cell",
+ "regex",
 ]
 
 [[package]]
@@ -12906,6 +12927,7 @@ name = "xai-circuit-breaker"
 version = "0.1.0"
 dependencies = [
  "log",
+ "tonic",
 ]
 
 [[package]]
@@ -12999,6 +13021,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "prometheus",
+ "prometheus-parse",
  "prost",
  "reqwest 0.12.24",
  "schemars 1.0.4",
@@ -13826,6 +13849,7 @@ dependencies = [
  "obfstr",
  "parking_lot",
  "portable-pty",
+ "pretty_assertions",
  "process-wrap",
  "prod-mc-cli-chat-proxy-types",
  "prost",
@@ -14076,6 +14100,7 @@ dependencies = [
  "command-fds",
  "crc32fast",
  "derive_more 2.1.1",
+ "dhat",
  "dirs 5.0.1",
  "dunce",
  "educe",
@@ -14094,6 +14119,7 @@ dependencies = [
  "nix 0.30.1",
  "parking_lot",
  "pdf_oxide",
+ "pretty_assertions",
  "pulldown-cmark",
  "quick-xml 0.38.3",
  "regex",
@@ -14128,6 +14154,7 @@ dependencies = [
  "xai-grok-config",
  "xai-grok-env",
  "xai-grok-sandbox",
+ "xai-grok-test-support",
  "xai-grok-tools-api",
  "xai-grok-version",
  "xai-grok-workspace-types",

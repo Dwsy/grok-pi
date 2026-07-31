@@ -1826,6 +1826,8 @@ impl PromptWidget {
                     terminal.multiplexer = %evt.terminal.multiplexer,
                     terminal.is_ssh = evt.terminal.is_ssh,
                     terminal.term_var = %evt.terminal.term_var,
+                    terminal.term_version = %evt.terminal.term_version,
+                    terminal.term_version_source = %evt.terminal.term_version_source,
                     key.code = %evt.key_code,
                     key.modifiers = %evt.key_modifiers,
                     key.kind = %evt.key_kind,
@@ -2014,10 +2016,11 @@ impl PromptWidget {
             // try_replace appends `/` and stays open. A file selected in dir-mode
             // falls through to the ref branch (see FileSearchState::try_replace).
             if let Some(r) = self.file_search.try_replace(self.textarea.text()) {
-                let dismiss = r.dismiss;
                 self.textarea.replace_range(r.range, &r.text);
                 self.textarea.set_cursor(r.cursor);
-                if !dismiss {
+                if r.dismiss {
+                    self.file_search.clear_context();
+                } else {
                     // Anchor the drilled child so a whitespace name stays open
                     // (reuse the buffer; only a `./` prefix re-allocs).
                     let mut p = res.path.to_string();

@@ -1,5 +1,6 @@
 //! Tests for session create, exit, trust, startup actions, worktree creation, and cloud lifecycle.
 use super::*;
+use crate::app::dispatch::session::lifecycle::handle_switch_model_complete;
 /// Simulate a release-stamped build so folder-trust is active (a local/dev
 /// build auto-trusts and persists nothing). Mirrors this module's raw env idiom.
 fn simulate_release_build() {
@@ -132,6 +133,7 @@ fn session_created_sets_session_id() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -182,6 +184,7 @@ fn external_session_created_clears_starting_session_indicator() {
             agent_id: id,
             session_id: "pi-session-ready".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -202,6 +205,7 @@ fn session_created_omits_cta_catalog_when_disabled() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -246,6 +250,7 @@ fn session_created_banner_advertises_resume_in_minimal_mode() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -327,6 +332,7 @@ fn worktree_session_created_sets_session_and_cwd() {
             worktree_path: worktree_path.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -385,6 +391,7 @@ fn worktree_session_preserves_subdirectory_offset() {
             worktree_path: worktree_root.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -513,6 +520,7 @@ fn worktree_session_created_drains_queued_prompts() {
             worktree_path,
             session_cwd: PathBuf::from("/tmp/grok-worktrees/pager-abc"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -546,6 +554,7 @@ fn session_created_drains_queued_prompts() {
             agent_id: id,
             session_id: acp::SessionId::new("sess-drain-1"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -582,6 +591,7 @@ fn session_created_with_flag_emits_five_fetches_and_clears_flag() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -604,6 +614,7 @@ fn session_created_without_flag_emits_no_extension_fetches() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -760,7 +771,7 @@ fn successful_model_switch_refreshes_context_window() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("test::large-context"));
-    let model = acp::ModelInfo::new(model_id.clone(), "Large Context".into()).meta(
+    let model = acp::ModelInfo::new(model_id.clone(), "Large Context").meta(
         serde_json::json!({ "totalContextTokens": 200_000 })
             .as_object()
             .cloned(),
@@ -997,6 +1008,7 @@ fn deferred_model_switch_applied_on_session_created() {
             agent_id: id,
             session_id: session_id.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -1037,6 +1049,7 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
             worktree_path: PathBuf::from("/tmp/worktree"),
             session_cwd: PathBuf::from("/tmp/worktree"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );

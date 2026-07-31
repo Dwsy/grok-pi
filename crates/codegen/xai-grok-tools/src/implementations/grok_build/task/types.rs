@@ -10,7 +10,8 @@
 //!
 //! - `SubagentBackendResource` — wraps an `Arc<dyn SubagentBackend>` that
 //!   abstracts spawn/query/cancel (see [`super::backend`])
-//! - `SubagentDepthCounter` — tracks nesting depth (max 1, no recursive spawning)
+//! - `SubagentDepthCounter` — current nesting depth
+//! - `MaxSubagentDepth` — configured max nesting depth
 //! - `SessionIdResource` — carries the current session ID for parent scoping
 //! - `TaskModelValidator` — validates explicit model slugs before background spawn
 //!
@@ -847,9 +848,8 @@ pub enum SubagentEvent {
     ListActive(SubagentListActiveRequest),
     ListRunning(SubagentListRunningRequest),
     Completions(SubagentCompletionsRequest),
-    /// Fire-and-forget: drop buffered completions owned by a removed session
-    /// so unloaded sessions cannot leak entries into the shared buffer.
-    DiscardSessionCompletions {
+    /// Discard a closed session's buffered completions and cancel its children.
+    TeardownSession {
         parent_session_id: String,
     },
     Outstanding(SubagentOutstandingRequest),
@@ -865,62 +865,12 @@ pub enum SubagentEvent {
 
 // Resource types
 
-/// Unified sender for all subagent coordinator events.
-///
-/// Cloned into each session's `ToolContext` / `ToolBridge Resources` so
-/// that `TaskTool`, `TaskOutputTool`, `KillTaskTool`, completion
-/// reminders, compaction queries, and turn-end guards all send through
-/// a single channel.
+/// One shared channel to the subagent coordinator, cloned into each session.
 #[derive(Clone, Educe)]
 #[educe(Debug)]
 pub struct SubagentEventSender(#[educe(Debug(ignore))] pub mpsc::UnboundedSender<SubagentEvent>);
 
 register_resource!("grok_build", "SubagentEventSender", SubagentEventSender);
-
-// Mid-turn monitor event buffer
-
-/// A monitor event notification to be surfaced as a `<system-reminder>` mid-turn.
-#[derive(Debug, Clone)]
-pub struct MonitorEventNotification {
-    pub task_id: String,
-    pub event_text: String,
-    /// Session that owns the monitor which produced this event.
-    ///
-    /// In leader mode every session shares one [`MonitorEventBuffer`], so the
-    /// drain sites filter on this to avoid surfacing one session's monitor
-    /// events inside another session's turn. `None` for legacy / non-grok-build
-    /// backends, which any session drains for backwards compatibility.
-    pub owner_session_id: Option<String>,
-}
-
-impl MonitorEventNotification {
-    /// Whether this buffered event should surface in the session whose owner id
-    /// is `my_owner`. Mirrors `task_owned_by_session`: an event surfaces only
-    /// when it has no recorded owner (legacy) or its owner matches the draining
-    /// session. Foreign events stay buffered for their own session to drain.
-    pub fn owned_by_session(&self, my_owner: Option<&str>) -> bool {
-        match (my_owner, self.owner_session_id.as_deref()) {
-            (Some(me), Some(owner)) => me == owner,
-            _ => true,
-        }
-    }
-}
-
-/// Shared buffer for mid-turn monitor event notifications: an [`EventQueue`]
-/// of [`MonitorEventNotification`]. Producers `push_capped`; the turn loop
-/// drains its session's events via [`drain_owned`].
-pub type MonitorEventBuffer = xai_interjection_core::EventQueue<MonitorEventNotification>;
-
-register_resource!("grok_build", "MonitorEventBuffer", MonitorEventBuffer);
-
-/// Drain only `my_owner`'s events (the buffer is shared across sessions in
-/// leader mode); owner-less legacy events drain anywhere.
-pub fn drain_owned(
-    buffer: &MonitorEventBuffer,
-    my_owner: Option<&str>,
-) -> Vec<MonitorEventNotification> {
-    buffer.drain_matching(|e| e.owned_by_session(my_owner))
-}
 
 // Active subagent listing (compaction)
 
@@ -952,14 +902,17 @@ pub struct SubagentListActiveRequest {
     pub respond_to: oneshot::Sender<Vec<ActiveSubagentSummary>>,
 }
 
-/// Tracks nesting depth. Injected into child's Resources with depth+1.
-///
-/// Top-level sessions start at depth 0. Each child increments by 1.
-/// `TaskTool` rejects spawns when `depth >= MAX_SUBAGENT_DEPTH`.
+/// Current nesting depth (top-level = 0; child = parent + 1).
 #[derive(Debug, Clone)]
 pub struct SubagentDepthCounter(pub u32);
 
 register_resource!("grok_build", "SubagentDepthCounter", SubagentDepthCounter);
+
+/// Host-injected max nesting depth; absent → [`super::MAX_SUBAGENT_DEPTH`].
+#[derive(Debug, Clone, Copy)]
+pub struct MaxSubagentDepth(pub u32);
+
+register_resource!("grok_build", "MaxSubagentDepth", MaxSubagentDepth);
 
 /// Session-scoped validator for model-facing `Task.model` arguments.
 ///

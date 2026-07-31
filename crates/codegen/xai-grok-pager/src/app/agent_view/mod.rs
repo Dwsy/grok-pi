@@ -277,23 +277,26 @@ pub struct HitArea {
 /// Privacy upsell banner state on the agent view: whether the banner owns
 /// the banner slot this frame (`active`, set at draw start like
 /// `session_banner_active`; persists until acted on, so it is a tip
-/// occluder AND a tip-tick freezer) plus the three click targets.
+/// occluder AND a tip-tick freezer) plus the four click targets.
 #[derive(Debug, Default)]
 pub struct PrivacyBannerState {
     pub(crate) active: bool,
-    /// `[Accept]` (opt in; ack after ACP success).
-    pub(crate) hit_accept: HitArea,
-    /// `[Customize in settings]` (ack + open settings on coding_data_sharing).
-    pub(crate) hit_customize: HitArea,
-    /// Legal links line (opens the legal URL).
-    pub(crate) hit_legal: HitArea,
+    /// `[Opt in]` (opt in; ack only after ACP success).
+    pub(crate) hit_opt_in: HitArea,
+    /// `[Opt out]` (ack now; record the decline).
+    pub(crate) hit_opt_out: HitArea,
+    /// "Terms" link (opens the terms of service).
+    pub(crate) hit_terms: HitArea,
+    /// "Privacy Policy" link (opens the privacy policy).
+    pub(crate) hit_policy: HitArea,
 }
 impl PrivacyBannerState {
     /// Drop all click targets (slot not painted this frame).
     pub fn clear_hits(&mut self) {
-        self.hit_accept.clear();
-        self.hit_customize.clear();
-        self.hit_legal.clear();
+        self.hit_opt_in.clear();
+        self.hit_opt_out.clear();
+        self.hit_terms.clear();
+        self.hit_policy.clear();
     }
 }
 /// Banner-slot inputs to [`AgentView::draw`]. Slot precedence is computed
@@ -1400,6 +1403,15 @@ pub struct AgentView {
     /// Whether the `/share` slash command is available (mirrors
     /// `AppView::sharing_enabled`). Used to gate palette entries.
     pub sharing_enabled: bool,
+    /// Whether THIS session's scheduled fires run as detached background
+    /// subagents, as resolved by the shell when the session's actor spawned and
+    /// delivered on the `session/new` / `session/load` response. `/loop` reads
+    /// it to describe the runtime a fire will get. `None` until that response
+    /// lands (or against a shell that predates the key), where readers fall
+    /// back to `AppView::scheduler_background_loops_seed`. Deliberately NOT
+    /// refreshed by `x.ai/settings/update`: the fire side is pinned for the
+    /// session's lifetime, so a live mirror would drift out of agreement.
+    pub scheduler_background_loops: Option<bool>,
     /// Mirrors `AppView::usage_visible` (credit warning + `/usage manage`).
     pub billing_surface_visible: bool,
     /// Input flight recorder — rolling buffer of recent key events.

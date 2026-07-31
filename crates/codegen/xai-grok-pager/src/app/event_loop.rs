@@ -94,6 +94,11 @@ struct AgentLoadOutcome {
     /// client is driving mid-reconnect, adopted at finalize (mirrors the
     /// `SessionLoaded` adoption in `dispatch.rs`).
     running_prompt_id: Option<String>,
+    /// `x.ai/schedulerBackgroundLoops` from the reload response. A reconnect
+    /// re-spawns the session actor, which re-pins the fire mode, so the
+    /// pre-reconnect value can be stale — adopt the reloaded one or `/loop`
+    /// describes a runtime the new actor will not use.
+    scheduler_background_loops: Option<bool>,
 }
 
 /// Fields of the reconnect `session/load`, derived from the agent being
@@ -165,10 +170,11 @@ fn plan_reconnect_load(
 fn reconnect_restore_outcome(
     init_ok: bool,
     pending_agent_ids: &[super::agent::AgentId],
-    loads: &std::collections::HashMap<super::agent::AgentId, (bool, Option<String>)>,
+    loads: &std::collections::HashMap<super::agent::AgentId, (bool, Option<String>, Option<bool>)>,
     active_agent_id: Option<super::agent::AgentId>,
 ) -> (bool, bool) {
-    let load_ok = |id: &super::agent::AgentId| -> bool { loads.get(id).is_some_and(|(ok, _)| *ok) };
+    let load_ok =
+        |id: &super::agent::AgentId| -> bool { loads.get(id).is_some_and(|(ok, ..)| *ok) };
     let all_restored = init_ok && pending_agent_ids.iter().all(load_ok);
     let active_restored = init_ok
         && active_agent_id.is_some_and(|aid| pending_agent_ids.contains(&aid) && load_ok(&aid));
@@ -1196,6 +1202,18 @@ pub(crate) async fn run(
         .value,
     );
 
+    // Pre-arrival seed only. The authoritative per-session value rides the
+    // `session/new` / `session/load` response, but `/loop` can be reached from
+    // the session-less dashboard and from a session whose response has not
+    // landed yet; both need an answer now, and this is the same resolver the
+    // shell runs at spawn, so the seed agrees with the flag as it stands today.
+    app.scheduler_background_loops_seed =
+        xai_grok_shell::util::config::resolve_scheduler_background_loops(
+            remote_settings
+                .as_ref()
+                .and_then(|s| s.scheduler_background_loops),
+        );
+
     app.usage_billing_redirect_url = remote_settings
         .as_ref()
         .and_then(|s| s.usage_billing_redirect_url.clone());
@@ -1497,6 +1515,8 @@ pub(crate) async fn run(
 
     // Fire-and-forget XTVERSION query; must sit immediately before the input
     // reader thread is spawned so no earlier stdin consumer eats the reply.
+    // DA2 shares that constraint but runs earlier, in `init_terminal`, so its
+    // version is already resolved when the startup telemetry above is emitted.
     crate::terminal::xtversion::probe_at_startup();
 
     // Read terminal events on a dedicated thread and forward them over an mpsc
@@ -2701,6 +2721,10 @@ pub(crate) async fn run(
                                                     effects::parse_session_load_running_prompt_id(
                                                         resp.meta.as_ref(),
                                                     ),
+                                                scheduler_background_loops:
+                                                    effects::parse_session_scheduler_background_loops(
+                                                        resp.meta.as_ref(),
+                                                    ),
                                             });
                                         }
                                         Err(e) => {
@@ -2711,6 +2735,7 @@ pub(crate) async fn run(
                                                 agent_id,
                                                 success: false,
                                                 running_prompt_id: None,
+                                                scheduler_background_loops: None,
                                             });
                                         }
                                     }
@@ -2786,7 +2811,12 @@ pub(crate) async fn run(
                 let mut loads: std::collections::HashMap<_, _> = outcome
                     .loads
                     .into_iter()
-                    .map(|l| (l.agent_id, (l.success, l.running_prompt_id)))
+                    .map(|l| {
+                        (
+                            l.agent_id,
+                            (l.success, l.running_prompt_id, l.scheduler_background_loops),
+                        )
+                    })
                     .collect();
                 // Resolved BEFORE the finalize loop drains `loads` via `remove`
                 // (see `reconnect_restore_outcome`).
@@ -2802,8 +2832,14 @@ pub(crate) async fn run(
                 );
                 restore_dashboard_peek_before_reload(&mut app.dashboard, &mut app.agents);
                 for id in &pending.agent_ids {
-                    let (ok, running_prompt_id) = loads.remove(id).unwrap_or((false, None));
+                    let (ok, running_prompt_id, scheduler_background_loops) =
+                        loads.remove(id).unwrap_or((false, None, None));
                     if let Some(agent) = app.agents.get_mut(id) {
+                        // The reloaded actor re-pinned the fire mode; a failed
+                        // load leaves the previous value rather than guessing.
+                        if let Some(mode) = scheduler_background_loops {
+                            agent.scheduler_background_loops = Some(mode);
+                        }
                         agent.finalize_reload_and_maybe_adopt(
                             pending.generation,
                             ok,
@@ -3234,13 +3270,13 @@ async fn drain_and_process(
         }
         // Voice capture chord (Ctrl+Space or F8), handled here before normal
         // routing so the release reaches us and the key never lands as text.
-        // Hold-to-talk under Kitty (press records, release stops), else tap
-        // toggle. A release is only ours when a hold session owns it, so a bare
-        // Space release (Ctrl lifted first) stops hold-to-talk without eating
-        // every Space release during normal typing. `[ui].voice_keybind_enabled`
-        // (read live, like `voice_capture_mode`) silences chord presses without
-        // touching `/voice` — see `voice_chord_claims_event` for the exact
-        // press/release/hold gating.
+        // Hold-to-talk where releases are reported (press records, release
+        // stops), else tap toggle. A release is only ours when a hold session
+        // owns it, so a bare Space release (Ctrl lifted first) stops
+        // hold-to-talk without eating every Space release during normal typing.
+        // `[ui].voice_keybind_enabled` (read live, like `voice_capture_mode`)
+        // silences chord presses without touching `/voice` — see
+        // `voice_chord_claims_event` for the exact press/release/hold gating.
         if let Event::Key(ke) = ev
             && app.voice_mode_enabled
             && xai_grok_voice::AUDIO_SUPPORTED
@@ -3258,7 +3294,7 @@ async fn drain_and_process(
             ) == "hold";
             let action = voice_chord_action(
                 hold_mode,
-                crate::app::kitty_flags_pushed(),
+                crate::app::kitty_releases_reported(),
                 ke.kind,
                 app.voice_listening(),
                 app.voice_hold_owned(),
@@ -3479,19 +3515,18 @@ fn is_pasteable_key_event(ev: &Event) -> bool {
 
 /// Map a voice-chord key event to its action (pure, so it's unit-testable).
 ///
-/// Hold mode on Kitty is press-to-record / release-to-stop, but only a
-/// hold-*owned* session stops on release; a `/voice`/toggle session (not
-/// hold-owned) has no release of its own, so a press toggles it off. Elsewhere
-/// it's a tap toggle.
+/// Hold mode is press-to-record / release-to-stop, but only a hold-*owned*
+/// session stops on release; a `/voice`/toggle session (not hold-owned) has no
+/// release of its own, so a press toggles it off. Elsewhere it's a tap toggle.
 fn voice_chord_action(
     hold_mode: bool,
-    kitty: bool,
+    releases_reported: bool,
     kind: KeyEventKind,
     listening: bool,
     hold_owned: bool,
 ) -> Option<crate::app::actions::Action> {
     use crate::app::actions::Action;
-    if hold_mode && kitty {
+    if hold_mode && releases_reported {
         match kind {
             KeyEventKind::Press if !listening => Some(Action::EnableVoiceMode),
             KeyEventKind::Press if !hold_owned => Some(Action::VoiceToggle),
@@ -3838,8 +3873,8 @@ mod tests {
     #[test]
     fn voice_chord_action_cases() {
         use crate::app::actions::Action;
-        // (hold_mode, kitty, kind, listening, hold_owned) -> action tag, with the
-        // toggle-stop case being a past regression.
+        // (hold_mode, releases_reported, kind, listening, hold_owned) -> action
+        // tag, with the toggle-stop case being a past regression.
         let press = KeyEventKind::Press;
         let release = KeyEventKind::Release;
         let tag = |a: Option<Action>| match a {
@@ -3850,22 +3885,24 @@ mod tests {
             _ => "other",
         };
         let cases = [
-            // hold+Kitty: press idle starts; release stops; press on a hold-owned
-            // session waits; press on a non-hold (/voice/toggle) session toggles off.
+            // hold + releases: press idle starts; release stops; press on a
+            // hold-owned session waits; press on a non-hold (/voice/toggle)
+            // session toggles off.
             ((true, true, press, false, false), "start"),
             ((true, true, release, true, true), "stop"),
             ((true, true, press, true, true), "none"),
             ((true, true, press, true, false), "toggle"),
-            // Non-hold (toggle mode or no Kitty releases): press toggles, release noops.
+            // Non-hold (toggle mode or no reported releases): press toggles,
+            // release noops.
             ((false, false, press, false, false), "toggle"),
             ((false, false, release, true, false), "none"),
             ((true, false, release, true, false), "none"),
         ];
-        for ((hold, kitty, kind, listening, owned), want) in cases {
+        for ((hold, releases, kind, listening, owned), want) in cases {
             assert_eq!(
-                tag(voice_chord_action(hold, kitty, kind, listening, owned)),
+                tag(voice_chord_action(hold, releases, kind, listening, owned)),
                 want,
-                "voice_chord_action({hold},{kitty},{kind:?},{listening},{owned})"
+                "voice_chord_action({hold},{releases},{kind:?},{listening},{owned})"
             );
         }
     }
@@ -4031,8 +4068,8 @@ mod tests {
         let active = AgentId(0);
         let background = AgentId(1);
         let mut loads = std::collections::HashMap::new();
-        loads.insert(active, (true, None));
-        loads.insert(background, (false, None));
+        loads.insert(active, (true, None, None));
+        loads.insert(background, (false, None, None));
         let pending = vec![active, background];
 
         let (all_restored, active_restored) =
@@ -4055,8 +4092,8 @@ mod tests {
         let active = AgentId(0);
         let background = AgentId(1);
         let mut loads = std::collections::HashMap::new();
-        loads.insert(active, (false, None));
-        loads.insert(background, (true, None));
+        loads.insert(active, (false, None, None));
+        loads.insert(background, (true, None, None));
         let pending = vec![active, background];
 
         let (all_restored, active_restored) =
@@ -4075,7 +4112,7 @@ mod tests {
         use super::super::agent::AgentId;
         let active = AgentId(0);
         let mut loads = std::collections::HashMap::new();
-        loads.insert(active, (true, None));
+        loads.insert(active, (true, None, None));
         let pending = vec![active];
 
         let (all_restored, active_restored) =
@@ -4105,7 +4142,7 @@ mod tests {
         use super::super::agent::AgentId;
         let background = AgentId(1);
         let mut loads = std::collections::HashMap::new();
-        loads.insert(background, (true, None));
+        loads.insert(background, (true, None, None));
         let pending = vec![background];
 
         let (all_restored, active_restored) =

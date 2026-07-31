@@ -273,6 +273,7 @@ pub(crate) async fn spawn_session_actor(
     goal_enabled: bool,
     background_workflows_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -729,47 +730,8 @@ pub(crate) async fn spawn_session_actor(
         };
     let bridge_state_path =
         crate::session::persistence::session_dir(&session_info).join("tool_state.json");
-    let initial_agent_type = Some(agent_definition.name.clone());
-    let harness_metrics = if telemetry_enabled || xai_grok_telemetry::external::is_active() {
-        let plugin_names = plugin_registry
-            .as_ref()
-            .map(|reg| {
-                reg.active_plugins()
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        Some(super::telemetry::SessionHarnessMetrics {
-            session_id: session_info.id.0.to_string(),
-            client_identifier: session_client_identifier.clone(),
-            model_id: session_model_id.0.to_string(),
-            agent_name: agent_definition.name.clone(),
-            permission_mode: if session_yolo_mode {
-                xai_grok_telemetry::enums::PermissionMode::AlwaysApprove
-            } else if session_auto_mode
-                && crate::util::config::auto_permission_mode_enabled_from_disk()
-            {
-                xai_grok_telemetry::enums::PermissionMode::Auto
-            } else {
-                xai_grok_telemetry::enums::PermissionMode::Ask
-            },
-            mcp_server_names: mcp_servers
-                .iter()
-                .map(|s| mcp_server_name(s).to_owned())
-                .collect(),
-            lsp_server_names: tool_context.lsp_server_names.clone(),
-            memory_enabled: memory_config.is_some(),
-            auto_update,
-            cwd: tool_context.cwd.as_str().to_owned(),
-            skills_config: skills_config.clone(),
-            compat,
-            plugin_registry: plugin_registry.clone(),
-            plugin_names,
-        })
-    } else {
-        None
-    };
+    let initial_agent_name = agent_definition.name.clone();
+    let initial_agent_type = Some(initial_agent_name.clone());
     let compaction_policy = xai_grok_agent::CompactionPolicy {
         auto_compact_threshold_percent: auto_compact_threshold_percent as u32,
         compact_model: None,
@@ -925,6 +887,11 @@ pub(crate) async fn spawn_session_actor(
     let context_window_tokens = context_window_override
         .map(|c| c.get())
         .unwrap_or(sampling_config.context_window);
+    let scheduler_background_loops = crate::util::config::resolve_scheduler_background_loops(
+        remote_settings
+            .as_ref()
+            .and_then(|r| r.scheduler_background_loops),
+    );
     let managed_gateway_tool_client = auth_manager.as_ref().map(|am| {
         xai_grok_tools::types::resources::ManagedGatewayToolClient(Arc::new(
             ShellManagedGatewayToolClient {
@@ -1003,15 +970,12 @@ pub(crate) async fn spawn_session_actor(
         monitor_event_buffer: tool_context.monitor_event_buffer.clone(),
         user_question_tx: user_question_tx.clone(),
         subagent_depth: tool_context.subagent_depth,
+        subagents_max_depth,
         session_id_str: session_info.id.0.to_string(),
         blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
         respect_gitignore,
         path_not_found_hints,
-        scheduler_background_loops: crate::util::config::resolve_scheduler_background_loops(
-            remote_settings
-                .as_ref()
-                .and_then(|r| r.scheduler_background_loops),
-        ),
+        scheduler_background_loops,
         mcp_state: mcp_state.clone(),
         managed_gateway_tool_client: managed_gateway_tool_client.clone(),
         is_non_interactive: startup_hints.non_interactive,
@@ -1049,6 +1013,46 @@ pub(crate) async fn spawn_session_actor(
         .tool_bridge()
         .update_resource(task_wake_suppressed)
         .await;
+    let harness_metrics = if telemetry_enabled || xai_grok_telemetry::external::is_active() {
+        let plugin_names = plugin_registry
+            .as_ref()
+            .map(|reg| {
+                reg.active_plugins()
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(super::telemetry::SessionHarnessMetrics {
+            session_id: session_info.id.0.to_string(),
+            client_identifier: session_client_identifier.clone(),
+            model_id: session_model_id.0.to_string(),
+            agent_name: initial_agent_name,
+            permission_mode: if session_yolo_mode {
+                xai_grok_telemetry::enums::PermissionMode::AlwaysApprove
+            } else if session_auto_mode
+                && crate::util::config::auto_permission_mode_enabled_from_disk()
+            {
+                xai_grok_telemetry::enums::PermissionMode::Auto
+            } else {
+                xai_grok_telemetry::enums::PermissionMode::Ask
+            },
+            mcp_server_names: mcp_servers
+                .iter()
+                .map(|s| mcp_server_name(s).to_owned())
+                .collect(),
+            lsp_server_names: tool_context.lsp_server_names.clone(),
+            memory_enabled: memory_config.is_some(),
+            auto_update,
+            cwd: tool_context.cwd.as_str().to_owned(),
+            skill_names: agent.tool_bridge().skill_discovery_snapshot_names().await,
+            compat,
+            plugin_registry: plugin_registry.clone(),
+            plugin_names,
+        })
+    } else {
+        None
+    };
     let resolved_task_output =
         xai_grok_tools::reminders::task_completion::resolve_task_output_tool_name(
             agent.tool_bridge(),
@@ -2088,6 +2092,7 @@ pub(crate) async fn spawn_session_actor(
             upload_failures_since_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tool_context: tool_context_for_handle,
             model_id: session_model_id,
+            scheduler_background_loops,
             reasoning_effort: sampling_config.reasoning_effort,
             yolo_mode: session_yolo_mode,
             origin_client: origin_client.clone(),
@@ -2218,6 +2223,7 @@ pub(crate) async fn spawn_session_on_thread(
     goal_enabled: bool,
     background_workflows_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -2390,6 +2396,7 @@ pub(crate) async fn spawn_session_on_thread(
                         goal_enabled,
                         background_workflows_enabled,
                         subagents_enabled,
+                        subagents_max_depth,
                         ask_user_question_enabled,
                         client_hooks,
                         prompt_display_cwd,
