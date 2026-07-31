@@ -621,6 +621,9 @@ pub enum Action {
     /// summary. SHELL-owned: updates the process-wide cache mirror and
     /// persists to `[ui].collapsed_edit_blocks` via `Effect::PersistSetting`.
     SetCollapsedEditBlocks(bool),
+    /// Set the grok-pi-only side-by-side edit renderer preference. PAGER-owned,
+    /// process-local, default off, and applied on the next render frame.
+    SetSideBySideEdit(bool),
     /// Set the grok-pi Ctrl+O tool expansion scope (`write_edit` or `all_tools`).
     SetCtrlOToolExpansion(String),
     /// Set which fields grok-pi Bash/run headers render.

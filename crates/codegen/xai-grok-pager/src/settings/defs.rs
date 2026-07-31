@@ -1113,6 +1113,33 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: false,
         },
+        // PAGER-owned, grok-pi-only renderer preference. Kept process-local so
+        // enabling the experimental layout does not expand the shared shell
+        // config schema. Default OFF; narrow terminals still render unified.
+        SettingMeta {
+            key: "side_by_side_edit",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Pager,
+            label: "Side-by-side edit diffs",
+            description: "Show old and new edit content in parallel columns when the terminal is wide enough; narrow layouts stay unified.",
+            keywords: &[
+                "edit",
+                "diff",
+                "side-by-side",
+                "split",
+                "parallel",
+                "old",
+                "new",
+                "columns",
+                "pi",
+            ],
+            kind: SettingKind::Bool {
+                default: crate::appearance::cache::SIDE_BY_SIDE_EDIT_DEFAULT,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
         // SHELL-owned: `[ui].ctrl_o_tool_expansion`. Only grok-pi consumes this
         // setting; normal Grok retains its existing Ctrl+O behavior.
         SettingMeta {

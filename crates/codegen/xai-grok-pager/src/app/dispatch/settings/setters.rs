@@ -567,6 +567,29 @@ pub(in crate::app::dispatch) fn set_collapsed_edit_blocks(
     }]
 }
 
+pub(super) fn set_side_by_side_edit_inner(new: bool) {
+    crate::appearance::cache::set_side_by_side_edit(new);
+}
+
+/// Set the grok-pi-only side-by-side edit renderer preference.
+/// PAGER-owned and intentionally process-local; no persistence effect.
+pub(in crate::app::dispatch) fn set_side_by_side_edit(app: &mut AppView, new: bool) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_side_by_side_edit();
+    if prev == new {
+        return vec![];
+    }
+    set_side_by_side_edit_inner(new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "side_by_side_edit",
+        value = new,
+        "setting changed",
+    );
+    app.show_toast(&save_success_toast("Side-by-side edit diffs", new));
+    vec![]
+}
+
 /// Set grok-pi's Ctrl+O expansion scope. SHELL-owned: persists to
 /// `[ui].ctrl_o_tool_expansion` and is read on the hot key path.
 pub(in crate::app::dispatch) fn set_ctrl_o_tool_expansion(

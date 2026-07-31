@@ -11,10 +11,12 @@
 //! Default consts are hardcoded for `Cell::new` (`const` required) and
 //! asserted in tests to match `UiConfig::default()`.
 //!
-//! Thread-local `Cell<bool>` is safe because TUI render + dispatch run
-//! on a single thread. Multi-thread use would require `AtomicBool`.
+//! Most caches use thread-local `Cell<bool>` because TUI render + dispatch run
+//! on a single thread. The grok-pi-only side-by-side preference uses an
+//! `AtomicBool` so external settings dispatch and render reads share one value.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use xai_grok_shared::ui_config::UiConfig;
 
@@ -418,6 +420,23 @@ pub fn load_collapsed_edit_blocks() -> bool {
 pub fn set_collapsed_edit_blocks(enabled: bool) {
     COLLAPSED_EDIT_BLOCKS_CURRENT.with(|c| c.set(enabled));
     COLLAPSED_EDIT_BLOCKS_LOADED.with(|l| l.set(true));
+}
+
+// -- Side-by-side edit diffs --------------------------------------------------
+
+/// Default for the grok-pi-only F2 side-by-side edit preference.
+pub const SIDE_BY_SIDE_EDIT_DEFAULT: bool = false;
+
+/// grok-pi-only F2 preference. This is intentionally process-local: it is an
+/// optional renderer choice, not part of the shared shell config contract.
+static SIDE_BY_SIDE_EDIT_CURRENT: AtomicBool = AtomicBool::new(SIDE_BY_SIDE_EDIT_DEFAULT);
+
+pub fn load_side_by_side_edit() -> bool {
+    SIDE_BY_SIDE_EDIT_CURRENT.load(Ordering::Relaxed)
+}
+
+pub fn set_side_by_side_edit(enabled: bool) {
+    SIDE_BY_SIDE_EDIT_CURRENT.store(enabled, Ordering::Relaxed);
 }
 
 // -- Prompt suggestions (tab autocomplete) -----------------------------------

@@ -1,6 +1,6 @@
 {
-  "description": "SHA-256 of native Grok TUI/rendering/input/markdown components. Matches the uploaded grok-build baseline except the declared welcome seams (views/welcome/logo.rs brand art override + views/welcome/mod.rs external menu policy).",
-  "fileCount": 283,
+  "description": "SHA-256 of native Grok TUI/rendering/input/markdown components. Matches the uploaded grok-build baseline except declared native seams, including the optional sibling EditTool side-by-side layout renderer and its narrow hooks.",
+  "fileCount": 284,
   "files": {
     "crates/codegen/xai-grok-markdown-core/Cargo.toml": "67d0718e559d810afe744f7488c0ac7c5b8e197cfed9b3f4d764bd335b718495",
     "crates/codegen/xai-grok-markdown-core/src/lib.rs": "88acd29b890dbd928865992f2109001e7a38b312f11bffda6088d51772bd1846",
@@ -113,6 +113,7 @@
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/read.rs": "5f81396fd245c6dd3bcf36da95a87a058dc49445fddd811a2ced856ca70bd2de",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/search.rs": "5b86f262f38cc50676f1bf0c191ce42e674e2e2e6007ba67fc73b5f51e40a4fe",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/search_tool.rs": "76dbe3bf3884fb2d0d9edcad0b79ea61146f229b6343e07ca05bc8c78080f51c",
+    "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/side_by_side_edit.rs": "51892179847a444eab1ccf91fd8caf2ef33a95d615c5fe8c4b141570d82213b2",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/snapshots/xai_grok_pager__scrollback__blocks__tool__edit__tests__diff_basic.snap": "5a86c52ce84625e0e561a1584dc84c735ba16cd9a1ccb9b62a502732f66e49a3",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/snapshots/xai_grok_pager__scrollback__blocks__tool__edit__tests__diff_basic_dual.snap": "a6774810b3619be23f2d43aa1c5b2eb3f73b00ee521e2fa3adbcd654b2b3701e",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/snapshots/xai_grok_pager__scrollback__blocks__tool__edit__tests__diff_multiple_hunks.snap": "2e9040e9269673ac032f46c623eb0fab66f55bd6fbe8c2ca459774ac6e78ea17",

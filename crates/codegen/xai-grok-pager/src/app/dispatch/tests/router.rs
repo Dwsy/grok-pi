@@ -2108,12 +2108,10 @@ fn pr13_each_setter_writes_to_its_own_mirror() {
     assert_eq!(app.auto_update, Some(false));
     assert_eq!(app.show_tips, Some(false));
 }
-/// Three-way alignment pin: the PAGER registry default must agree
-/// with `PagerLocalSnapshot::default()` (covered by
-/// `defaults_match_pager_state` in `registry::tests`) AND with
-/// `AgentView::new`'s runtime initializer. This is the third leg
-/// of the triangle that was previously missing — the
-/// registry test alone can't see `AgentView::new`'s constant.
+/// Runtime alignment pin: each PAGER registry default must agree with its
+/// construction-time source. Agent-owned values are checked against
+/// `AgentView::new`; external-only process-local values are checked against
+/// their cache initializer.
 #[test]
 fn pager_registry_default_matches_agent_view_new_initializer() {
     use crate::settings::{SettingKind, SettingOwner, SettingsRegistry};
@@ -2161,6 +2159,14 @@ fn pager_registry_default_matches_agent_view_new_initializer() {
                          from the agent's default appearance config ({live}). Update one \
                          to match the other — ScrollConfig::default() is the source of \
                          truth.",
+                );
+            }
+            ("side_by_side_edit", SettingKind::Bool { default }) => {
+                assert_eq!(
+                    *default,
+                    crate::appearance::cache::SIDE_BY_SIDE_EDIT_DEFAULT,
+                    "registry default for `side_by_side_edit` drifts from the process-local \
+                     renderer preference initializer",
                 );
             }
             _ => {

@@ -2366,6 +2366,7 @@ fn pr3_esc_in_picker_reverts_to_original() {
         },
         restart_required: false,
         hidden_in_minimal: false,
+        external_only: false,
     }]);
     let mut s = SettingsModalState::new(
         Arc::new(registry),

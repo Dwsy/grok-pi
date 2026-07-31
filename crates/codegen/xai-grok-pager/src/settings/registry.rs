@@ -613,6 +613,9 @@ pub fn current_value_for(
         "collapsed_edit_blocks" => Some(SettingValue::Bool(
             crate::appearance::cache::load_collapsed_edit_blocks(),
         )),
+        "side_by_side_edit" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_side_by_side_edit(),
+        )),
         "ctrl_o_tool_expansion" => Some(SettingValue::Enum(
             match ui.ctrl_o_tool_expansion.as_deref() {
                 Some("all_tools") => "all_tools",
@@ -1418,9 +1421,10 @@ mod tests {
         }
     }
 
-    /// Every PAGER-owned setting's default must match
-    /// `PagerLocalSnapshot::default()`. Three-way alignment (registry
-    /// → snapshot → `AgentView::new`) is enforced across multiple tests.
+    /// Every PAGER-owned setting's default must match its runtime initializer:
+    /// normally `PagerLocalSnapshot::default()`, with explicit arms for
+    /// external-only process-local caches. Three-way alignment (registry →
+    /// snapshot/cache → runtime construction) is enforced across tests.
     #[test]
     fn defaults_match_pager_state() {
         let reg = SettingsRegistry::defaults();
@@ -1446,6 +1450,13 @@ mod tests {
                         crate::appearance::ScrollConfig::default().respect_manual_folds,
                         "respect_manual_folds default drifts from ScrollConfig::default() — \
                          the appearance config is the source of truth"
+                    );
+                }
+                ("side_by_side_edit", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default,
+                        crate::appearance::cache::SIDE_BY_SIDE_EDIT_DEFAULT,
+                        "side_by_side_edit default drifts from the process-local cache initializer"
                     );
                 }
                 // plan_mode: per-session, not persisted.

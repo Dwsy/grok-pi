@@ -1106,6 +1106,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetThinkingBorderColors(v) => set_thinking_border_colors(app, v),
         Action::SetGroupToolVerbs(v) => set_group_tool_verbs(app, v),
         Action::SetCollapsedEditBlocks(v) => set_collapsed_edit_blocks(app, v),
+        Action::SetSideBySideEdit(v) => set_side_by_side_edit(app, v),
         Action::SetCtrlOToolExpansion(v) => set_ctrl_o_tool_expansion(app, v),
         Action::SetPiBashRunDisplay(v) => set_pi_bash_run_display(app, v),
         Action::SetPromptSuggestions(v) => set_prompt_suggestions(app, v),

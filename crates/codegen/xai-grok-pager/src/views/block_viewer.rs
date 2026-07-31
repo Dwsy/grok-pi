@@ -85,12 +85,53 @@ impl ListItem for ContentLine {
 // DiffLineMeta — per-item diff metadata for edit viewer patch copy
 // ---------------------------------------------------------------------------
 
-/// Metadata for a single diff line, stored parallel to `items` in the edit viewer.
-pub struct DiffLineMeta {
-    pub tag: similar::ChangeTag,
-    pub text: String,
-    pub lo: usize,
-    pub ln: usize,
+/// Metadata for one rendered row, stored parallel to `items` in the edit viewer.
+/// A side-by-side row may carry both source lines.
+struct DiffLineMetaLine {
+    tag: similar::ChangeTag,
+    text: String,
+    lo: usize,
+    ln: usize,
+}
+
+struct DiffLineMeta {
+    old: Option<DiffLineMetaLine>,
+    new: Option<DiffLineMetaLine>,
+}
+
+impl DiffLineMeta {
+    fn from_pair(pair: &(Option<crate::diff::DiffLine>, Option<crate::diff::DiffLine>)) -> Self {
+        let to_meta = |line: &crate::diff::DiffLine| DiffLineMetaLine {
+            tag: line.tag,
+            text: line.text.clone(),
+            lo: line.lo,
+            ln: line.ln,
+        };
+        Self {
+            old: pair.0.as_ref().map(to_meta),
+            new: pair.1.as_ref().map(to_meta),
+        }
+    }
+}
+
+fn flatten_diff_meta<'a>(
+    rows: impl IntoIterator<Item = &'a DiffLineMeta>,
+) -> Vec<&'a DiffLineMetaLine> {
+    let mut entries = Vec::new();
+    for row in rows {
+        if let Some(old) = row.old.as_ref() {
+            entries.push(old);
+        }
+        if let Some(new) = row.new.as_ref()
+            && !matches!(
+                row.old.as_ref().map(|old| old.tag),
+                Some(similar::ChangeTag::Equal)
+            )
+        {
+            entries.push(new);
+        }
+    }
+    entries
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +182,10 @@ pub struct BlockViewerPane {
     items: Vec<ContentLine>,
     /// Cached content area from last render (for mouse hit-testing).
     last_content_area: Rect,
+    /// Code-review edit viewers retain the upstream unified dual-number layout.
+    edit_review: bool,
+    /// F2 side-by-side state used for the last edit-item build.
+    last_edit_side_by_side: bool,
 
     /// Set by handle_key when 'r' is pressed. Caller should toggle raw mode
     /// on the entry and call rebuild_items().
@@ -263,6 +308,8 @@ impl BlockViewerPane {
             },
             items,
             last_content_area: Rect::default(),
+            edit_review: false,
+            last_edit_side_by_side: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -317,6 +364,8 @@ impl BlockViewerPane {
             list_style,
             items,
             last_content_area: Rect::default(),
+            edit_review: false,
+            last_edit_side_by_side: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -370,6 +419,8 @@ impl BlockViewerPane {
             list_style: ListPaneStyle::default(),
             items,
             last_content_area: Rect::default(),
+            edit_review: false,
+            last_edit_side_by_side: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -691,6 +742,8 @@ impl BlockViewerPane {
             list_style,
             items,
             last_content_area: Rect::default(),
+            edit_review: false,
+            last_edit_side_by_side: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -760,6 +813,8 @@ impl BlockViewerPane {
             },
             items,
             last_content_area: Rect::default(),
+            edit_review: false,
+            last_edit_side_by_side: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -845,7 +900,7 @@ impl BlockViewerPane {
     fn for_edit_with_options(
         entry_id: EntryId,
         entry: &ScrollbackEntry,
-        dual_line_numbers: bool,
+        edit_review: bool,
     ) -> Option<Self> {
         let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block else {
             return None;
@@ -868,7 +923,7 @@ impl BlockViewerPane {
         list_state.set_clipboard_provider(Box::new(SystemClipboard));
 
         let theme = Theme::current();
-        let (items, diff_meta) = Self::build_edit_items(edit, &theme, dual_line_numbers);
+        let (items, diff_meta) = Self::build_edit_items(edit, &theme, 500, edit_review);
 
         Some(Self {
             entry_id,
@@ -880,6 +935,8 @@ impl BlockViewerPane {
             },
             items,
             last_content_area: Rect::default(),
+            edit_review,
+            last_edit_side_by_side: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -901,55 +958,36 @@ impl BlockViewerPane {
     fn build_edit_items(
         edit: &crate::scrollback::blocks::EditToolCallBlock,
         theme: &Theme,
-        dual_line_numbers: bool,
+        width: u16,
+        edit_review: bool,
     ) -> (Vec<ContentLine>, Vec<Option<DiffLineMeta>>) {
         use crate::scrollback::blocks::DiffRenderConfig;
 
         let config = DiffRenderConfig {
-            dual_line_numbers,
+            dual_line_numbers: edit_review,
             ..DiffRenderConfig::default()
         };
-        // Block-owned dispatch so the viewer paints the same highlight phase
-        // (incl. the file-scoped upgrade) as the scrollback output.
-        // Width 500 keeps gutters single-line; ListPane wrap (`w`) reflows content.
-        let rendered = edit.render_diff_lines(
-            theme, 500, // wide width — NoWrap mode for gutter fidelity
-            &config,
-        );
-
-        // Build a flat list of DiffLine references from all hunks, interleaving
-        // None for separator lines (which render_diff_lines inserts).
-        // The rendered output has: [hunk0 lines...] [separator] [hunk1 lines...] ...
-        let mut meta_source: Vec<Option<&crate::diff::DiffLine>> = Vec::new();
-        for (i, hunk) in edit.hunks.iter().enumerate() {
-            if i > 0 && !config.hunk_separator.is_empty() {
-                meta_source.push(None); // separator line
-            }
-            for diff_line in hunk {
-                meta_source.push(Some(diff_line));
-                // Wrapped lines: render_diff_hunk_highlighted may produce multiple
-                // DiffLineOutput per DiffLine. For now, assume 1:1 mapping since
-                // we use width=500 (very wide, unlikely to wrap).
-            }
-        }
+        // Normal viewers follow the live F2 preference and width fallback.
+        // Review viewers retain the upstream unified dual-number contract.
+        let rendered = if edit_review {
+            edit.render_unified_diff_lines(theme, width, &config)
+        } else {
+            edit.render_diff_lines(theme, width, &config)
+        };
 
         let mut items = Vec::with_capacity(rendered.len());
         let mut diff_meta = Vec::with_capacity(rendered.len());
 
         for (i, dl) in rendered.into_iter().enumerate() {
             let plain: String = dl.line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let source = dl.source.as_ref().map(DiffLineMeta::from_pair);
             items.push(ContentLine {
                 content: dl.line,
                 plain_text: plain,
                 id: i as u64,
                 bg: dl.background,
             });
-            diff_meta.push(meta_source.get(i).copied().flatten().map(|d| DiffLineMeta {
-                tag: d.tag,
-                text: d.text.clone(),
-                lo: d.lo,
-                ln: d.ln,
-            }));
+            diff_meta.push(source);
         }
 
         (items, diff_meta)
@@ -1209,10 +1247,10 @@ impl BlockViewerPane {
         out.push_str(&format!("--- a/{path}\n"));
         out.push_str(&format!("+++ b/{path}\n"));
 
-        // Collect non-None entries in the range
-        let entries: Vec<&DiffLineMeta> = range
-            .filter_map(|i| self.diff_meta.get(i).and_then(|m| m.as_ref()))
-            .collect();
+        // Flatten each rendered row back into patch order. Equal rows are
+        // represented on both sides for rendering but occur once in a patch.
+        let entries =
+            flatten_diff_meta(range.filter_map(|i| self.diff_meta.get(i).and_then(|m| m.as_ref())));
         if entries.is_empty() {
             return None;
         }
@@ -1737,7 +1775,8 @@ impl BlockViewerPane {
 
         // Detect theme switch and rebuild items + list style.
         let current_theme = Theme::current_kind();
-        if current_theme != self.last_theme {
+        let theme_changed = current_theme != self.last_theme;
+        if theme_changed {
             self.last_theme = current_theme;
             self.list_style = match self.kind {
                 ViewerKind::BgTask | ViewerKind::Execute => ListPaneStyle {
@@ -1764,6 +1803,27 @@ impl BlockViewerPane {
                     self.last_generation = u64::MAX;
                 }
                 _ => {}
+            }
+        }
+
+        if self.kind == ViewerKind::Edit {
+            let side_by_side =
+                !self.edit_review && crate::appearance::cache::load_side_by_side_edit();
+            let layout_changed = self.last_content_area.width != content_area.width
+                || self.last_edit_side_by_side != side_by_side;
+            if theme_changed || layout_changed {
+                if let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block {
+                    let (items, diff_meta) = Self::build_edit_items(
+                        edit,
+                        &theme,
+                        content_area.width.max(1),
+                        self.edit_review,
+                    );
+                    self.items = items;
+                    self.diff_meta = diff_meta;
+                    self.list_state.invalidate_layout();
+                }
+                self.last_edit_side_by_side = side_by_side;
             }
         }
 
@@ -1826,5 +1886,53 @@ impl BlockViewerPane {
                 .style(self.list_style)
                 .render(render_area, buf, &mut self.list_state);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::DiffLine;
+    use similar::ChangeTag;
+
+    #[test]
+    fn flatten_side_by_side_meta_keeps_patch_order_and_dedupes_equal() {
+        let rows = [
+            DiffLineMeta::from_pair(&(
+                Some(DiffLine {
+                    text: "old\n".into(),
+                    lo: 5,
+                    ln: 0,
+                    tag: ChangeTag::Delete,
+                }),
+                Some(DiffLine {
+                    text: "new\n".into(),
+                    lo: 0,
+                    ln: 5,
+                    tag: ChangeTag::Insert,
+                }),
+            )),
+            DiffLineMeta::from_pair(&(
+                Some(DiffLine {
+                    text: "same\n".into(),
+                    lo: 6,
+                    ln: 6,
+                    tag: ChangeTag::Equal,
+                }),
+                Some(DiffLine {
+                    text: "same\n".into(),
+                    lo: 6,
+                    ln: 6,
+                    tag: ChangeTag::Equal,
+                }),
+            )),
+        ];
+        let entries = flatten_diff_meta(rows.iter());
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].tag, ChangeTag::Delete);
+        assert_eq!(entries[1].tag, ChangeTag::Insert);
+        assert_eq!(entries[2].tag, ChangeTag::Equal);
+        assert_eq!(entries[2].text, "same\n");
     }
 }

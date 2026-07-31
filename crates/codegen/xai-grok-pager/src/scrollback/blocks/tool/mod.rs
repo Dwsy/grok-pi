@@ -10,6 +10,7 @@ mod other;
 mod read;
 pub mod search;
 mod search_tool;
+mod side_by_side_edit;
 mod use_tool;
 mod web_fetch;
 mod web_search;

@@ -227,7 +227,12 @@ def main() -> int:
     # Focused renderer manifest gives reviewers a compact list of the actual
     # TUI, input, slash, scrollback, minimal and Markdown files.
     renderer_manifest = json.loads(read(docs / "native_renderer_sha256.json"))
-    renderer_declared_seams = {
+    renderer_declared_modified = {
+        # EditTool hook/viewer seam: delegates to the sibling layout renderer
+        # while retaining the native unified renderer and patch-copy behavior.
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/edit.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/block_viewer.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs",
@@ -235,18 +240,29 @@ def main() -> int:
         # native while external compositions select their own static topics.
         "crates/codegen/xai-grok-pager/src/views/tutorial.rs",
     }
+    renderer_declared_added = {
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/side_by_side_edit.rs",
+    }
+    renderer_declared_seams = renderer_declared_modified | renderer_declared_added
     renderer_mismatches = [
         rel
         for rel, expected in renderer_manifest["files"].items()
         if rel not in renderer_declared_seams
         and (not (ws / rel).exists() or sha256(ws / rel) != expected)
     ]
+    renderer_seams_declared = (
+        renderer_declared_modified <= allowed_modified
+        and renderer_declared_added <= allowed_added_files
+    )
     check(
         "message_animation_renderer_seams_are_declared",
-        renderer_declared_seams <= allowed_modified,
-        f"{len(renderer_declared_seams)} exact native renderer/state seams are declared"
-        if renderer_declared_seams <= allowed_modified
-        else f"missing message-animation seams: {sorted(renderer_declared_seams - allowed_modified)}",
+        renderer_seams_declared,
+        f"{len(renderer_declared_modified)} modified and {len(renderer_declared_added)} added native renderer/state seams are declared"
+        if renderer_seams_declared
+        else (
+            f"missing modified seams: {sorted(renderer_declared_modified - allowed_modified)}; "
+            f"missing added seams: {sorted(renderer_declared_added - allowed_added_files)}"
+        ),
     )
     unchanged_renderer_count = renderer_manifest["fileCount"] - len(renderer_declared_seams)
     check(
@@ -318,6 +334,13 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/scrollback/block.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/state/mod.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/wrappers/entry_renderer.rs",
+        # Native EditTool hook/viewer seam. The optional parallel layout lives
+        # in an explicitly allowed sibling source file, not inside edit.rs.
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/edit.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/block_viewer.rs",
+        "crates/codegen/xai-grok-pager/src/settings/registry.rs",
+        "crates/codegen/xai-grok-pager-render/src/appearance/cache.rs",
         # Narrow branding seam: process-wide logo override for external hosts
         # (e.g. grok-pi π art). Layout/shimmer still use the native renderer.
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs",

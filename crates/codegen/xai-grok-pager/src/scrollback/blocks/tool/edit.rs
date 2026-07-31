@@ -114,7 +114,7 @@ const GUTTER_GAP: &str = " ";
 const CONTENT_GAP: &str = "  ";
 
 /// Expand tabs using the global tab_width (`Cow::Borrowed` when none).
-fn expand_tabs(text: &str) -> Cow<'_, str> {
+pub(super) fn expand_tabs(text: &str) -> Cow<'_, str> {
     let tw = crate::appearance::tab_width();
     if tw == 0 || !text.contains('\t') {
         return Cow::Borrowed(text);
@@ -122,10 +122,24 @@ fn expand_tabs(text: &str) -> Cow<'_, str> {
     Cow::Owned(text.replace('\t', &" ".repeat(tw as usize)))
 }
 
+/// Source lines represented by one rendered row: `(old, new)`.
+pub(crate) type DiffLinePair = (Option<crate::diff::DiffLine>, Option<crate::diff::DiffLine>);
+
+fn diff_line_pair_from_line(line: &crate::diff::DiffLine) -> DiffLinePair {
+    match line.tag {
+        ChangeTag::Equal => (Some(line.clone()), Some(line.clone())),
+        ChangeTag::Delete => (Some(line.clone()), None),
+        ChangeTag::Insert => (None, Some(line.clone())),
+    }
+}
+
 /// A rendered diff line with optional background color.
 pub struct DiffLineOutput {
     pub line: Line<'static>,
     pub background: Option<Color>,
+    /// Source lines represented by this rendered row. Used by the fullscreen
+    /// viewer to preserve patch-copy semantics in either layout.
+    pub(crate) source: Option<DiffLinePair>,
     /// Column where background starts (for partial background).
     pub content_start_col: u16,
     /// Number of gutter spans at the start of this line (for selection exclusion).
@@ -189,6 +203,7 @@ fn render_diff_hunks_core(
             lines.push(DiffLineOutput {
                 line: sep_line,
                 background: None,
+                source: None,
                 content_start_col: 0,
                 gutter_span_count: 0,
                 content_text: String::new(),
@@ -357,7 +372,7 @@ pub fn render_diff_hunks_with_styles(
 /// with a solid line FG); Delete never (it keeps the per-hunk syntect paint the
 /// user already saw). `None` — missing line, text drift, or nothing visible —
 /// keeps the cold spans.
-fn map_spans_for_line(
+pub(super) fn map_spans_for_line(
     line: &crate::diff::DiffLine,
     expanded: &str,
     by_new_line: &HashMap<usize, EditLineStyles>,
@@ -418,6 +433,7 @@ fn assemble_diff_line_outputs(
         return vec![DiffLineOutput {
             line: Line::from(spans),
             background: bg,
+            source: Some(diff_line_pair_from_line(line)),
             content_start_col: bg_start,
             gutter_span_count: gutter_count,
             content_text: raw_content,
@@ -459,6 +475,7 @@ fn assemble_diff_line_outputs(
         outputs.push(DiffLineOutput {
             line: Line::from(spans),
             background: bg,
+            source: (i == 0).then(|| diff_line_pair_from_line(line)),
             content_start_col: bg_start,
             gutter_span_count: gutter_count,
             content_text: wrapped.clone(),
@@ -487,7 +504,7 @@ fn compute_bg_start(config: &DiffRenderConfig, gutter_width: usize, indent_width
 }
 
 /// Simple word-wrap implementation.
-fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+pub(super) fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 || text.is_empty() {
         return vec![text.to_string()];
     }
@@ -653,7 +670,7 @@ fn advance_highlighter(
 }
 
 /// Render content spans with syntax highlighting.
-fn render_content_spans(
+pub(super) fn render_content_spans(
     content: &str,
     tag: ChangeTag,
     theme: &Theme,
@@ -980,6 +997,21 @@ impl EditToolCallBlock {
     /// viewer. FileScoped styles baked under a different theme than the live
     /// one are skipped (hunk-only paint) so a theme flip never mixes palettes.
     pub fn render_diff_lines(
+        &self,
+        theme: &Theme,
+        width: u16,
+        config: &DiffRenderConfig,
+    ) -> Vec<DiffLineOutput> {
+        if let Some(lines) = super::side_by_side_edit::render_if_enabled(self, theme, width, config)
+        {
+            return lines;
+        }
+        self.render_unified_diff_lines(theme, width, config)
+    }
+
+    /// Render the upstream unified layout regardless of the grok-pi F2 flag.
+    /// Code-review surfaces use this to retain their dual-line-number contract.
+    pub fn render_unified_diff_lines(
         &self,
         theme: &Theme,
         width: u16,
