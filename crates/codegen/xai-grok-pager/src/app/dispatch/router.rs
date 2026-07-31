@@ -87,6 +87,7 @@ use super::settings::setters::{
     set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
     set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
     set_ctrl_o_tool_expansion, set_default_model, set_default_selected_permission,
+    set_side_by_side_edit,
     set_display_refresh_auto_cadence, set_fork_secondary_model, set_group_tool_verbs,
     set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
     set_model_slot, set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question,
