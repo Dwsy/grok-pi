@@ -116,7 +116,8 @@ pub fn ansi_remote_tui_line(ansi: &str, theme: &Theme) -> Line<'static> {
         // of Modifier::REVERSED. Treat dark fills as field chrome too.
         let dark_fill = match span.style.bg {
             Some(Color::Black) | Some(Color::DarkGray) | Some(Color::Indexed(0 | 8)) => true,
-            Some(Color::Rgb(r, g, b)) => (u16::from(r) + u16::from(g) + u16::from(b)) < 180,
+            // Truecolor backgrounds are data for pixel-like components such as
+            // pi-doom's half-block renderer, not reverse-video chrome.
             _ => false,
         };
 
@@ -143,12 +144,17 @@ pub fn ansi_remote_tui_line(ansi: &str, theme: &Theme) -> Line<'static> {
             Some(Color::Indexed(index)) => Color::Indexed(index),
             Some(color) => color,
         });
-        // Pin to surface so partial ANSI lines don't leave holes of terminal default.
-        span.style.bg = Some(if selected_row {
-            theme.bg_highlight
-        } else {
-            theme.bg_base
-        });
+        // Keep truecolor backgrounds: half-block renderers use them for the
+        // second pixel. Other ANSI backgrounds fall back to Pager surfaces so
+        // ordinary extension rows do not inherit terminal-default chrome.
+        span.style.bg = match span.style.bg {
+            Some(Color::Rgb(_, _, _)) => span.style.bg,
+            _ => Some(if selected_row {
+                theme.bg_highlight
+            } else {
+                theme.bg_base
+            }),
+        };
     }
     line
 }
@@ -502,6 +508,18 @@ mod tests {
         }));
         assert!(line.spans.iter().any(|span| {
             span.content == "✓ configured" && span.style.fg == Some(Color::Rgb(45, 212, 191))
+        }));
+    }
+
+    #[test]
+    fn ansi_remote_tui_line_preserves_truecolor_backgrounds_for_half_blocks() {
+        let theme = Theme::current();
+        let line = ansi_remote_tui_line("\x1b[38;2;255;0;0m\x1b[48;2;0;255;0m▀\x1b[0m", &theme);
+
+        assert!(line.spans.iter().any(|span| {
+            span.content == "▀"
+                && span.style.fg == Some(Color::Rgb(255, 0, 0))
+                && span.style.bg == Some(Color::Rgb(0, 255, 0))
         }));
     }
 

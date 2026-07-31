@@ -128,6 +128,127 @@ fn paint_prompt_cursor(
     None
 }
 
+fn remote_tui_axis_position(
+    position: Option<crate::app::app_view::RemoteTuiPosition>,
+    available: u16,
+    span: u16,
+    fallback: u16,
+) -> i32 {
+    match position {
+        Some(crate::app::app_view::RemoteTuiPosition::Cells(value)) => value,
+        Some(crate::app::app_view::RemoteTuiPosition::Percent(percent)) => {
+            (available.saturating_sub(span) as u32 * u32::from(percent) / 100) as i32
+        }
+        None => i32::from(fallback),
+    }
+}
+
+fn remote_tui_anchor_x(
+    anchor: crate::app::app_view::RemoteTuiAnchor,
+    available: u16,
+    width: u16,
+) -> u16 {
+    match anchor {
+        crate::app::app_view::RemoteTuiAnchor::TopLeft
+        | crate::app::app_view::RemoteTuiAnchor::LeftCenter
+        | crate::app::app_view::RemoteTuiAnchor::BottomLeft => 0,
+        crate::app::app_view::RemoteTuiAnchor::TopRight
+        | crate::app::app_view::RemoteTuiAnchor::RightCenter
+        | crate::app::app_view::RemoteTuiAnchor::BottomRight => available.saturating_sub(width),
+        crate::app::app_view::RemoteTuiAnchor::TopCenter
+        | crate::app::app_view::RemoteTuiAnchor::Center
+        | crate::app::app_view::RemoteTuiAnchor::BottomCenter => {
+            available.saturating_sub(width) / 2
+        }
+    }
+}
+
+fn remote_tui_anchor_y(
+    anchor: crate::app::app_view::RemoteTuiAnchor,
+    available: u16,
+    height: u16,
+) -> u16 {
+    match anchor {
+        crate::app::app_view::RemoteTuiAnchor::TopLeft
+        | crate::app::app_view::RemoteTuiAnchor::TopCenter
+        | crate::app::app_view::RemoteTuiAnchor::TopRight => 0,
+        crate::app::app_view::RemoteTuiAnchor::BottomLeft
+        | crate::app::app_view::RemoteTuiAnchor::BottomCenter
+        | crate::app::app_view::RemoteTuiAnchor::BottomRight => available.saturating_sub(height),
+        crate::app::app_view::RemoteTuiAnchor::LeftCenter
+        | crate::app::app_view::RemoteTuiAnchor::Center
+        | crate::app::app_view::RemoteTuiAnchor::RightCenter => {
+            available.saturating_sub(height) / 2
+        }
+    }
+}
+
+fn remote_tui_overlay_rect(
+    area: Rect,
+    layout: &crate::app::app_view::RemoteTuiLayout,
+    line_count: usize,
+) -> Option<Rect> {
+    if !layout.overlay || area.width == 0 || area.height == 0 || line_count == 0 {
+        return None;
+    }
+    let width = layout.width.clamp(1, area.width);
+    let max_height = layout
+        .max_height
+        .map(|position| remote_tui_axis_position(Some(position), area.height, 0, area.height))
+        .unwrap_or(i32::from(area.height))
+        .clamp(1, i32::from(area.height)) as u16;
+    let height = (line_count.min(usize::from(max_height))) as u16;
+    if height == 0 {
+        return None;
+    }
+    let default_x = remote_tui_anchor_x(layout.anchor, area.width, width);
+    let default_y = remote_tui_anchor_y(layout.anchor, area.height, height);
+    let x = remote_tui_axis_position(layout.col, area.width, width, default_x)
+        .saturating_add(layout.offset_x)
+        .clamp(0, i32::from(area.width.saturating_sub(width))) as u16;
+    let y = remote_tui_axis_position(layout.row, area.height, height, default_y)
+        .saturating_add(layout.offset_y)
+        .clamp(0, i32::from(area.height.saturating_sub(height))) as u16;
+    Some(Rect::new(area.x + x, area.y + y, width, height))
+}
+
+#[cfg(test)]
+mod remote_tui_layout_tests {
+    use super::*;
+    use crate::app::app_view::RemoteTuiLayout;
+
+    #[test]
+    fn center_anchor_places_overlay_in_the_available_area() {
+        let layout = RemoteTuiLayout::from_json(&serde_json::json!({
+            "overlay": true,
+            "width": 20,
+            "anchor": "center"
+        }))
+        .expect("valid layout");
+        assert_eq!(
+            remote_tui_overlay_rect(Rect::new(0, 0, 80, 24), &layout, 4),
+            Some(Rect::new(30, 10, 20, 4))
+        );
+    }
+
+    #[test]
+    fn percentage_position_and_offsets_match_pi_overlay_semantics() {
+        let layout = RemoteTuiLayout::from_json(&serde_json::json!({
+            "overlay": true,
+            "width": 20,
+            "row": "50%",
+            "col": "50%",
+            "offsetX": 2,
+            "offsetY": -1
+        }))
+        .expect("valid layout");
+        assert_eq!(
+            remote_tui_overlay_rect(Rect::new(0, 0, 80, 24), &layout, 4),
+            Some(Rect::new(32, 9, 20, 4))
+        );
+    }
+}
+
 #[cfg(test)]
 mod thinking_border_tests {
     use super::*;
@@ -878,6 +999,35 @@ impl AgentView {
         }
         (None, child_post_flush)
     }
+    fn draw_remote_tui_overlay(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+        let Some(layout) = self.remote_tui_layout.clone() else {
+            return;
+        };
+        let Some(rect) = remote_tui_overlay_rect(area, &layout, self.remote_tui_lines.len()) else {
+            return;
+        };
+
+        let surface = Style::default().bg(theme.bg_base);
+        for y in rect.y..rect.bottom() {
+            for x in rect.x..rect.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ');
+                    cell.set_style(surface);
+                }
+            }
+        }
+        for (index, line) in self
+            .remote_tui_lines
+            .iter()
+            .take(usize::from(rect.height))
+            .enumerate()
+        {
+            let styled = crate::views::agent_status::ansi_remote_tui_line(line, theme);
+            buf.set_line(rect.x, rect.y + index as u16, &styled, rect.width);
+        }
+        self.frame_occluder_rects.push(rect);
+    }
+
     pub fn should_show_tip(&mut self) -> bool {
         false
     }
@@ -4573,6 +4723,7 @@ impl AgentView {
                 self.frame_occluder_rects.push(popup);
             }
         }
+        self.draw_remote_tui_overlay(area, buf, &theme);
         self.pane_areas = layout.pane_areas();
         {
             let route = crate::hyperlink_route::hyperlink_route();
@@ -4635,7 +4786,13 @@ impl AgentView {
                 }
             }
         }
-        let cursor = if self.inline_edit.is_some() {
+        let cursor = if self
+            .remote_tui_layout
+            .as_ref()
+            .is_some_and(|layout| layout.overlay)
+        {
+            None
+        } else if self.inline_edit.is_some() {
             inline_edit_cursor
         } else {
             paint_prompt_cursor(

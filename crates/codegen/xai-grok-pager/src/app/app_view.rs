@@ -119,6 +119,8 @@ pub struct ExternalUiState {
     /// This is process-local UI state and deliberately not persisted to Pi.
     pub notifications: std::collections::HashMap<String, Vec<ExternalNotification>>,
     pub widgets: std::collections::BTreeMap<String, ExternalWidget>,
+    /// Layout metadata for the active `ctx.ui.custom(..., { overlay: true })`.
+    pub remote_tui_layout: Option<RemoteTuiLayout>,
     pub pending_toasts: std::collections::VecDeque<String>,
     /// Session metadata from the external agent, rendered by the existing
     /// native SessionPicker rather than by an adapter-owned selector.
@@ -159,6 +161,92 @@ pub struct ExternalWidget {
     pub placement: ExternalWidgetPlacement,
 }
 
+/// Pi `TUI.showOverlay()` positioning semantics projected to the native Pager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteTuiAnchor {
+    Center,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    TopCenter,
+    BottomCenter,
+    LeftCenter,
+    RightCenter,
+}
+
+/// Absolute cells or a percentage of the available terminal dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteTuiPosition {
+    Cells(i32),
+    Percent(u16),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteTuiLayout {
+    pub overlay: bool,
+    /// Width used when the Pi component rendered its latest frame.
+    pub width: u16,
+    pub max_height: Option<RemoteTuiPosition>,
+    pub anchor: RemoteTuiAnchor,
+    pub row: Option<RemoteTuiPosition>,
+    pub col: Option<RemoteTuiPosition>,
+    pub offset_x: i32,
+    pub offset_y: i32,
+}
+
+impl RemoteTuiLayout {
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let width = value
+            .get("width")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|width| *width > 0)
+            .map(|width| width.min(u16::MAX as u64) as u16)?;
+        let anchor = match value.get("anchor").and_then(serde_json::Value::as_str) {
+            Some("top-left") => RemoteTuiAnchor::TopLeft,
+            Some("top-right") => RemoteTuiAnchor::TopRight,
+            Some("bottom-left") => RemoteTuiAnchor::BottomLeft,
+            Some("bottom-right") => RemoteTuiAnchor::BottomRight,
+            Some("top-center") => RemoteTuiAnchor::TopCenter,
+            Some("bottom-center") => RemoteTuiAnchor::BottomCenter,
+            Some("left-center") => RemoteTuiAnchor::LeftCenter,
+            Some("right-center") => RemoteTuiAnchor::RightCenter,
+            Some("center") | None => RemoteTuiAnchor::Center,
+            Some(_) => return None,
+        };
+        let position = |key: &str| {
+            let value = value.get(key)?;
+            if let Some(cells) = value.as_i64() {
+                return Some(RemoteTuiPosition::Cells(
+                    cells.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                ));
+            }
+            let percent = value.as_str()?.strip_suffix('%')?.parse::<u16>().ok()?;
+            Some(RemoteTuiPosition::Percent(percent.min(100)))
+        };
+        let offset = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_i64)
+                .map(|offset| offset.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+                .unwrap_or(0)
+        };
+        Some(Self {
+            overlay: value
+                .get("overlay")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            width,
+            max_height: position("maxHeight"),
+            anchor,
+            row: position("row"),
+            col: position("col"),
+            offset_x: offset("offsetX"),
+            offset_y: offset("offsetY"),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalNotification {
     pub message: String,
@@ -169,8 +257,12 @@ fn append_external_widgets(
     output: &mut Vec<String>,
     widgets: &std::collections::BTreeMap<String, ExternalWidget>,
     placement: ExternalWidgetPlacement,
+    skip_remote_tui: bool,
 ) {
-    for (_key, widget) in widgets {
+    for (key, widget) in widgets {
+        if skip_remote_tui && key == "remote_tui" {
+            continue;
+        }
         if widget.placement != placement {
             continue;
         }
@@ -2360,6 +2452,7 @@ impl AppView {
 
         self.external_ui.statuses.clear();
         self.external_ui.widgets.clear();
+        self.external_ui.remote_tui_layout = None;
         self.external_ui.remote_tui_id = None;
         self.external_ui.remote_tui_overlays.clear();
         self.external_ui.extension_shortcuts = Default::default();
@@ -2474,6 +2567,15 @@ impl AppView {
         self.refresh_external_ui_surface()
     }
 
+    /// Update the layout for the active Remote TUI component.
+    pub fn set_remote_tui_layout(&mut self, layout: Option<RemoteTuiLayout>) -> bool {
+        if self.external_ui.remote_tui_layout == layout {
+            return false;
+        }
+        self.external_ui.remote_tui_layout = layout;
+        self.refresh_external_ui_surface()
+    }
+
     /// Experimental Remote TUI open/frame/close (env-gated on Pi side).
     pub fn apply_remote_tui(
         &mut self,
@@ -2491,7 +2593,8 @@ impl AppView {
                     title: title.clone(),
                     lines: lines.unwrap_or_default(),
                 });
-                self.project_remote_tui_frame()
+                let _ = self.project_remote_tui_frame();
+                true
             }
             "frame" => {
                 if let Some(id) = &id {
@@ -2527,7 +2630,8 @@ impl AppView {
                     title,
                     lines: lines.unwrap_or_default(),
                 });
-                self.project_remote_tui_frame()
+                let _ = self.project_remote_tui_frame();
+                true
             }
             "overlay_pop" => {
                 // hideOverlay: pop the top overlay, restore previous
@@ -2538,11 +2642,12 @@ impl AppView {
                 } else {
                     // Stack empty — close entirely
                     self.external_ui.remote_tui_id = None;
-                    self.set_external_widget(
+                    let _ = self.set_external_widget(
                         "remote_tui".to_string(),
                         None,
                         ExternalWidgetPlacement::AboveEditor,
-                    )
+                    );
+                    true
                 }
             }
             "close" => {
@@ -2557,11 +2662,12 @@ impl AppView {
                     self.project_remote_tui_frame()
                 } else {
                     self.external_ui.remote_tui_id = None;
-                    self.set_external_widget(
+                    let _ = self.set_external_widget(
                         "remote_tui".to_string(),
                         None,
                         ExternalWidgetPlacement::AboveEditor,
-                    )
+                    );
+                    true
                 }
             }
             _ => false,
@@ -2591,16 +2697,81 @@ impl AppView {
         )
     }
 
-    /// Map a crossterm key to a Pi-TUI legacy key sequence for remote host.
+    /// Encode a key in Kitty CSI-u form so Pi-TUI can preserve repeat/release
+    /// events. Plain presses keep the legacy sequences used by existing widgets.
     pub fn remote_tui_key_sequence(key: &crossterm::event::KeyEvent) -> Option<String> {
-        use crossterm::event::{KeyCode, KeyModifiers};
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return match key.code {
-                KeyCode::Char('c') => Some("\u{0003}".to_string()),
-                KeyCode::Char('d') => Some("\u{0004}".to_string()),
+        use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+
+        fn kitty_modifier_value(modifiers: KeyModifiers) -> u8 {
+            let mut value = 1;
+            if modifiers.contains(KeyModifiers::SHIFT) {
+                value += 1;
+            }
+            if modifiers.contains(KeyModifiers::ALT) {
+                value += 2;
+            }
+            if modifiers.contains(KeyModifiers::CONTROL) {
+                value += 4;
+            }
+            if modifiers.contains(KeyModifiers::SUPER) {
+                value += 8;
+            }
+            value
+        }
+
+        fn kitty_sequence(key: &crossterm::event::KeyEvent) -> Option<String> {
+            let event = match key.kind {
+                KeyEventKind::Repeat => ":2",
+                KeyEventKind::Release => ":3",
+                KeyEventKind::Press => return None,
+            };
+            let modifier = kitty_modifier_value(key.modifiers);
+            let functional = match key.code {
+                KeyCode::Up => Some(("1", 'A')),
+                KeyCode::Down => Some(("1", 'B')),
+                KeyCode::Right => Some(("1", 'C')),
+                KeyCode::Left => Some(("1", 'D')),
+                KeyCode::Home => Some(("1", 'H')),
+                KeyCode::End => Some(("1", 'F')),
+                KeyCode::PageUp => Some(("5", '~')),
+                KeyCode::PageDown => Some(("6", '~')),
+                KeyCode::Insert => Some(("2", '~')),
+                KeyCode::Delete => Some(("3", '~')),
                 _ => None,
             };
+            if let Some((code, terminator)) = functional {
+                return Some(format!("\u{001b}[{code};{modifier}{event}{terminator}"));
+            }
+            let codepoint = match key.code {
+                KeyCode::Char(c) => c as u32,
+                KeyCode::Enter => 13,
+                KeyCode::Esc => 27,
+                KeyCode::Backspace => 127,
+                KeyCode::Tab => 9,
+                KeyCode::BackTab => 9,
+                _ => return None,
+            };
+            Some(format!("\u{001b}[{codepoint};{modifier}{event}u"))
         }
+
+        if key.kind != KeyEventKind::Press
+            || key.modifiers.intersects(
+                KeyModifiers::SHIFT
+                    | KeyModifiers::ALT
+                    | KeyModifiers::CONTROL
+                    | KeyModifiers::SUPER,
+            )
+        {
+            if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Char('c') => return Some("\u{0003}".to_string()),
+                    KeyCode::Char('d') => return Some("\u{0004}".to_string()),
+                    _ => {}
+                }
+            }
+            return kitty_sequence(key);
+        }
+
         match key.code {
             KeyCode::Up => Some("\u{001b}[A".to_string()),
             KeyCode::Down => Some("\u{001b}[B".to_string()),
@@ -2609,12 +2780,12 @@ impl AppView {
             KeyCode::Enter => Some("\r".to_string()),
             KeyCode::Esc => Some("\u{001b}".to_string()),
             KeyCode::Backspace => Some("\u{007f}".to_string()),
-            KeyCode::Tab => Some("\t".to_string()),
+            KeyCode::Tab | KeyCode::BackTab => Some("\t".to_string()),
             KeyCode::Home => Some("\u{001b}[H".to_string()),
             KeyCode::End => Some("\u{001b}[F".to_string()),
             KeyCode::PageUp => Some("\u{001b}[5~".to_string()),
             KeyCode::PageDown => Some("\u{001b}[6~".to_string()),
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::ALT) => Some(c.to_string()),
+            KeyCode::Char(c) => Some(c.to_string()),
             _ => None,
         }
     }
@@ -2674,11 +2845,17 @@ impl AppView {
         if !self.external_agent {
             return false;
         }
+        let remote_tui_overlay = self
+            .external_ui
+            .remote_tui_layout
+            .as_ref()
+            .is_some_and(|layout| layout.overlay);
         let mut widgets_above_editor = Vec::new();
         append_external_widgets(
             &mut widgets_above_editor,
             &self.external_ui.widgets,
             ExternalWidgetPlacement::AboveEditor,
+            remote_tui_overlay,
         );
         let statuses = self
             .external_ui
@@ -2697,6 +2874,7 @@ impl AppView {
             &mut widgets_below_editor,
             &self.external_ui.widgets,
             ExternalWidgetPlacement::BelowEditor,
+            remote_tui_overlay,
         );
         let global_shortcuts_enabled = self.external_ui.extension_shortcuts.is_global_enabled();
         let mut extension_shortcuts = self
@@ -2711,12 +2889,23 @@ impl AppView {
                 shortcut.enabled = false;
             }
         }
+        let remote_tui_lines = self
+            .external_ui
+            .widgets
+            .get("remote_tui")
+            .map(|widget| widget.lines.as_slice())
+            .unwrap_or(&[]);
+        let remote_tui_layout = self.external_ui.remote_tui_layout.clone();
         self.agents.values_mut().fold(false, |changed, agent| {
             agent
                 .pi_extension_shortcuts
                 .clone_from(&extension_shortcuts);
-            agent.set_external_ui_surface(&widgets_above_editor, &widgets_below_editor, &statuses)
-                || changed
+            let changed = agent.set_external_ui_surface(
+                &widgets_above_editor,
+                &widgets_below_editor,
+                &statuses,
+            ) || changed;
+            agent.set_remote_tui_surface(remote_tui_lines, remote_tui_layout.clone()) || changed
         })
     }
     /// Insert or replace a leader roster entry, keyed by `session_id`.
@@ -3081,6 +3270,10 @@ impl AppView {
             Event::Key(k) if k.kind != KeyEventKind::Release => Some(k),
             _ => None,
         };
+        let remote_key_event = match ev {
+            Event::Key(k) => Some(k),
+            _ => None,
+        };
         // Native `/pi-shortcut-manager` modal owns keys while open (before
         // extension shortcut dispatch and remote-tui). Does not replace remote-tui.
         if let ActiveView::Agent(id) = self.active_view {
@@ -3138,8 +3331,8 @@ impl AppView {
                     .push(crate::app::actions::Effect::RemoteTuiInput { id, data });
                 return InputOutcome::Changed;
             }
-            if let Some(key) = key_event {
-                if key.code == KeyCode::Esc {
+            if let Some(key) = remote_key_event {
+                if key.code == KeyCode::Esc && key.kind != KeyEventKind::Release {
                     // Prefer cancel over raw Esc input to avoid race with done().
                     self.pending_effects
                         .push(crate::app::actions::Effect::RemoteTuiCancel { id });
@@ -6922,6 +7115,42 @@ pub(crate) mod tests {
             AppView::remote_tui_key_sequence(&esc).as_deref(),
             Some("\u{1b}")
         );
+    }
+
+    #[test]
+    fn remote_tui_key_sequence_preserves_key_release_for_pi_tui() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        let mut release = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        assert_eq!(
+            AppView::remote_tui_key_sequence(&release).as_deref(),
+            Some("\u{1b}[119;1:3u")
+        );
+    }
+
+    #[test]
+    fn remote_tui_forwards_key_release_to_component() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        let mut app = test_app_with_agent();
+        app.external_agent = true;
+        assert!(app.apply_remote_tui(
+            "open",
+            Some("sess-1".into()),
+            Some(vec!["root".into()]),
+            None,
+        ));
+        let mut release = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+
+        assert!(matches!(
+            app.handle_input(&Event::Key(release)),
+            InputOutcome::Changed
+        ));
+        assert!(app.pending_effects.iter().any(|effect| matches!(
+            effect,
+            crate::app::actions::Effect::RemoteTuiInput { id, data }
+                if id == "sess-1" && data == "\u{1b}[119;1:3u"
+        )));
     }
 
     #[test]

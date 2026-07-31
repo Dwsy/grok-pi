@@ -1235,8 +1235,11 @@ pub struct AgentView {
     /// Pi RPC widgets placed above the native editor. Pager renders these in
     /// their own reserved rows instead of overloading the toast slot.
     pub(crate) external_widgets_above_editor: Vec<String>,
-    /// When true, above-editor external widgets bleed past outer hpad so they
-    /// match Pi interactive full-terminal width (Remote TUI).
+    /// Latest Remote TUI frame, kept separate so overlay layouts do not consume
+    /// editor widget rows.
+    pub(crate) remote_tui_lines: Vec<String>,
+    /// Pi `ctx.ui.custom()` layout metadata.
+    pub(crate) remote_tui_layout: Option<crate::app::app_view::RemoteTuiLayout>,
     /// Pi RPC widgets placed below the native editor.
     pub(crate) external_widgets_below_editor: Vec<String>,
     /// Pi RPC keyed statuses, rendered by the native status bar.

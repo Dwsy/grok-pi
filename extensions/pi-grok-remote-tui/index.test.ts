@@ -143,6 +143,108 @@ test("custom host exposes terminal dimensions to component factories", async () 
   }
 });
 
+test("custom host mirrors Pi overlay width and position metadata", async () => {
+  const previous = process.env.PI_GROK_REMOTE_TUI;
+  const previousWidth = process.env.PI_GROK_REMOTE_TUI_WIDTH;
+  process.env.PI_GROK_REMOTE_TUI = "1";
+  process.env.PI_GROK_REMOTE_TUI_WIDTH = "80";
+
+  let sessionStart:
+    | ((event: unknown, ctx: { ui: { custom: (...args: unknown[]) => unknown; setWidget: (key: string, lines?: string[]) => void } }) => void)
+    | undefined;
+  const pi = {
+    on: (_event: string, handler: typeof sessionStart) => {
+      sessionStart = handler;
+    },
+    registerCommand: () => {},
+  };
+  let layout: Record<string, unknown> | undefined;
+  const ui = {
+    custom: async () => undefined,
+    setWidget: (key: string, lines?: string[]) => {
+      if (key === "__pi_grok_remote_tui_layout__" && lines?.[0]) {
+        layout = JSON.parse(lines[0]) as Record<string, unknown>;
+      }
+    },
+  };
+
+  try {
+    registerRemoteTui(pi as never);
+    sessionStart?.({}, { ui });
+    void ui.custom(
+      (_tui, _theme, _kb, _done) => ({ invalidate() {}, render: () => ["frame"], handleInput() {} }),
+      {
+        overlay: true,
+        overlayOptions: {
+          width: "50%",
+          maxHeight: "60%",
+          anchor: "top-left",
+          offsetX: 2,
+          offsetY: 3,
+        },
+      },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(layout).toMatchObject({
+      overlay: true,
+      width: 40,
+      maxHeight: "60%",
+      anchor: "top-left",
+      offsetX: 2,
+      offsetY: 3,
+    });
+  } finally {
+    if (previous === undefined) delete process.env.PI_GROK_REMOTE_TUI;
+    else process.env.PI_GROK_REMOTE_TUI = previous;
+    if (previousWidth === undefined) delete process.env.PI_GROK_REMOTE_TUI_WIDTH;
+    else process.env.PI_GROK_REMOTE_TUI_WIDTH = previousWidth;
+  }
+});
+
+test("custom host keeps Pi custom inline by default", async () => {
+  const previous = process.env.PI_GROK_REMOTE_TUI;
+  const previousWidth = process.env.PI_GROK_REMOTE_TUI_WIDTH;
+  process.env.PI_GROK_REMOTE_TUI = "1";
+  process.env.PI_GROK_REMOTE_TUI_WIDTH = "120";
+
+  let sessionStart:
+    | ((event: unknown, ctx: { ui: { custom: (...args: unknown[]) => unknown; setWidget: (key: string, lines?: string[]) => void } }) => void)
+    | undefined;
+  const pi = {
+    on: (_event: string, handler: typeof sessionStart) => {
+      sessionStart = handler;
+    },
+    registerCommand: () => {},
+  };
+  let layout: Record<string, unknown> | undefined;
+  const ui = {
+    custom: async () => undefined,
+    setWidget: (key: string, lines?: string[]) => {
+      if (key === "__pi_grok_remote_tui_layout__" && lines?.[0]) {
+        layout = JSON.parse(lines[0]) as Record<string, unknown>;
+      }
+    },
+  };
+
+  try {
+    registerRemoteTui(pi as never);
+    sessionStart?.({}, { ui });
+    void ui.custom((_tui, _theme, _kb, _done) => ({
+      width: 37,
+      invalidate() {},
+      render: () => ["frame"],
+      handleInput() {},
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(layout).toMatchObject({ overlay: false, width: 120 });
+  } finally {
+    if (previous === undefined) delete process.env.PI_GROK_REMOTE_TUI;
+    else process.env.PI_GROK_REMOTE_TUI = previous;
+    if (previousWidth === undefined) delete process.env.PI_GROK_REMOTE_TUI_WIDTH;
+    else process.env.PI_GROK_REMOTE_TUI_WIDTH = previousWidth;
+  }
+});
+
 test("custom host removes Pi hardware cursor markers from projected frames", async () => {
   const previous = process.env.PI_GROK_REMOTE_TUI;
   process.env.PI_GROK_REMOTE_TUI = "1";

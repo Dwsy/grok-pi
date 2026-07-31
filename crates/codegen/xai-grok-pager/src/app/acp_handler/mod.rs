@@ -827,6 +827,18 @@ fn handle_pi_ui_widget(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
     else {
         return false;
     };
+    if key == "__pi_grok_remote_tui_layout__" {
+        let layout = params
+            .get("widgetLines")
+            .or_else(|| params.get("lines"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|lines| lines.first())
+            .and_then(serde_json::Value::as_str)
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| crate::app::app_view::RemoteTuiLayout::from_json(&value));
+        app.set_remote_tui_layout(layout);
+        return true;
+    }
     let lines = match params.get("widgetLines").or_else(|| params.get("lines")) {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::Array(values)) => Some(

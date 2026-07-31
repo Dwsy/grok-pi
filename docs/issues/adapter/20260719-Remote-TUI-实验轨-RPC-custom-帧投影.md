@@ -3,7 +3,7 @@ id: "2026-07-19-Remote-TUI-实验轨"
 title: "Remote TUI 实验轨：RPC custom() 帧投影到 Grok"
 status: "in_progress"
 created: "2026-07-19"
-updated: "2026-07-19"
+updated: "2026-07-31"
 # note: L1 code landed; interactive grok-pi hand-test still pending
 category: "adapter"
 tags: ["workhub", "adapter", "experimental", "remote-tui", "rpc", "custom", "extension"]
@@ -43,6 +43,13 @@ Extension: ctx.ui.custom(factory)
   → component.handleInput → re-frame
   → done(result) → close
 ```
+
+## L2 Pi 对齐补充（2026-07-31）
+
+- `ansi_remote_tui_line` 保留 24-bit ANSI 背景色；`▀` 半块帧的背景色是下半像素，不能统一覆盖为 Pager 背景。
+- Remote TUI host 通过隐藏的 `__pi_grok_remote_tui_layout__` widget 传递 `ctx.ui.custom()` 的 `overlay`、`overlayOptions.width/maxHeight/anchor/row/col/offsetX/offsetY`；Pager 在 native buffer 内居中/裁剪/定位，不把 overlay 帧堆入 editor widget rows。
+- `KeyEventKind::Repeat/Release` 转成 Pi-TUI Kitty `CSI-u`（`:2`/`:3`），保留 `wantsKeyRelease` 组件语义；Esc 按下仍优先取消，Esc 释放转发给组件。
+- Remote TUI host 默认复现 Pi `custom()` 的 inline/editor 承载；显式 `overlay: true` 才启用弹窗。弹窗宽度优先级为 `overlayOptions.width`、factory 返回组件的 `width`、Pi 默认 `min(80, terminalWidth)`。
 
 ## 协议
 

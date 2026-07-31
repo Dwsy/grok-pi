@@ -80,22 +80,122 @@ async function ensurePiTheme(): Promise<void> {
 }
 
 const WIDGET_KEY = "remote_tui";
+const LAYOUT_WIDGET_KEY = "__pi_grok_remote_tui_layout__";
 const META_NAME = "pi-grok-remote-tui-active.json";
 
-/** Match Pi interactive TUI: full terminal width, not a fixed probe box. */
-function resolveViewport(): { width: number; rows: number } {
+type RemoteTuiLayout = {
+  overlay: boolean;
+  /** Width passed to Component.render(), matching Pi TUI overlay sizing. */
+  width: number;
+  maxHeight?: number | string;
+  anchor?: string;
+  row?: number | string;
+  col?: number | string;
+  offsetX?: number;
+  offsetY?: number;
+};
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | undefined {
+  return value !== null && typeof value === "object" ? (value as UnknownRecord) : undefined;
+}
+
+function validSizeValue(value: unknown): number | string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
+  if (typeof value === "string" && /^\d+(?:\.\d+)?%$/.test(value)) return value;
+  return undefined;
+}
+
+function resolveSizeValue(value: unknown, reference: number, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
+  if (typeof value === "string") {
+    const match = value.match(/^(\d+(?:\.\d+)?)%$/);
+    if (match) return Math.floor((reference * Number(match[1])) / 100);
+  }
+  return fallback;
+}
+
+function readOverlayOptions(options: unknown): UnknownRecord {
+  const raw = asRecord(options)?.overlayOptions;
+  try {
+    return asRecord(typeof raw === "function" ? raw() : raw) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** Mirror Pi custom(): inline by default; explicit `{ overlay: true }` uses popup layout. */
+function resolveRemoteTuiLayout(
+  options: unknown,
+  terminalWidth: number,
+  componentWidth?: unknown,
+): RemoteTuiLayout {
+  const root = asRecord(options) ?? {};
+  const overlay = root.overlay === true;
+  const hasOverlayOptions = overlay && root.overlayOptions !== undefined;
+  const overlayOptions = hasOverlayOptions ? readOverlayOptions(options) : {};
+  const componentWidthValue =
+    !hasOverlayOptions &&
+    typeof componentWidth === "number" &&
+    Number.isFinite(componentWidth) &&
+    componentWidth > 0
+      ? Math.floor(componentWidth)
+      : undefined;
+  const defaultWidth = overlay
+    ? componentWidthValue ?? Math.min(80, terminalWidth)
+    : terminalWidth;
+  const width = Math.max(
+    1,
+    Math.min(
+      terminalWidth,
+      resolveSizeValue(overlayOptions.width, terminalWidth, defaultWidth),
+    ),
+  );
+  const minWidth = typeof overlayOptions.minWidth === "number" && Number.isFinite(overlayOptions.minWidth)
+    ? Math.floor(overlayOptions.minWidth)
+    : 0;
+  const layout: RemoteTuiLayout = {
+    overlay,
+    width: Math.max(1, Math.min(terminalWidth, Math.max(width, minWidth))),
+  };
+  const maxHeight = validSizeValue(overlayOptions.maxHeight);
+  if (maxHeight !== undefined) layout.maxHeight = maxHeight;
+  if (typeof overlayOptions.anchor === "string") layout.anchor = overlayOptions.anchor;
+  const row = validSizeValue(overlayOptions.row);
+  const col = validSizeValue(overlayOptions.col);
+  if (row !== undefined) layout.row = row;
+  if (col !== undefined) layout.col = col;
+  for (const [source, target] of [["offsetX", "offsetX"], ["offsetY", "offsetY"]] as const) {
+    const value = overlayOptions[source];
+    if (typeof value === "number" && Number.isFinite(value)) layout[target] = Math.floor(value);
+  }
+  return layout;
+}
+
+/** Match Pi interactive TUI's terminal dimensions, then resolve custom layout. */
+function resolveViewport(options?: unknown): {
+  width: number;
+  rows: number;
+  terminalWidth: number;
+  layout: RemoteTuiLayout;
+} {
   const envWidth = Number(process.env.PI_GROK_REMOTE_TUI_WIDTH);
   const envRows = Number(process.env.PI_GROK_REMOTE_TUI_ROWS);
   const columnsEnv = Number(process.env.COLUMNS);
   const linesEnv = Number(process.env.LINES);
   const stdoutCols = Number(process.stdout?.columns);
   const stdoutRows = Number(process.stdout?.rows);
-  // The Pager projects the frame into its padded editor row. Pass the actual
-  // terminal width so Pi components wrap before Pager applies its native
-  // compact/non-compact outer padding.
-  const width = [envWidth, columnsEnv, stdoutCols].find((n) => Number.isFinite(n) && n > 0) ?? 80;
-  const rows = [envRows, linesEnv, stdoutRows].find((n) => Number.isFinite(n) && n > 0) ?? 24;
-  return { width: Math.max(40, Math.floor(width)), rows: Math.max(8, Math.floor(rows)) };
+  const terminalWidth = Math.max(
+    1,
+    Math.floor([envWidth, columnsEnv, stdoutCols].find((n) => Number.isFinite(n) && n > 0) ?? 80),
+  );
+  const rows = Math.max(
+    1,
+    Math.floor([envRows, linesEnv, stdoutRows].find((n) => Number.isFinite(n) && n > 0) ?? 24),
+  );
+  const layout = resolveRemoteTuiLayout(options, terminalWidth);
+  return { width: layout.width, rows, terminalWidth, layout };
 }
 
 type ComponentLike = Component & { dispose?(): void };
@@ -139,6 +239,13 @@ function writeMeta(meta: { id: string; keysPath: string } | null): void {
   } catch {
     /* ignore */
   }
+}
+
+function publishRemoteTuiLayout(ui: RemoteTuiDemoUi, layout: RemoteTuiLayout | undefined): void {
+  ui.setWidget(
+    LAYOUT_WIDGET_KEY,
+    layout ? [JSON.stringify(layout)] : undefined,
+  );
 }
 
 function ensureKeyFile(path: string): void {
@@ -199,7 +306,9 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
     }
 
     const id = randomUUID();
-    const { width, rows } = resolveViewport();
+    const { width, rows, terminalWidth, layout } = resolveViewport(_options);
+    let baseLayout = layout;
+    publishRemoteTuiLayout(ui, layout);
     const keysPath = join(tmpdir(), `pi-grok-remote-tui-keys-${id}.jsonl`);
     ensureKeyFile(keysPath);
     writeMeta({ id, keysPath });
@@ -208,8 +317,14 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
       let component: ComponentLike | undefined;
       let closed = false;
       let focused: Component | null = null;
+      let frameWidth = width;
       // Auth select overlays LoginDialog; hide must restore the previous root.
       let previousComponent: ComponentLike | undefined;
+
+      const setLayout = (next: RemoteTuiLayout) => {
+        frameWidth = next.width;
+        publishRemoteTuiLayout(ui, next);
+      };
 
       const cleanup = () => {
         try {
@@ -226,6 +341,7 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
         // Clear only the interactive frame. Applied demo surfaces stay so
         // header/footer/status can still be inspected after Esc.
         ui.setWidget(WIDGET_KEY, undefined);
+        publishRemoteTuiLayout(ui, undefined);
         if (active?.id === id) active = null;
         try {
           component?.dispose?.();
@@ -249,7 +365,7 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
           // terminal renderer to position a hardware cursor. Pager renders the
           // projected frame itself, so forwarding it leaks its `pi:c` payload.
           const lines = component
-            .render(width)
+            .render(frameWidth)
             .map((line) => String(line).replaceAll(CURSOR_MARKER, ""));
           ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
         } catch (error) {
@@ -285,7 +401,7 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
       };
 
       const tuiStub = {
-        terminal: { columns: width, rows },
+        terminal: { columns: terminalWidth, rows },
         requestRender: () => {
           process.nextTick(() => {
             if (!closed) pushFrame();
@@ -298,6 +414,7 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
           if (component && component !== overlay) {
             previousComponent = component;
           }
+          setLayout(resolveRemoteTuiLayout({ overlay: true }, terminalWidth));
           component = overlay as ComponentLike;
           focused = overlay;
           pushFrame();
@@ -305,6 +422,7 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
             hide: () => {
               if (closed) return;
               if (previousComponent) {
+                setLayout(baseLayout);
                 component = previousComponent;
                 focused = previousComponent;
                 previousComponent = undefined;
@@ -328,6 +446,7 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
         hideOverlay: () => {
           if (closed) return;
           if (previousComponent) {
+            setLayout(baseLayout);
             component = previousComponent;
             focused = previousComponent;
             previousComponent = undefined;
@@ -421,6 +540,12 @@ function installCustomPatch(ui: RemoteTuiDemoUi & {
           component = created as ComponentLike;
           host.component = component;
           focused = component;
+          baseLayout = resolveRemoteTuiLayout(
+            _options,
+            terminalWidth,
+            (component as ComponentLike & { width?: unknown }).width,
+          );
+          setLayout(baseLayout);
           pushFrame();
           drainKeys(host);
         })
