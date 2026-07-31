@@ -35,7 +35,7 @@ Each entry records:
 
 ## [a422116] — 2026-08-01
 
-> **Status:** Pending — not yet merged into grok-pi.
+> **Status:** Merged into grok-pi via isolated commit `91394c1`; fast-forwarded to local `main` without pushing.
 
 - **Sync range:** `dd04f39..a422116` (`dd04f397b1d02f2272b092555669dfba1f01bc85` → `a4221165824e5b1f5c4c10b7459f65e78dd6448d`)
 - **Upstream commits:** 1 (`Synced from monorepo`)
@@ -100,7 +100,7 @@ This sync is a broad runtime reliability and lifecycle update across Pager, Shel
 
 ## [dd04f39] — 2026-07-31
 
-> **Status:** Pending — not yet merged into grok-pi.
+> **Status:** Merged before this sync in `360f801`; superseded by `[a422116]`.
 
 - **Sync range:** `47348d1..dd04f39` (`47348d13ec4508dcfe440e34c6d511bb02998fb2` → `dd04f397b1d02f2272b092555669dfba1f01bc85`)
 - **Upstream commits:** 5 (`Synced from monorepo`)
