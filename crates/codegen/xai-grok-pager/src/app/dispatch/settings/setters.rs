@@ -448,6 +448,38 @@ pub(in crate::app::dispatch) fn set_show_thinking_blocks(
     }]
 }
 
+pub(super) fn set_thinking_border_colors_inner(new: bool) {
+    crate::appearance::cache::set_thinking_border_colors(new);
+}
+
+/// Set whether the normal prompt border follows the selected thinking level.
+///
+/// SHELL-OWNED: cache mirror + `[ui].thinking_border_colors` via
+/// `Effect::PersistSetting`. The render path reads the cache every frame.
+pub(in crate::app::dispatch) fn set_thinking_border_colors(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_thinking_border_colors();
+    if prev == new {
+        return vec![];
+    }
+    set_thinking_border_colors_inner(new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "thinking_border_colors",
+        value = new,
+        "setting changed",
+    );
+    app.show_toast(&save_success_toast("Thinking border colors", new));
+    vec![Effect::PersistSetting {
+        key: "thinking_border_colors",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
 pub(super) fn set_group_tool_verbs_inner(app: &mut AppView, new: bool) {
     crate::appearance::cache::set_group_tool_verbs(new);
     // Expansion ids describe the OLD grouping shape; drop them so stale ids

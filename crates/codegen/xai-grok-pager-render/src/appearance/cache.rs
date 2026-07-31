@@ -40,6 +40,8 @@ const VIM_MODE_DEFAULT: bool = false;
 /// PSM resume index + full-text/preview (defaults OFF; opt-in).
 const PSM_RESUME_INDEX_DEFAULT: bool = false;
 const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
+/// Prompt border follows the selected thinking/reasoning effort by default.
+const THINKING_BORDER_COLORS_DEFAULT: bool = true;
 const GROUP_TOOL_VERBS_DEFAULT: bool = true;
 /// Collapsed-Edit-blocks rollout flag defaults OFF (legacy expanded diffs).
 const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;
@@ -321,6 +323,37 @@ pub fn load_show_thinking_blocks() -> bool {
 pub fn set_show_thinking_blocks(enabled: bool) {
     SHOW_THINKING_BLOCKS_CURRENT.with(|c| c.set(enabled));
     SHOW_THINKING_BLOCKS_LOADED.with(|l| l.set(true));
+}
+
+// -- Thinking-level prompt border colors -------------------------------------
+
+thread_local! {
+    static THINKING_BORDER_COLORS_CURRENT: Cell<bool> =
+        const { Cell::new(THINKING_BORDER_COLORS_DEFAULT) };
+    static THINKING_BORDER_COLORS_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read cached `thinking_border_colors`, seeding from `[ui]` on first call.
+/// Default ON when unset. The render path reads this once per frame.
+pub fn load_thinking_border_colors() -> bool {
+    THINKING_BORDER_COLORS_LOADED.with(|loaded| {
+        if !loaded.get() {
+            THINKING_BORDER_COLORS_CURRENT.with(|c| {
+                c.set(load_bool_from_effective_config(
+                    "thinking_border_colors",
+                    THINKING_BORDER_COLORS_DEFAULT,
+                ))
+            });
+            loaded.set(true);
+        }
+    });
+    THINKING_BORDER_COLORS_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `thinking_border_colors`.
+pub fn set_thinking_border_colors(enabled: bool) {
+    THINKING_BORDER_COLORS_CURRENT.with(|c| c.set(enabled));
+    THINKING_BORDER_COLORS_LOADED.with(|l| l.set(true));
 }
 
 // -- Group tool verbs ---------------------------------------------------------
@@ -693,6 +726,7 @@ pub fn prime(ui: &UiConfig) {
     );
     let _ = load_render_mermaid();
     let _ = load_show_thinking_blocks();
+    let _ = load_thinking_border_colors();
     let _ = load_group_tool_verbs();
     let _ = load_collapsed_edit_blocks();
     let _ = load_prompt_suggestions();
@@ -806,6 +840,11 @@ mod tests {
             SHOW_THINKING_BLOCKS_DEFAULT,
             ui.show_thinking_blocks
                 .unwrap_or(SHOW_THINKING_BLOCKS_DEFAULT)
+        );
+        assert_eq!(
+            THINKING_BORDER_COLORS_DEFAULT,
+            ui.thinking_border_colors
+                .unwrap_or(THINKING_BORDER_COLORS_DEFAULT)
         );
         assert_eq!(
             GROUP_TOOL_VERBS_DEFAULT,
@@ -925,6 +964,18 @@ mod tests {
             assert!(!load_show_thinking_blocks());
             set_show_thinking_blocks(true);
             assert!(load_show_thinking_blocks());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn set_then_load_round_trips_thinking_border_colors() {
+        std::thread::spawn(|| {
+            set_thinking_border_colors(false);
+            assert!(!load_thinking_border_colors());
+            set_thinking_border_colors(true);
+            assert!(load_thinking_border_colors());
         })
         .join()
         .unwrap();

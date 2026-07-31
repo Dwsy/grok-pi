@@ -608,6 +608,10 @@ pub enum Action {
     /// process-wide cache mirror and persists to `[ui].show_thinking_blocks`
     /// via `Effect::PersistSetting`.
     SetShowThinkingBlocks(bool),
+    /// Set whether the normal prompt border follows the selected thinking/
+    /// reasoning effort color. SHELL-owned: cache mirror +
+    /// `[ui].thinking_border_colors` via `Effect::PersistSetting`.
+    SetThinkingBorderColors(bool),
     /// Set whether runs of consecutive non-destructive tool calls and
     /// subagent rows are grouped into one row. SHELL-owned: updates the
     /// process-wide cache mirror and persists to `[ui].group_tool_verbs`

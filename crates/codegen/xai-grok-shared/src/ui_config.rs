@@ -238,6 +238,11 @@ pub struct UiConfig {
     /// `None` = on (client default). Written by the pager's settings modal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_thinking_blocks: Option<bool>,
+    /// Color the normal prompt border according to the selected thinking/
+    /// reasoning effort. `None` = on (client default). Written by the pager's
+    /// F2 settings modal and applied live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_border_colors: Option<bool>,
     /// Fold runs of consecutive non-destructive tool calls (reads, searches,
     /// lists) into one transcript row. `None` = on (client default). Written
     /// by the pager's settings modal.
@@ -452,6 +457,7 @@ impl Default for UiConfig {
             keep_text_selection: None,
             selection_highlight_duration_ms: None,
             show_thinking_blocks: None,
+            thinking_border_colors: None,
             group_tool_verbs: None,
             collapsed_edit_blocks: None,
             ctrl_o_tool_expansion: None,

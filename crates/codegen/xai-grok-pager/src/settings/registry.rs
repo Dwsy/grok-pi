@@ -601,6 +601,10 @@ pub fn current_value_for(
         "show_thinking_blocks" => Some(SettingValue::Bool(
             crate::appearance::cache::load_show_thinking_blocks(),
         )),
+        // Live cache; read by the prompt render path once per frame.
+        "thinking_border_colors" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_thinking_border_colors(),
+        )),
         // Live cache (like `show_thinking_blocks`).
         "group_tool_verbs" => Some(SettingValue::Bool(
             crate::appearance::cache::load_group_tool_verbs(),
@@ -1059,6 +1063,14 @@ mod tests {
                         *default,
                         ui.show_thinking_blocks.unwrap_or(true),
                         "show_thinking_blocks default drifts from UiConfig::default()"
+                    );
+                }
+                // thinking_border_colors: Option<bool>; None → true (client default).
+                ("thinking_border_colors", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default,
+                        ui.thinking_border_colors.unwrap_or(true),
+                        "thinking_border_colors default drifts from UiConfig::default()"
                     );
                 }
                 // group_tool_verbs: Option<bool>; None → true (client default).

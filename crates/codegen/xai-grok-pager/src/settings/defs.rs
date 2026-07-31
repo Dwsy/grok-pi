@@ -992,6 +992,30 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: false,
         },
+        // SHELL-owned: `[ui].thinking_border_colors` + process-wide cache.
+        // Default ON; applies to the next render frame.
+        SettingMeta {
+            key: "thinking_border_colors",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Thinking border colors",
+            description: "Color the normal prompt border based on the selected thinking/reasoning level.",
+            keywords: &[
+                "thinking",
+                "reasoning",
+                "effort",
+                "prompt",
+                "border",
+                "color",
+                "level",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.thinking_border_colors.unwrap_or(true),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
         // SHELL-owned: `[ui].prompt_suggestions` + process-wide cache. Default ON.
         // The `GROK_PROMPT_SUGGESTIONS` env var overrides at runtime.
         SettingMeta {

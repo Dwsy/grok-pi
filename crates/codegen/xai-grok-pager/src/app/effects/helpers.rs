@@ -1102,6 +1102,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "thinking_border_colors" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("thinking_border_colors", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_thinking_border_colors(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "group_tool_verbs" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("group_tool_verbs", "Bool", &value));

@@ -98,8 +98,8 @@ use super::settings::setters::{
     set_respect_manual_folds, set_review_file_tree, set_review_include_reads, set_screen_mode,
     set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
     set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme,
-    set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
-    set_voice_stt_language,
+    set_thinking_border_colors, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
+    set_voice_keybind_enabled, set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -1103,6 +1103,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetInvertScroll(v) => set_invert_scroll(app, v),
         Action::SetScrollLines(v) => set_scroll_lines(app, v),
         Action::SetShowThinkingBlocks(v) => set_show_thinking_blocks(app, v),
+        Action::SetThinkingBorderColors(v) => set_thinking_border_colors(app, v),
         Action::SetGroupToolVerbs(v) => set_group_tool_verbs(app, v),
         Action::SetCollapsedEditBlocks(v) => set_collapsed_edit_blocks(app, v),
         Action::SetCtrlOToolExpansion(v) => set_ctrl_o_tool_expansion(app, v),
