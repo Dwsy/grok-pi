@@ -33,6 +33,71 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [a422116] — 2026-08-01
+
+> **Status:** Pending — not yet merged into grok-pi.
+
+- **Sync range:** `dd04f39..a422116` (`dd04f397b1d02f2272b092555669dfba1f01bc85` → `a4221165824e5b1f5c4c10b7459f65e78dd6448d`)
+- **Upstream commits:** 1 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `8d69c91f02bcacf01e98d5aebbf2f92547c45738` (was `2a28b4a86cfc4a4c133c35b7fc2a6a9964387c39`)
+- **Diff size:** 165 files changed, +15161 / −1969
+
+### Summary
+
+This sync is a broad runtime reliability and lifecycle update across Pager, Shell, tools, workspace, and Computer Hub. It adds session/task cleanup, configurable wait caps, context-overflow recognition, overload retries, compaction continuity, background-task reminders, and safer PTY/auth/permission behavior. Pager app/event-loop/session/dashboard changes and Shell agent/session/compaction changes overlap grok-pi integration seams, so the merge must be performed in an isolated worktree and validated without transferring ownership from Pi.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Pager (TUI) | 55 | +6829/−652 | 1/0 | dashboard/session deletion, workspace mode, history shortcuts, lifecycle and event-loop behavior |
+| Shell (agent runtime) | 58 | +4478/−776 | 9/0 | session resource reclamation, compaction continuity, auth retry, PTY registry and config watching |
+| Computer Hub | 4 | +1159/−174 | 0/0 | liveness, attached-client signals, and task lifecycle handling |
+| Workspace / Permission | 12 | +752/−92 | 1/0 | protected sandbox configuration edits and workspace RPC exports |
+| Tools | 8 | +526/−29 | 0/0 | wait caps, task completion reminders, and task/context schemas |
+| Models / Sampling | 8 | +476/−87 | 0/0 | budget-overflow classification and overload/retry handling |
+| Other crates | 4 | +289/−113 | 0/0 | HTTP/TLS, PTY control, test support, and managed-config types |
+| ACP / Protocol | 4 | +231/−31 | 0/0 | task frames and tool/runtime protocol support |
+| Telemetry / Mixpanel | 4 | +197/−5 | 0/0 | session activity and liveness telemetry |
+| Root / meta | 4 | +191/−9 | 0/0 | dependency, lint, and upstream revision metadata |
+| Compaction | 3 | +32/−0 | 0/0 | compaction reminders and sampling support |
+| Update / Version | 1 | +1/−1 | 0/0 | version dependency metadata |
+| **Total** | **165** | **+15161/−1969** | **11/0** | |
+
+### Added
+
+- Add background-subagent completion reminders with a selectable delivery surface.
+
+### Changed
+
+- Release a shell session's resources in one drop.
+- Make the tools blocking-wait cap client-configurable and self-describing.
+- Carry running background tasks and subagents across compaction.
+- Require round-trip time for SDK liveness checks.
+- Consume the attached-client signal and report why idle is withheld.
+- Release a session's activity record when the session ends.
+- Scope skills watches on project vendor roots.
+- Make the leader soak measure the leader, not its harness.
+- Delete sessions from the dashboard and welcome list.
+
+### Fixed
+
+- Recognize API "exceeds budget" errors as context overflow.
+- Retry /btw on model overload.
+- Make a PTY shell reap itself until it reaches the registry.
+- Recover the OS error code from a TLS-phase connection reset.
+- Treat `.grok/sandbox.toml` edits as protected so auto mode prompts before writing.
+- Surface history/search in the Ctrl+. cheatsheet and keep it working in history view.
+- Stop charging auth-retry budget for fail-closed 401s; reset it across suspends.
+- Make [stop] cancel in-flight compaction.
+
+### Merge risk for grok-pi
+
+- The 55 Pager and 58 Shell files include the highest-risk `app/`, event-loop, session, dashboard, auth, compaction, PTY, and task-lifecycle paths; `pi-grok-adapter` remains untouched and must stay headless.
+- Ten upstream-touched files overlap local post-`dd04f39` work: `app/actions.rs`, `app/agent_view/{mod,render,session}.rs`, `app/app_view.rs`, `app/dispatch/router.rs`, `app/dispatch/session/lifecycle.rs`, `app/effects/{helpers,mod}.rs`, and `Cargo.lock`.
+- Session cleanup, background-task/subagent continuity, and compaction changes must preserve Pi as the sole agent/session owner and keep Grok Pager as the only visible TUI.
+- Permission, sandbox, auth, and TLS changes require focused security/error-path checks; `SOURCE_REV`, the prior changelog status, and verifier metadata should only be closed after a verified integration.
+
 ## [dd04f39] — 2026-07-31
 
 > **Status:** Pending — not yet merged into grok-pi.
