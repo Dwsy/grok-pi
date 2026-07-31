@@ -33,6 +33,8 @@ pub(crate) const DEFAULT_BLOCKED_SOURCES: &[&str] = &[
     // listings). Hijacks tool output rendering; conflicts with Pager cards.
     "npm:@heyhuynhgiabuu/pi-pretty",
     "npm:pi-pretty",
+    // Pi Open TUI is a terminal UI renderer; it conflicts with Grok Pager.
+    "npm:pi-open-tui",
 ];
 
 /// File-name fragments that indicate a Pi-TUI renderer extension.
