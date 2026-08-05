@@ -8,8 +8,9 @@
 //!
 //! The policy does **not** re-implement Pi's resource discovery or loading.
 //! It only decides *which already-discovered resource paths* are forwarded to
-//! Pi via `--extension` / `--skill` / `--prompt-template` / `--theme` flags
-//! after the corresponding `--no-*` discovery flags.
+//! Pi via `--extension` / `--prompt-template` / `--theme` flags after the
+//! corresponding `--no-*` discovery flags. Skills remain Pi-owned so its
+//! settings and reload lifecycle stay authoritative.
 
 use std::path::{Path, PathBuf};
 
@@ -494,15 +495,14 @@ impl PiLaunchPlan {
         }
     }
 
-    /// Append `--no-*` discovery flags and explicit resource paths to `args`.
+    /// Append host-governed `--no-*` flags and explicit resource paths to `args`.
     ///
-    /// Bridge extensions injected by grok-pi (subagent, bash, recap, etc.)
-    /// are **not** part of this plan; the caller appends them separately
-    /// after this method so they always load regardless of policy.
+    /// Skills are intentionally omitted: Pi owns skill discovery, settings,
+    /// and reload behavior. Bridge extensions injected by grok-pi (subagent,
+    /// bash, recap, etc.) are not part of this plan; the caller appends them
+    /// separately so they always load regardless of policy.
     pub fn append_args(&self, args: &mut Vec<String>) {
-        // Disable Pi's own discovery; we supply everything explicitly.
         args.push("--no-extensions".to_string());
-        args.push("--no-skills".to_string());
         args.push("--no-prompt-templates".to_string());
         args.push("--no-themes".to_string());
 
@@ -511,9 +511,6 @@ impl PiLaunchPlan {
                 "--extension".to_string(),
                 path.to_string_lossy().into_owned(),
             ]);
-        }
-        for path in &self.skills {
-            args.extend(["--skill".to_string(), path.to_string_lossy().into_owned()]);
         }
         for path in &self.prompts {
             args.extend([
@@ -934,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn append_args_produces_correct_flags() {
+    fn append_args_keeps_skills_pi_owned() {
         let mut plan = PiLaunchPlan::default();
         plan.extensions.push(PathBuf::from("/ext/a.ts"));
         plan.skills.push(PathBuf::from("/skills/b/SKILL.md"));
@@ -943,13 +940,13 @@ mod tests {
         plan.append_args(&mut args);
 
         assert!(args.contains(&"--no-extensions".to_string()));
-        assert!(args.contains(&"--no-skills".to_string()));
         assert!(args.contains(&"--no-prompt-templates".to_string()));
         assert!(args.contains(&"--no-themes".to_string()));
         assert!(args.contains(&"--extension".to_string()));
         assert!(args.contains(&"/ext/a.ts".to_string()));
-        assert!(args.contains(&"--skill".to_string()));
-        assert!(args.contains(&"/skills/b/SKILL.md".to_string()));
+        assert!(!args.contains(&"--no-skills".to_string()));
+        assert!(!args.contains(&"--skill".to_string()));
+        assert!(!args.contains(&"/skills/b/SKILL.md".to_string()));
     }
 
     #[test]

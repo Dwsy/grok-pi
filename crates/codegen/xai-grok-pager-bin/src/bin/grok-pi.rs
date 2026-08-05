@@ -519,11 +519,12 @@ async fn run(mut args: Args) -> Result<()> {
     }
     pi_args.splice(0..0, startup_extensions);
 
-    // Disable Pi auto-discovery; we supply approved resources explicitly.
+    // Disable Pi auto-discovery only for resources governed by the host
+    // admission policy. Skills stay Pi-owned so settings changes and /reload
+    // can enable or disable them without restarting grok-pi.
     // Respect the user's own --no-* CLI flags (both Clap and passthrough):
     // if they already disabled a category, don't re-add approved resources.
     let has_no_extensions = args.no_extensions || pi_args.iter().any(|a| a == "--no-extensions");
-    let has_no_skills = args.no_skills || pi_args.iter().any(|a| a == "--no-skills");
     let has_no_prompts = pi_args.iter().any(|a| a == "--no-prompt-templates");
     let has_no_themes = pi_args.iter().any(|a| a == "--no-themes");
 
@@ -540,12 +541,6 @@ async fn run(mut args: Args) -> Result<()> {
                 "--extension".to_string(),
                 path.to_string_lossy().into_owned(),
             ]);
-        }
-    }
-    if !has_no_skills {
-        pi_args.push("--no-skills".to_string());
-        for path in &launch_plan.skills {
-            pi_args.extend(["--skill".to_string(), path.to_string_lossy().into_owned()]);
         }
     }
     if !has_no_prompts {
