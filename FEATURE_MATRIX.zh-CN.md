@@ -49,9 +49,11 @@
 | Retry | 适配 | Grok native sticky status/toast |
 | Compaction | 原生+适配 | `/compact [instructions]` → Pi `compact`；Pi `compaction_*` → 原生 CompactionStarted/Completed/Failed/Cancelled scrollback blocks + sticky status |
 | Session recap (`/recap` + auto away) | 适配 | initialize `meta.sessionRecap`；`x.ai/recap` → 注入 extension `__pi_grok_recap`（`complete` 侧调用，不写会话历史）→ custom `pi-grok-recap/v1` → `SessionRecap`。仅使用 F2 显式配置的 `recap_model`，不回退当前会话模型；auto：≥3 turn、最后完成 turn ≥3 分钟、终端失焦期间后台生成、成功后无新 turn 不重复；manual：有 user turn即可；可选 `/recap [focus]` / `/summarize [focus]` 将 `customInstructions` 注入 recap 提示词（追加，同 `/compact`）；输入限最近 6 turn/12k 字符；正文语言优先 macOS `AppleLanguages`，再回退 locale |
+| BTW 历史（`/btw` + `/btw-history`） | 适配 | 成功的 Pi BTW 答案通过 `appendEntry("pi-grok-btw/history/v1", …)` 写入不进入上下文的自定义 entity，保存问题、答案、时间、request id 和实际使用模型。adapter 在加载/树切换时从 `get_entries` 重建 active branch，并投影到原生 `BtwBlock` scrollback；动态提供的 `/btw-history` 刷新并查看同一批记录，不触发模型调用。 |
 | Queue pane / count | 适配+边界 | adapter 自有的客户端/扩展待执行行支持真实 remove、clear、edit、reorder、interject；稳定 id/version 保持 Pager reconcile 与原始展示文本。绕过拦截的 Pi `queue_update` 仍进入只读外部通道；只有 follow-up 出队推进 `runningPromptId`，steering 保持当前 turn。队列出队模式仍可经 `pi/queue/mode` 设置（`one-at-a-time` / `all`）。 |
 | Context bar used tokens | 适配 | Pi `contextUsage` / message usage → ACP `_meta.totalTokens` → 右上角 bar |
 | Context click / `/context` | 原生+适配 | Grok `x.ai/session/info` → Pi stats + messages + `__pi_context_breakdown` + 可选 `cacheMetrics`（`get_entries`，对齐 pi-cache-graph）→ 原生 `ModalWindow`（`ContextInfoBlock` + `0/1/2/3/s` 视图、`e` 导出、`r` 刷新）；F2 `[ui].pi_cache_graph` 默认开；运行中即时刷新、不写 scrollback |
+| 用户消息 Markdown（grok-pi） | 原生 | F2 `[ui].pi_user_markdown` 默认开；grok-pi 用户 prompt 走 agent markdown 渲染（展开、保留用户前缀/背景）；关闭恢复可折叠纯文本 `UserPromptBlock`；即时生效 |
 
 ## Model、session 与命令
 
@@ -102,7 +104,7 @@
 
 ### 保留的 Grok 原生命令
 
-`exit`、`help`、`hotkeys`（别名 `shortcuts`/`keys`）、`tutorial`（别名 `tour`/`onboarding`）、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`session-info`（别名 `session`）、`tree`、`tree-map`、`fork`、`clone`、`reload`、`notify`、`dashboard`、`recap`、`btw`、`copy`、`find`、`jump`、`review-session`、`review-message`、`transcript`、`export`、`expand`、`queue`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`timeline`、`toggle-mouse-reporting`、`voice`、`doctor`、`debug`、`pi-config`、`pi-models`、`pi-shortcut-manager`。各命令仍遵循自身 visibility/capability 门控。
+`exit`、`help`、`hotkeys`（别名 `shortcuts`/`keys`）、`tutorial`（别名 `tour`/`onboarding`）、`new`、`compact`、`model`、`effort`、`rename`、`resume`、`session-info`（别名 `session`）、`tree`、`tree-map`、`fork`、`clone`、`reload`、`notify`、`dashboard`、`recap`、`btw`、`copy`、`find`、`jump`、`review-session`、`review-message`、`transcript`、`export`、`expand`、`queue`、`multiline`、`compact-mode`、`vim-mode`、`theme`、`timestamps`、`timeline`、`toggle-mouse-reporting`、`voice`、`doctor`、`debug`、`pi-config`、`pi-models`、`pi-shortcut-manager`。各命令仍遵循自身 visibility/capability 门控。F2 `pi_btw` 开启时，Pi extension 另外提供直接、不调用模型的 `/btw-history`。
 
 ### 动态 Pi 命令
 

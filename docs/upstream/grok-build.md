@@ -61,9 +61,9 @@ Requirements:
   and not currently tested from this tree.
 
 ```sh
-cargo run -p xai-grok-pager-bin              # build + launch the TUI
-cargo build -p xai-grok-pager-bin --release  # release binary: target/release/xai-grok-pager
-cargo check -p xai-grok-pager-bin            # fast validation
+./scripts/cargo-shared.sh run -p xai-grok-pager-bin              # build + launch the TUI
+./scripts/cargo-shared.sh build -p xai-grok-pager-bin --release  # release binary: target/release/xai-grok-pager
+./scripts/cargo-shared.sh check -p xai-grok-pager-bin            # fast validation
 ```
 
 The binary artifact is named `xai-grok-pager`; official installs ship it as
@@ -101,10 +101,10 @@ MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
 ## Development
 
 ```sh
-cargo check -p <crate>        # always target specific crates; full-workspace builds are slow
-cargo test -p xai-grok-config # per-crate tests
-cargo clippy -p <crate>       # lint config: clippy.toml at the repo root
-cargo fmt --all               # rustfmt.toml at the repo root
+./scripts/cargo-shared.sh check -p <crate>        # always target specific crates; full-workspace builds are slow
+./scripts/cargo-shared.sh test -p xai-grok-config # per-crate tests
+./scripts/cargo-shared.sh clippy -p <crate>       # lint config: clippy.toml at the repo root
+./scripts/cargo-shared.sh fmt --all               # rustfmt.toml at the repo root
 ```
 
 ## Contributing

@@ -113,11 +113,11 @@ Renderer、input engine、Markdown engine、tool renderer 和 minimal renderer �
 
 ```bash
 cd grok-build-main
-cargo check -p xai-grok-pager-bin --bin grok-pi
-cargo test -p pi-grok-adapter
-cargo test -p xai-grok-pager --lib \
+./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi
+./scripts/cargo-shared.sh test -p pi-grok-adapter
+./scripts/cargo-shared.sh test -p xai-grok-pager --lib \
   external_builtin_filter_accepts_aliases_and_omits_product_commands
-cargo test -p xai-grok-pager --lib \
+./scripts/cargo-shared.sh test -p xai-grok-pager --lib \
   slash_compact_with_context_enqueues_command
 ```
 

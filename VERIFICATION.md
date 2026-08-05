@@ -143,18 +143,18 @@ Run:
 
 ```bash
 ./build.sh
-cargo test -p pi-grok-adapter
-cargo test -p xai-grok-pager-bin --bin grok-pi
-cargo check -p xai-grok-pager-bin --bin grok-pi
+./scripts/cargo-shared.sh test -p pi-grok-adapter
+./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi
+./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi
 ```
 
 Or run step by step:
 
 ```bash
 ./build.sh
-cargo test -p pi-grok-adapter
-cargo test -p xai-grok-pager-bin --bin grok-pi
-cargo check -p xai-grok-pager-bin --bin grok-pi
+./scripts/cargo-shared.sh test -p pi-grok-adapter
+./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi
+./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi
 ```
 
 Then build the full run chain:

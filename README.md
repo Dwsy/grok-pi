@@ -149,6 +149,11 @@ Requirements: Rust **1.92.0**, Node.js **22.19.0 or newer**, npm, and a system P
 # or: PI_BIN=pi ./run-local.sh
 ```
 
+Project Cargo commands should go through `./scripts/cargo-shared.sh`: it keeps
+incremental compilation enabled, prunes at most 8 incremental caches every 6 hours,
+and stops before free space falls below 20 GiB. Override `CARGO_MIN_FREE_GIB` only
+deliberately; set `CARGO_MAINTENANCE=0` to disable pruning for one command.
+
 Run verification with:
 
 ```bash
@@ -189,7 +194,8 @@ flowchart LR
 | **Pi goal mode** (`pi_goal`) | F2 → Agent → Pi goal mode (restart) | off | `pi-codex-goal`, `@narumitw/pi-goal`, `@misunders2d/pi-goal`, `pi-goal`, `pi-goal-x` |
 | **Pi workflows** (`pi_workflows`) | F2 → Agent → Pi workflows (restart) | off | `@quintinshaw/pi-dynamic-workflows` |
 | **Pi subagents** (`pi_subagents`) | F2 → Agent → Pi subagents (restart) | on | `pi-subagents`, `@tintinweb/pi-subagents`; native `/subagents` config writes isolated global/project Markdown definitions (tools, up to 3 Pi models, extensions, skills, enablement, max turns) |
-| **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart) | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
+| **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart); saved answers are viewable with `/btw-history` | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
+| **Markdown user messages** (`pi_user_markdown`) | F2 → Agent → Markdown user messages | on | — |
 
 Turning Pi subagents off omits the bundled bridge, forces `PI_GROK_SUBAGENTS=0`, and admits conflicting third-party packages again for the next process.
 

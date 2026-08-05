@@ -149,6 +149,11 @@ grok-pi -- --model openai/gpt-4o
 # 或: PI_BIN=pi ./run-local.sh
 ```
 
+项目内 Cargo 命令应使用 `./scripts/cargo-shared.sh`：保留增量编译，
+每 6 小时最多清理 8 个过期增量缓存，并在剩余空间低于 20 GiB 前停止。
+只有明确确认风险时才覆盖 `CARGO_MIN_FREE_GIB`；单次命令可用
+`CARGO_MAINTENANCE=0` 禁用清理。
+
 运行验证：
 
 ```bash
@@ -189,7 +194,8 @@ flowchart LR
 | **Pi goal mode**（`pi_goal`） | F2 → Agent → Pi goal mode（需重启） | 关 | `pi-codex-goal`、`@narumitw/pi-goal`、`@misunders2d/pi-goal`、`pi-goal`、`pi-goal-x` |
 | **Pi workflows**（`pi_workflows`） | F2 → Agent → Pi workflows（需重启） | 关 | `@quintinshaw/pi-dynamic-workflows` |
 | **Pi subagents**（`pi_subagents`） | F2 → Agent → Pi subagents（需重启） | 开 | `pi-subagents`、`@tintinweb/pi-subagents`；原生 `/subagents` 显示内置代理并写入产品隔离的项目/全局 Markdown 覆盖（工具、最多 3 个 Pi 模型、扩展、技能、开关、最大回合）；资源选择复用 Pi 资源管理器，`/subagent-message` 支持追问运行中子代理 |
-| **`/btw`**（`pi_btw`） | F2 → Agent → Pi /btw（需重启） | 关 | `pi-btw`、`@narumitw/pi-btw`、`@juicesharp/rpiv-btw` |
+| **`/btw`**（`pi_btw`） | F2 → Agent → Pi /btw（需重启）；已保存答案可用 `/btw-history` 查看 | 关 | `pi-btw`、`@narumitw/pi-btw`、`@juicesharp/rpiv-btw` |
+| **用户消息 Markdown**（`pi_user_markdown`） | F2 → Agent → Markdown user messages | 开 | — |
 
 关闭 Pi subagents 后，下次启动会省略内置桥接、强制 `PI_GROK_SUBAGENTS=0`，并重新放行与其冲突的第三方包。
 
