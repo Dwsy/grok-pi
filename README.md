@@ -1,3 +1,5 @@
+<img width="1920" height="981" alt="file-79543f229c432ee6b8b1b7c402a9851b" src="https://github.com/user-attachments/assets/27ff0124-c1e1-4948-8c2c-9880e6a38732" />
+<img width="1042" height="888" alt="file-78b1898685afe0e47d0cee01e9efcc62" src="https://github.com/user-attachments/assets/83abc999-08fe-459e-ab06-935eeb0780e6" />
 # grok-pi — Remote TUI bridge for Pi and Grok Build
 
 > Pi agent core in Grok Build's native terminal UI.
