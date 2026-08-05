@@ -4,6 +4,37 @@ All notable changes to **grok-pi** (Pi agent core in Grok Build's production TUI
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.15] - 2026-08-05
+
+Range: `v0.0.14` → `v0.0.15` (2026-07-31 → 2026-08-05).
+
+> **中文版本：** [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+### Highlights
+
+- **Durable BTW history** — successful `/btw` answers persist as Pi-owned custom entries and `/btw-history` projects the active branch into native Pager scrollback without another model call.
+- **Readable user prompts** — grok-pi user messages render as Markdown by default, with an immediate F2 toggle and persistent prompt-cursor settings.
+- **Safer development builds** — shared Cargo output now has bounded parallelism, stale incremental-cache maintenance, and a configurable free-space guard.
+
+### Added
+
+- Active-branch BTW history replay with question/answer de-duplication, timestamps, request identity, and the selected model metadata.
+- External-only `[ui].pi_user_markdown` setting, default on, preserving classic collapsible plain text when disabled.
+- Persistent prompt cursor presets or a validated single-column custom character.
+- Cargo disk-guard and maintenance scripts used by build, verification, generated bindings, and stop-hook checks.
+
+### Fixed
+
+- Cancellation now suppresses residual queued continuation events and waits for stable idle confirmation before settling the Pager state.
+- BTW and recap requests retain configured model chains and extension parameters across the ACP boundary.
+- Session preview scrolling persists its clamped bottom offset instead of snapping back after wheel input.
+- Pi skill discovery remains Pi-owned, so skill settings and `/reload` work without restarting grok-pi.
+
+### Changed
+
+- Integrated Grok Build `a422116` while preserving the documented Pi-Grok seams.
+- Project documentation and verification commands now consistently use the guarded shared-Cargo wrapper.
+
 ## [0.0.14] - 2026-07-31
 
 Range: `v0.0.13` → `v0.0.14` (2026-07-30 → 2026-07-31).

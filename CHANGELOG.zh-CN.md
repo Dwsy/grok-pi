@@ -7,6 +7,35 @@
 
 ---
 
+## [0.0.15] - 2026-08-05
+
+范围：`v0.0.14` → `v0.0.15`（2026-07-31 → 2026-08-05）。
+
+### 亮点
+
+- **持久 BTW 历史** — 成功的 `/btw` 答案保存为 Pi 自有 custom entry，`/btw-history` 无需再次调用模型即可把 active branch 投影到原生 Pager scrollback。
+- **更易读的用户消息** — grok-pi 用户消息默认使用 Markdown 渲染，F2 可即时切换，同时支持持久化 prompt cursor 设置。
+- **更安全的开发构建** — 共享 Cargo 输出加入受控并行、过期增量缓存维护和可配置剩余空间门禁。
+
+### 新增
+
+- Active branch BTW 历史回放，包含问答去重、时间、request identity 与实际使用模型信息。
+- external-only `[ui].pi_user_markdown`，默认开启；关闭后恢复经典可折叠纯文本。
+- 持久化 prompt cursor 预设，或经过校验的单列自定义字符。
+- Cargo 磁盘门禁与维护脚本，统一用于 build、verify、绑定生成和 stop hook 检查。
+
+### 修复
+
+- 取消流程抑制残留队列 continuation 事件，并等待连续稳定 idle 后再结束 Pager 状态。
+- BTW 与 recap 请求跨 ACP 边界时保留配置的模型链和扩展参数。
+- Session preview 滚动持久保存已钳制的底部偏移，鼠标滚轮后不再回弹。
+- Pi skill discovery 继续归 Pi 所有，skill 设置与 `/reload` 无需重启 grok-pi 即可生效。
+
+### 变更
+
+- 整合 Grok Build `a422116`，同时保留已声明的 Pi-Grok 接缝。
+- 项目文档与验证命令统一改用带门禁的共享 Cargo wrapper。
+
 ## [0.0.14] - 2026-07-31
 
 范围：`v0.0.13` → `v0.0.14`（2026-07-30 → 2026-07-31）。
