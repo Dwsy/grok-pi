@@ -3,7 +3,8 @@ use std::{fs::File, io::Write};
 use tempfile::NamedTempFile;
 
 /// Inject a headless Pi extension that answers `/btw` side questions via
-/// `complete()` and emits `pi-grok-btw/v1` custom messages for the adapter.
+/// `streamSimple()`, persists BTW answers as Pi custom entries, and emits
+/// `pi-grok-btw/v1` custom messages for the adapter.
 pub(super) fn write_btw_extension() -> Result<NamedTempFile> {
     let mut file = tempfile::Builder::new()
         .prefix("pi-grok-btw-")

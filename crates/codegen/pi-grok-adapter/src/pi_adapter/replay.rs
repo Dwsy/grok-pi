@@ -1,4 +1,5 @@
 use super::*;
+use crate::btw_bridge::BtwHistoryEntry;
 
 impl PiAgent {
     /// Publish Pi-owned session metadata title. This is distinct from an
@@ -65,17 +66,54 @@ impl PiAgent {
         } else {
             true
         };
-        let history = if refreshed {
+        let (history, btw_history) = if refreshed {
             let state = self.state.borrow();
-            state.entry_replay_cache.replay_entries()
+            (
+                state.entry_replay_cache.replay_entries(),
+                state.entry_replay_cache.btw_history_entries(),
+            )
         } else {
             let data = self.rpc.request(json!({ "type": "get_messages" })).await?;
-            parse_messages(&data)
+            (parse_messages(&data), Vec::new())
         };
         for entry in history {
             self.replay_history_item(entry).await;
         }
+        if refreshed {
+            self.send_btw_history(btw_history, "replay").await;
+        }
         Ok(())
+    }
+
+    pub(super) async fn send_btw_history(&self, entries: Vec<BtwHistoryEntry>, source: &str) {
+        let session_id = self.state.borrow().acp_session_id.clone();
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                json!({
+                    "id": entry.id,
+                    "question": entry.question,
+                    "answer": entry.answer,
+                    "createdAt": entry.created_at_ms,
+                    "modelUsed": entry.model_used,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.send_ext_notification(
+            "pi/ui/btw_history",
+            json!({
+                "version": 1,
+                "sessionId": session_id,
+                "source": source,
+                "entries": entries,
+            }),
+        )
+        .await;
+    }
+
+    pub(super) async fn send_current_btw_history(&self, source: &str) {
+        let entries = self.state.borrow().entry_replay_cache.btw_history_entries();
+        self.send_btw_history(entries, source).await;
     }
 
     pub(super) async fn replay_history_item(&self, entry: PiReplayEntry) {

@@ -2,17 +2,21 @@
  * Headless /btw bridge for grok-pi.
  *
  * Single-turn side question via pi-ai `streamSimple()` — does not mutate the main
- * session conversation. Stream deltas and the final result are emitted as custom
- * messages (`pi-grok-btw/v1`, display:false) for the native review Q&A panel.
+ * LLM conversation. Stream deltas and the final result are emitted as custom
+ * messages (`pi-grok-btw/v1`, display:false) for the native review Q&A panel;
+ * successful answers are also persisted as non-context custom entries.
  *
- * Invoked only via `/__pi_grok_btw` (hidden from slash UI by adapter filter).
- * Args JSON: `{ requestId, question, models?: string[], thinkingLevel? }`.
+ * Invoked via `/__pi_grok_btw` (hidden from slash UI by adapter filter).
+ * `/btw-history` is a model-free command whose projection is handled by the
+ * adapter. Args JSON: `{ requestId, question, models?: string[], thinkingLevel? }`.
  */
 import { streamSimple, type Message } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_TYPE = "pi-grok-btw/v1";
+const HISTORY_ENTRY_TYPE = "pi-grok-btw/history/v1";
 const COMMAND = "__pi_grok_btw";
+const HISTORY_COMMAND = "btw-history";
 const MAX_CONTEXT_CHARS = 48_000;
 const MAX_MESSAGE_CHARS = 4_000;
 
@@ -22,6 +26,15 @@ type BtwArgs = {
 	models?: string[];
 	model?: string;
 	thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+};
+
+type BtwHistoryEntry = {
+	version: 1;
+	requestId: string;
+	question: string;
+	answer: string;
+	createdAt: number;
+	modelUsed?: string;
 };
 
 function parseArgs(raw: string | undefined): BtwArgs {
@@ -320,11 +333,24 @@ export default function (pi: ExtensionAPI) {
 							errors.push(`${modelRef}: empty response`);
 							continue;
 						}
+						const modelUsed = `${model.provider}::${model.id}`;
+						const historyEntry: BtwHistoryEntry = {
+							version: 1,
+							requestId,
+							question,
+							answer,
+							createdAt: Date.now(),
+							modelUsed,
+						};
+						// Custom entries are durable Pi state and do not participate in
+						// the main agent context. Keep the transient bridge message
+						// separate so the native BTW overlay remains unchanged.
+						pi.appendEntry(HISTORY_ENTRY_TYPE, historyEntry);
 						emit(requestId, {
 							ok: true,
 							phase: "complete",
 							answer,
-							modelUsed: `${model.provider}::${model.id}`,
+							modelUsed,
 						});
 						return;
 					} catch (e) {
@@ -343,5 +369,13 @@ export default function (pi: ExtensionAPI) {
 				});
 			}
 		},
+	});
+
+	// The Pager invokes this direct Pi command to ask the adapter to project
+	// persisted custom entries onto the native scrollback. The handler itself
+	// intentionally performs no model work.
+	pi.registerCommand(HISTORY_COMMAND, {
+		description: "Show saved /btw answers",
+		handler: () => {},
 	});
 }

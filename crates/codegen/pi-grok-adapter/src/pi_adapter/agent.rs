@@ -808,12 +808,31 @@ impl acp::Agent for PiAgent {
                     .map(str::trim)
                     .filter(|command| command.starts_with('/'));
                 if let Some(command) = command {
-                    if let Err(error) = self
+                    let is_btw_history = command
+                        .split_whitespace()
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("/btw-history"));
+                    match self
                         .rpc
                         .request(json!({ "type": "prompt", "message": command }))
                         .await
                     {
-                        tracing::warn!(%error, "failed to invoke Pi extension command");
+                        Ok(_) if is_btw_history => {
+                            if let Err(error) = self.refresh_entry_replay_cache().await {
+                                tracing::warn!(%error, "failed to refresh Pi BTW history");
+                                self.send_ui_notification(
+                                    "Failed to load BTW history.",
+                                    Some("error"),
+                                )
+                                .await;
+                            } else {
+                                self.send_current_btw_history("command").await;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to invoke Pi extension command");
+                        }
                     }
                 } else {
                     tracing::warn!("ignored malformed Pi extension command notification");

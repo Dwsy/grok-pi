@@ -4234,21 +4234,25 @@ pub(crate) fn execute(
             agent_id,
             session_id,
             question,
-            models: _,
+            models,
             minimal_request_id,
         } => {
             let tx = acp_tx.clone();
             let is_api_key_auth = session_flags.is_api_key_auth;
             tasks
                 .spawn(async move {
-                    let request = acp::ExtRequest::new(
-                        "x.ai/btw",
-                        serde_json::value::to_raw_value(
-                                &serde_json::json!({
+                    // The Pi adapter resolves this ordered chain in the injected
+                    // side-call extension. Do not drop it at the ACP boundary:
+                    // omitting `models` silently makes the extension fall back to
+                    // the main session model.
+                    let params = serde_json::json!({
                         "sessionId": session_id.0.to_string(),
                         "question": question,
-                    }),
-                            )
+                        "models": models,
+                    });
+                    let request = acp::ExtRequest::new(
+                        "x.ai/btw",
+                        serde_json::value::to_raw_value(&params)
                             .expect("serialize btw params")
                             .into(),
                     );
@@ -4321,14 +4325,12 @@ pub(crate) fn execute(
                         params["customInstructions"] =
                             serde_json::Value::String(instructions.to_owned());
                     }
+                    // `params` carries the configured recap model chain and
+                    // auxiliary recap options to the Pi adapter. Sending a
+                    // reduced object here makes recap use the main model.
                     let request = acp::ExtRequest::new(
                         "x.ai/recap",
-                        serde_json::value::to_raw_value(
-                                &serde_json::json!({
-                        "sessionId": session_id.0.to_string(),
-                        "auto": auto,
-                    }),
-                            )
+                        serde_json::value::to_raw_value(&params)
                             .expect("serialize recap params")
                             .into(),
                     );

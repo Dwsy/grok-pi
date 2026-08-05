@@ -1,8 +1,19 @@
-//! Project Pi custom `pi-grok-btw/v1` messages into streamed review deltas and ACP x.ai/btw answers.
+//! Project Pi BTW bridge messages into streamed review deltas and ACP x.ai/btw answers;
+//! parse the separate persisted custom entities used by BTW history.
 
 use serde_json::{Value, json};
 
 const BRIDGE_TYPE: &str = "pi-grok-btw/v1";
+pub(crate) const HISTORY_ENTRY_TYPE: &str = "pi-grok-btw/history/v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BtwHistoryEntry {
+    pub(crate) id: String,
+    pub(crate) question: String,
+    pub(crate) answer: String,
+    pub(crate) created_at_ms: Option<i64>,
+    pub(crate) model_used: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BtwProjection {
@@ -15,6 +26,49 @@ pub(crate) enum BtwProjection {
         result: Result<String, String>,
         model_used: Option<String>,
     },
+}
+
+/// Parse a persisted Pi custom entity into a BTW history record.
+///
+/// Returns `None` for unrelated entries or malformed history data. The Pi
+/// entry id is used as the stable identity because `appendEntry()` does not
+/// expose an id to the extension.
+pub(crate) fn parse_btw_history_entry(value: &Value) -> Option<BtwHistoryEntry> {
+    let entry = value.get("entry").unwrap_or(value);
+    if entry.get("type").and_then(Value::as_str) != Some("custom")
+        || entry.get("customType").and_then(Value::as_str) != Some(HISTORY_ENTRY_TYPE)
+    {
+        return None;
+    }
+    let data = entry.get("data")?;
+    if data.get("version").and_then(Value::as_u64) != Some(1) {
+        return None;
+    }
+    let question = data.get("question").and_then(Value::as_str)?;
+    let answer = data.get("answer").and_then(Value::as_str)?;
+    if question.trim().is_empty() || answer.trim().is_empty() {
+        return None;
+    }
+    let id = entry
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| data.get("requestId").and_then(Value::as_str))?
+        .to_owned();
+    let created_at_ms = data.get("createdAt").and_then(Value::as_i64).or_else(|| {
+        data.get("createdAt")
+            .and_then(Value::as_u64)
+            .map(|v| v as i64)
+    });
+    Some(BtwHistoryEntry {
+        id,
+        question: question.to_owned(),
+        answer: answer.to_owned(),
+        created_at_ms,
+        model_used: data
+            .get("modelUsed")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
 }
 
 /// Parse a Pi custom message into a streamed delta or final btw projection.

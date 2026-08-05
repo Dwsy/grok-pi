@@ -942,6 +942,13 @@ impl PiEntryReplayCache {
         parse_replay_values(selected.into_iter().filter(|entry| replayable_entry(entry)))
     }
 
+    pub fn btw_history_entries(&self) -> Vec<crate::btw_bridge::BtwHistoryEntry> {
+        self.active_branch_entries()
+            .into_iter()
+            .filter_map(crate::btw_bridge::parse_btw_history_entry)
+            .collect()
+    }
+
     pub fn editor_text(&self, entry_id: &str) -> Option<String> {
         self.by_id
             .get(entry_id)

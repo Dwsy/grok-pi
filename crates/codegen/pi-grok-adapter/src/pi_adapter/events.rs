@@ -1,5 +1,16 @@
 use super::*;
 
+const CANCEL_IDLE_CONFIRMATIONS: u8 = 3;
+
+fn cancellation_idle_confirmed(idle_polls: &mut u8, is_streaming: bool) -> bool {
+    if is_streaming {
+        *idle_polls = 0;
+        return false;
+    }
+    *idle_polls = (*idle_polls).saturating_add(1);
+    *idle_polls >= CANCEL_IDLE_CONFIRMATIONS
+}
+
 impl PiAgent {
     pub(super) async fn handle_event(&self, event: Value) -> Result<()> {
         let event_type = event
@@ -7,11 +18,20 @@ impl PiAgent {
             .or_else(|| event.get("event"))
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let suppress_cancelled_stream = self.state.borrow().cancelling
+        let cancelling = self.state.borrow().cancelling;
+        if cancelling && matches!(event_type, "agent_start" | "turn_start") {
+            // Pi RPC exposes abort but not clearQueue(). A residual steering
+            // message can therefore open another turn after the first abort;
+            // keep cancelling each continuation until Pi emits agent_settled.
+            if let Err(error) = self.rpc.notify(json!({ "type": "abort" })) {
+                tracing::warn!(%error, "failed to re-abort Pi continuation during cancellation");
+            }
+            return Ok(());
+        }
+        let suppress_cancelled_stream = cancelling
             && matches!(
                 event_type,
-                "turn_start"
-                    | "turn_end"
+                "turn_end"
                     | "message_start"
                     | "message_update"
                     | "message_end"
@@ -19,6 +39,7 @@ impl PiAgent {
                     | "tool_execution_update"
                     | "tool_execution_end"
                     | "agent_end"
+                    | "queue_update"
             );
         if suppress_cancelled_stream {
             return Ok(());
@@ -344,6 +365,7 @@ impl PiAgent {
         const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
         const SETTLE_POLL_DEADLINE: Duration = Duration::from_secs(30);
         let deadline = Instant::now() + SETTLE_POLL_DEADLINE;
+        let mut idle_polls = 0;
         loop {
             if !self.state.borrow().cancelling {
                 return;
@@ -351,7 +373,8 @@ impl PiAgent {
             let Ok(value) = self.rpc.request(json!({ "type": "get_state" })).await else {
                 return;
             };
-            if !parse_state(&value).is_streaming {
+            let is_streaming = parse_state(&value).is_streaming;
+            if cancellation_idle_confirmed(&mut idle_polls, is_streaming) {
                 {
                     let mut state = self.state.borrow_mut();
                     state.agent_running = false;
@@ -412,5 +435,22 @@ impl PiAgent {
         if !dispatched {
             self.maybe_continue_goal().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_probe_requires_stable_idle() {
+        let mut idle_polls = 0;
+        assert!(!cancellation_idle_confirmed(&mut idle_polls, false));
+        assert!(!cancellation_idle_confirmed(&mut idle_polls, false));
+        assert!(cancellation_idle_confirmed(&mut idle_polls, false));
+
+        assert!(!cancellation_idle_confirmed(&mut idle_polls, true));
+        assert_eq!(idle_polls, 0);
+        assert!(!cancellation_idle_confirmed(&mut idle_polls, false));
     }
 }

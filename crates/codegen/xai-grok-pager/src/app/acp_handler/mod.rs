@@ -695,6 +695,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         // info → SystemMessage scrollback (Pi showStatus / chat append);
         // warning/error stay transient toasts.
         "pi/ui/notify" => handle_pi_ui_notify(notif, app),
+        "pi/ui/btw_history" => handle_pi_ui_btw_history(notif, app),
         "pi/ui/status" => handle_pi_ui_status(notif, app),
         "pi/ui/widget" => handle_pi_ui_widget(notif, app),
         "pi/ui/title" => handle_pi_ui_title(notif, app),
@@ -792,6 +793,96 @@ fn handle_pi_ui_notify(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
         .or_else(|| params.get("kind"))
         .and_then(serde_json::Value::as_str);
     app.show_external_notification(message, kind);
+    true
+}
+
+fn handle_pi_ui_btw_history(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    if params.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return false;
+    }
+    let source = params
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("replay");
+    let entries = params
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let question = entry.get("question")?.as_str()?.to_owned();
+                    let answer = entry.get("answer")?.as_str()?.to_owned();
+                    if question.trim().is_empty() || answer.trim().is_empty() {
+                        return None;
+                    }
+                    Some((question, answer))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let session_id = params
+        .get("sessionId")
+        .or_else(|| params.get("session_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+
+    let agent = if let Some(session_id) = session_id.as_deref() {
+        let session_id = acp::SessionId::new(session_id);
+        let Some((matched, _is_active, agent)) = resolve_notif_agent(app, &session_id) else {
+            return false;
+        };
+        // BTW is a root-session surface; never project a root history into a
+        // child/subagent transcript that happens to share the Pager process.
+        if matches!(matched, SessionMatch::Child(_)) {
+            return false;
+        }
+        agent
+    } else {
+        let ActiveView::Agent(id) = app.active_view else {
+            return false;
+        };
+        let Some(agent) = app.agents.get_mut(&id) else {
+            return false;
+        };
+        agent
+    };
+
+    let mut added = 0;
+    for (question, answer) in &entries {
+        let already_visible = (0..agent.scrollback.len()).any(|index| {
+            let Some(entry) = agent.scrollback.entry(index) else {
+                return false;
+            };
+            let RenderBlock::Btw(block) = &entry.block else {
+                return false;
+            };
+            block.question.as_str() == question.as_str()
+                && block.content().text().as_str() == answer.as_str()
+        });
+        if already_visible {
+            continue;
+        }
+        agent
+            .scrollback
+            .push_block(RenderBlock::Btw(crate::scrollback::blocks::BtwBlock::new(
+                question.clone(),
+                answer.clone(),
+            )));
+        added += 1;
+    }
+
+    if source == "command" && added == 0 {
+        let message = if entries.is_empty() {
+            "No saved BTW history."
+        } else {
+            "BTW history is already visible."
+        };
+        agent.scrollback.push_block(RenderBlock::system(message));
+    }
     true
 }
 
