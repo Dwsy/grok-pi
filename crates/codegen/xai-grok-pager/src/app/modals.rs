@@ -2883,7 +2883,7 @@ impl AgentView {
                             buf,
                             mca.content,
                             preview_messages.as_deref(),
-                            *preview_scroll as usize,
+                            preview_scroll,
                             &theme,
                         );
                     }
@@ -4565,7 +4565,7 @@ fn render_session_message_preview(
     buf: &mut Buffer,
     area: Rect,
     messages: Option<&[crate::views::modal::SessionPreviewMessage]>,
-    scroll: usize,
+    scroll: &mut u16,
     theme: &Theme,
 ) {
     use crate::render::SafeBuf;
@@ -4648,7 +4648,8 @@ fn render_session_message_preview(
             let total = painted.len();
             let visible_h = area.height as usize;
             let max_scroll = total.saturating_sub(visible_h);
-            let scroll = scroll.min(max_scroll);
+            *scroll = (*scroll as usize).min(max_scroll) as u16;
+            let scroll = *scroll as usize;
             let need_sb = total > visible_h && area.width > 4;
             let paint_w = if need_sb {
                 area.width.saturating_sub(1)
@@ -4912,6 +4913,39 @@ mod session_picker_delete_tests {
             }
             _ => None,
         }
+    }
+
+    #[test]
+    fn session_preview_render_clamps_persistent_scroll_to_bottom() {
+        let area = ratatui::layout::Rect::new(0, 0, 24, 4);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let messages = [crate::views::modal::SessionPreviewMessage {
+            role: "user".into(),
+            content: (0..20)
+                .map(|line| format!("line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }];
+        let theme = crate::theme::Theme::default();
+        let mut scroll = u16::MAX;
+
+        super::render_session_message_preview(&mut buf, area, Some(&messages), &mut scroll, &theme);
+
+        assert!(
+            scroll < u16::MAX,
+            "render must persist the real bottom offset"
+        );
+        let bottom = scroll;
+        assert!(bottom >= 3, "fixture must produce scrollable content");
+
+        crate::views::modal::apply_doc_mouse_scroll(MouseEventKind::ScrollUp, &mut scroll);
+        super::render_session_message_preview(&mut buf, area, Some(&messages), &mut scroll, &theme);
+
+        assert_eq!(
+            scroll,
+            bottom - 3,
+            "one upward wheel event must leave bottom"
+        );
     }
 
     #[test]
