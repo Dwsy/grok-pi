@@ -5,6 +5,8 @@ async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "9
 
 [workspace]
 resolver = "2"
+# Bare Cargo commands should build the product, not every workspace crate.
+default-members = ["crates/codegen/xai-grok-pager-bin"]
 members = [
     "crates/codegen/pi-grok-adapter",
     "crates/build/xai-proto-build",
@@ -381,15 +383,16 @@ inherits = "release-dist"
 
 [profile.dev]
 panic = "abort"
+incremental = true
 split-debuginfo = "unpacked"
 codegen-units = 128
 debug = "line-tables-only"
 opt-level = 0
 lto = false
-incremental = true
 
 [profile.bench]
-debug = true
+debug = false
+incremental = true
 
 [workspace.lints.clippy]
 # prost 0.14 renders proto doc-comment bullet lists in a way that trips this

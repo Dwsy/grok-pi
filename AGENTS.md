@@ -113,14 +113,14 @@ Run from the project root:
 
 ```bash
 ./build.sh
-cargo test -p pi-grok-adapter
-cargo test -p xai-grok-pager-bin --bin grok-pi
-cargo check -p xai-grok-pager-bin --bin grok-pi
+./scripts/cargo-shared.sh test -p pi-grok-adapter
+./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi
+./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi
 ```
 
 `./build.sh` builds `grok-pi`. When the optional `pi-main` submodule has workspace dependencies installed (`pi-main/node_modules/.bin/tsgo`), it rebuilds the coding-agent checkout first; a freshly initialized, unprovisioned submodule is skipped. Requires system Pi >= **0.80.10**, Node.js >= 22.19.0, and the repository Rust toolchain.
 
-All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-cargo-target`. `./build.sh` and `./verify.sh` initialize the root `target` symlink automatically. Before running Cargo directly in a newly-created worktree, run `./scripts/setup-shared-cargo-target.sh` once or use `./scripts/cargo-shared.sh <cargo-args>`. An explicit `CARGO_TARGET_DIR` remains authoritative for CI or one-off isolation. Never copy `target/` between worktrees.
+All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-cargo-target`. `./build.sh` and `./verify.sh` initialize the root `target` symlink automatically. Use `./scripts/cargo-shared.sh <cargo-args>` for project Cargo commands: it sets up the shared target, keeps incremental compilation enabled, prunes at most 8 stale incremental caches every 6 hours, and stops Cargo at the default 20 GiB free-space floor. Raise the floor with `CARGO_MIN_FREE_GIB`; use `CARGO_DISK_GUARD_PATH` when output is on a custom filesystem; set `CARGO_MAINTENANCE=0` to skip one cleanup pass. An explicit `CARGO_TARGET_DIR` remains authoritative for CI or one-off isolation. Never copy `target/` between worktrees. Direct raw `cargo` remains available for deliberate recovery/maintenance, but is not protected by the project guard.
 
 `./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known blockers are documented in [`VERIFICATION.md`](VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and several source-identity/mock expectations require deliberate baseline maintenance. Focused Pager lib tests compile and pass after the `47348d1` integration. Do not claim full verification is green unless the remaining blockers are resolved.
 

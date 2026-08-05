@@ -32,10 +32,10 @@ if ! command -v cargo >/dev/null 2>&1; then
   "status": "NOT_RUN",
   "reason": "cargo is not installed in this environment",
   "commands": [
-    "cargo check -p xai-grok-pager-bin --bin grok-pi",
-    "cargo test -p pi-grok-adapter",
-    "cargo test -p xai-grok-pager --lib external_builtin_filter_accepts_aliases_and_omits_product_commands",
-    "cargo test -p xai-grok-pager --lib slash_compact_with_context_enqueues_command"
+    "./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi",
+    "./scripts/cargo-shared.sh test -p pi-grok-adapter",
+    "./scripts/cargo-shared.sh test -p xai-grok-pager --lib external_builtin_filter_accepts_aliases_and_omits_product_commands",
+    "./scripts/cargo-shared.sh test -p xai-grok-pager --lib slash_compact_with_context_enqueues_command"
   ]
 }
 JSON
@@ -45,10 +45,10 @@ fi
 
 (
   cd "$GROK_ROOT"
-  cargo check -p xai-grok-pager-bin --bin grok-pi
-  cargo test -p pi-grok-adapter
-  cargo test -p xai-grok-pager --lib external_builtin_filter_accepts_aliases_and_omits_product_commands
-  cargo test -p xai-grok-pager --lib slash_compact_with_context_enqueues_command
+  "$ROOT/scripts/cargo-shared.sh" check -p xai-grok-pager-bin --bin grok-pi
+  "$ROOT/scripts/cargo-shared.sh" test -p pi-grok-adapter
+  "$ROOT/scripts/cargo-shared.sh" test -p xai-grok-pager --lib external_builtin_filter_accepts_aliases_and_omits_product_commands
+  "$ROOT/scripts/cargo-shared.sh" test -p xai-grok-pager --lib slash_compact_with_context_enqueues_command
 ) 2>&1 | tee "$LOG_DIR/cargo-verification.log"
 
 cat > "$LOG_DIR/cargo-status.json" <<JSON

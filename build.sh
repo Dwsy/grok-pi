@@ -30,7 +30,7 @@ if [[ -f "$PI_MAIN_ROOT/packages/coding-agent/package.json" ]]; then
   fi
 fi
 
-(cd "$GROK_ROOT" && cargo build -p xai-grok-pager-bin --bin grok-pi)
+(cd "$GROK_ROOT" && "$ROOT/scripts/cargo-shared.sh" build -p xai-grok-pager-bin --bin grok-pi)
 
 echo "Built: $GROK_ROOT/target/debug/grok-pi"
 echo "Pi:    $PI_BIN (min compatible 0.80.10)"

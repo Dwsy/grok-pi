@@ -2,5 +2,24 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Cargo has no native target-cache size limit. Stop before the filesystem gets
+# critically low instead of letting a large build damage unrelated user data.
+GUARD_PATH="${CARGO_DISK_GUARD_PATH:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}}"
+CARGO_HOME_PATH="${CARGO_HOME:-$HOME/.cargo}"
+MIN_FREE_GIB="${CARGO_MIN_FREE_GIB:-20}"
 "$SCRIPT_DIR/setup-shared-cargo-target.sh" >&2
-exec cargo "$@"
+if [[ "${CARGO_MAINTENANCE:-1}" != "0" ]]; then
+  python3 "$SCRIPT_DIR/cargo-maintenance.py" \
+    --target-dir "$GUARD_PATH" \
+    --interval-hours "${CARGO_MAINTENANCE_INTERVAL_HOURS:-6}" \
+    --stale-days "${CARGO_MAINTENANCE_STALE_DAYS:-7}" \
+    --soft-free-gib "${CARGO_MAINTENANCE_SOFT_FREE_GIB:-40}" \
+    --max-dirs "${CARGO_MAINTENANCE_MAX_DIRS:-8}"
+fi
+exec python3 "$SCRIPT_DIR/cargo-disk-guard.py" \
+  --path "$GUARD_PATH" \
+  --path "$CARGO_HOME_PATH" \
+  --min-free-gib "$MIN_FREE_GIB" \
+  -- cargo "$@"

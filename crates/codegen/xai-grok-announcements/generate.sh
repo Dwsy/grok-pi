@@ -24,7 +24,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "[generate] 1/3 exporting ts-rs bindings (cargo test --features ts) …"
-(cd "$CRATE_DIR" && TS_RS_EXPORT_DIR="$TMP" cargo test --quiet --features ts)
+(cd "$CRATE_DIR" && TS_RS_EXPORT_DIR="$TMP" "$REPO_ROOT/scripts/cargo-shared.sh" test --quiet --features ts)
 
 # Never clobber the committed bindings unless the export actually produced some.
 bindings=("$TMP"/*.ts)

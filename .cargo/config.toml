@@ -1,3 +1,13 @@
+# Keep local Cargo runs bounded: fewer compiler workers reduce temporary disk
+# pressure. Incremental compilation stays enabled; scripts/cargo-shared.sh
+# periodically prunes only stale incremental cache directories.
+[build]
+jobs = 2
+incremental = true
+
+[net]
+retry = 1
+
 # link-arg
 # https://pyo3.rs/v0.17.1/building_and_distribution.html#macos
 

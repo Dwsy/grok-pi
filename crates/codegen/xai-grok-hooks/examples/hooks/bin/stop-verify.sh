@@ -15,10 +15,20 @@ if [ "$REASON" != "end_turn" ]; then
   exit 0
 fi
 
-if cargo build --quiet >/dev/null 2>&1; then
-  # Build is green: allow the stop.
-  exit 0
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+CARGO_GUARD="$REPO_ROOT/scripts/cargo-shared.sh"
+
+if [ -x "$CARGO_GUARD" ]; then
+  if "$CARGO_GUARD" build --quiet >/dev/null 2>&1; then
+    # Build is green: allow the stop.
+    exit 0
+  fi
+else
+  if cargo build --quiet >/dev/null 2>&1; then
+    # Build is green: allow the stop.
+    exit 0
+  fi
 fi
 
 # Build is red: keep the agent working, with the failure as feedback.
-echo '{"decision":"block","reason":"cargo build failed; fix the errors before finishing."}'
+echo '{"decision":"block","reason":"guarded cargo build failed; fix the errors before finishing."}'

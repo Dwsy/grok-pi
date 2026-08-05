@@ -23,6 +23,26 @@ fi
 SHARED_TARGET="$GIT_COMMON_DIR/pi-grok-cargo-target"
 LOCAL_TARGET="$REPO_ROOT/target"
 LOCK_DIR="$GIT_COMMON_DIR/pi-grok-cargo-target.setup-lock"
+MIN_FREE_GIB="${CARGO_MIN_FREE_GIB:-20}"
+
+if ! [[ "$MIN_FREE_GIB" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: CARGO_MIN_FREE_GIB must be a positive integer" >&2
+  exit 1
+fi
+
+check_free_space() {
+  local path="$1"
+  local available_kib
+  available_kib="$(df -Pk "$path" | awk 'NR == 2 { print $4 }')"
+  if [[ -z "$available_kib" || "$available_kib" -lt $((MIN_FREE_GIB * 1024 * 1024)) ]]; then
+    echo "error: refusing Cargo setup; less than ${MIN_FREE_GIB} GiB is free on $path" >&2
+    echo "free space first, or set CARGO_MIN_FREE_GIB to a deliberate lower floor" >&2
+    exit 74
+  fi
+}
+
+check_free_space "$REPO_ROOT"
+check_free_space "$GIT_COMMON_DIR"
 LOCK_HELD=0
 
 release_lock() {
