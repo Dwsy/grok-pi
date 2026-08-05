@@ -58,6 +58,40 @@ fn toggle_vim_mode_flips_state_and_persistence_cache() {
         "cache must follow the second toggle"
     );
 }
+
+#[test]
+fn set_prompt_cursor_canonicalizes_and_emits_persist_setting() {
+    use crate::appearance::PromptCursor;
+    use crate::settings::SettingValue;
+
+    let mut app = test_app_with_agent();
+    assert_eq!(app.appearance.prompt.cursor, PromptCursor::Native);
+
+    let effects = dispatch(Action::SetPromptCursor("pipe".to_string()), &mut app);
+    assert_eq!(app.appearance.prompt.cursor, PromptCursor::Bar);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::PersistSetting {
+                key: "prompt_cursor",
+                value: SettingValue::String(value),
+                rollback_value: SettingValue::String(previous),
+            }] if value == "bar" && previous == "native"
+        ),
+        "prompt cursor must persist the canonical value and rollback value, got {effects:?}",
+    );
+
+    assert!(
+        dispatch(Action::SetPromptCursor("bar".to_string()), &mut app).is_empty(),
+        "setting the already-canonical cursor must be a no-op",
+    );
+    assert!(
+        dispatch(Action::SetPromptCursor("too wide".to_string()), &mut app).is_empty(),
+        "invalid cursor strings must not mutate or persist",
+    );
+    assert_eq!(app.appearance.prompt.cursor, PromptCursor::Bar);
+}
+
 /// End-to-end: in vim mode, Tab from the prompt focuses scrollback,
 /// and then `j` navigates the scrollback (does NOT bounce back to the
 /// prompt). Drives the real handle_input → dispatch loop.

@@ -870,6 +870,37 @@ pub(in crate::app::dispatch) fn set_scroll_lines(app: &mut AppView, raw: i64) ->
     }]
 }
 
+pub(super) fn set_prompt_cursor_inner(app: &mut AppView, new: crate::appearance::PromptCursor) {
+    let mut config = app.appearance.clone();
+    config.prompt.cursor = new;
+    app.set_appearance(config);
+}
+
+/// Set the prompt cursor rendered in the input box.
+///
+/// PAGER-OWNED: live-applied to every agent and persisted to `[prompt].cursor`
+/// in pager.toml via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_prompt_cursor(app: &mut AppView, raw: String) -> Vec<Effect> {
+    let Some(new) = crate::appearance::PromptCursor::parse_config(&raw) else {
+        tracing::warn!(target: "settings", key = "prompt_cursor", value = %raw, "invalid prompt cursor ignored");
+        return vec![];
+    };
+    let prev = app.appearance.prompt.cursor.to_config_value();
+    let canonical = new.to_config_value();
+    if prev == canonical {
+        return vec![];
+    }
+    set_prompt_cursor_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key = "prompt_cursor", value = %canonical, "setting changed");
+    app.show_toast(&format!("\u{2713} Prompt cursor: {canonical}"));
+    vec![Effect::PersistSetting {
+        key: "prompt_cursor",
+        value: crate::settings::SettingValue::String(canonical),
+        rollback_value: crate::settings::SettingValue::String(prev),
+    }]
+}
+
 pub(super) fn set_respect_manual_folds_inner(app: &mut AppView, new: bool) {
     let mut config = app.appearance.clone();
     config.scrollback.scroll.respect_manual_folds = new;
@@ -2468,6 +2499,36 @@ pub(in crate::app::dispatch) fn set_pi_cache_graph(
     app.show_toast(&format!("\u{2713} Pi cache graph in Context: {value}"));
     vec![Effect::PersistSetting {
         key: "pi_cache_graph",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
+pub(super) fn set_pi_user_markdown_inner(app: &mut AppView, enabled: bool) {
+    crate::appearance::cache::set_pi_user_markdown(enabled);
+    app.current_ui.pi_user_markdown = enabled;
+    for agent in app.agents.values_mut() {
+        agent.scrollback.apply_pi_user_markdown_flip(enabled);
+        for child in agent.subagent_views.values_mut() {
+            child.scrollback.apply_pi_user_markdown_flip(enabled);
+        }
+    }
+}
+
+pub(in crate::app::dispatch) fn set_pi_user_markdown(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = app.current_ui.pi_user_markdown;
+    if previous == enabled && crate::appearance::cache::load_pi_user_markdown() == enabled {
+        return vec![];
+    }
+    set_pi_user_markdown_inner(app, enabled);
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!("\u{2713} Markdown user messages: {value}"));
+    vec![Effect::PersistSetting {
+        key: "pi_user_markdown",
         value: crate::settings::SettingValue::Bool(enabled),
         rollback_value: crate::settings::SettingValue::Bool(previous),
     }]

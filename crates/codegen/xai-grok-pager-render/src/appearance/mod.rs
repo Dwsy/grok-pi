@@ -27,7 +27,7 @@ pub use config::{
     ExecuteHeaderStyle, FollowIndicator, LayoutConfig, PromptConfig, PromptCursor,
     PromptViewConfig, RawAltScreenMode, RawAppearanceConfig, RawTerminalConfig, ScrollConfig,
     ScrollbackConfig, ScrollbarConfig, TodoBadgeFormat, TodoConfig, ToolBullet, ToolConfig,
-    persist_respect_manual_folds,
+    persist_prompt_cursor, persist_respect_manual_folds,
 };
 pub use execute_header_content::ExecuteHeaderContent;
 pub use render_mermaid::RenderMermaid;

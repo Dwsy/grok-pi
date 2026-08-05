@@ -287,6 +287,11 @@ pub async fn set_pi_cache_graph(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_cache_graph = value).await
 }
 
+/// Persist `[ui].pi_user_markdown` via `update_config`.
+pub async fn set_pi_user_markdown(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_user_markdown = value).await
+}
+
 /// Persist `[ui].show_other_tool_args` via `update_config`.
 pub async fn set_show_other_tool_args(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.show_other_tool_args = value).await

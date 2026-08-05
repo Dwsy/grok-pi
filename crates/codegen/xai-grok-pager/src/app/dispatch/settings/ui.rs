@@ -9,14 +9,14 @@ use super::setters::{
     set_group_tool_verbs_inner, set_hunk_tracker_mode_inner, set_invert_scroll_inner,
     set_keep_text_selection_inner, set_max_thoughts_width_inner, set_multiline_mode,
     set_page_flip_on_send_inner, set_pi_bash_run_display_inner, set_progress_bar_inner,
-    set_prompt_suggestions_inner, set_recap_mermaid_inner, set_recap_model_inner,
-    set_remember_tool_approvals_inner, set_render_mermaid_inner, set_respect_manual_folds_inner,
-    set_screen_mode_inner, set_scroll_lines_inner, set_scroll_mode_inner, set_scroll_speed_inner,
-    set_session_recap_inner, set_show_thinking_blocks_inner, set_show_tips_inner,
-    set_side_by_side_edit_inner, set_simple_mode_inner, set_theme_inner,
-    set_thinking_border_colors_inner, set_timeline_inner, set_timestamps, set_timestamps_inner,
-    set_vim_mode_inner, set_voice_capture_mode_inner, set_voice_keybind_enabled_inner,
-    set_voice_stt_language_inner,
+    set_prompt_cursor_inner, set_prompt_suggestions_inner, set_recap_mermaid_inner,
+    set_recap_model_inner, set_remember_tool_approvals_inner, set_render_mermaid_inner,
+    set_respect_manual_folds_inner, set_screen_mode_inner, set_scroll_lines_inner,
+    set_scroll_mode_inner, set_scroll_speed_inner, set_session_recap_inner,
+    set_show_thinking_blocks_inner, set_show_tips_inner, set_side_by_side_edit_inner,
+    set_simple_mode_inner, set_theme_inner, set_thinking_border_colors_inner, set_timeline_inner,
+    set_timestamps, set_timestamps_inner, set_vim_mode_inner, set_voice_capture_mode_inner,
+    set_voice_keybind_enabled_inner, set_voice_stt_language_inner,
 };
 use crate::app::actions::{Action, Effect};
 use crate::app::app_view::{ActiveView, AppView};
@@ -54,6 +54,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     let show_tips_from_app = app.show_tips;
     let auto_update_from_app = app.auto_update;
     let respect_manual_folds_from_app = app.appearance.scrollback.scroll.respect_manual_folds;
+    let prompt_cursor_from_app = app.appearance.prompt.cursor.to_config_value();
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
@@ -93,6 +94,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 vim_mode: crate::appearance::cache::load_vim_mode(),
                 scroll_speed: crate::appearance::cache::load_scroll_speed(),
                 respect_manual_folds: respect_manual_folds_from_app,
+                prompt_cursor: prompt_cursor_from_app.clone(),
                 auto_mode_gate: auto_mode_gate_from_app,
                 ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
                 voice_stt_language: voice_stt_language_from_app.clone(),
@@ -355,6 +357,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
     let show_tips_from_app = app.show_tips;
     let auto_update_from_app = app.auto_update;
     let respect_manual_folds_from_app = app.appearance.scrollback.scroll.respect_manual_folds;
+    let prompt_cursor_from_app = app.appearance.prompt.cursor.to_config_value();
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
@@ -403,6 +406,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
         vim_mode: crate::appearance::cache::load_vim_mode(),
         scroll_speed: crate::appearance::cache::load_scroll_speed(),
         respect_manual_folds: respect_manual_folds_from_app,
+        prompt_cursor: prompt_cursor_from_app.clone(),
         auto_mode_gate: auto_mode_gate_from_app,
         ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
         voice_stt_language: voice_stt_language_from_app,
@@ -955,6 +959,7 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         vim_mode: crate::appearance::cache::load_vim_mode(),
         scroll_speed: crate::appearance::cache::load_scroll_speed(),
         respect_manual_folds: app.appearance.scrollback.scroll.respect_manual_folds,
+        prompt_cursor: app.appearance.prompt.cursor.to_config_value(),
         auto_mode_gate: app.auto_mode_gate,
         ask_user_question_timeout_enabled: app.ask_user_question_timeout_enabled,
         voice_stt_language: app.voice_config.language.clone(),
@@ -1019,6 +1024,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
         }
         ("pi_btw", SettingValue::Bool(b)) => Some(Action::SetPiBtw(*b)),
         ("pi_cache_graph", SettingValue::Bool(b)) => Some(Action::SetPiCacheGraph(*b)),
+        ("pi_user_markdown", SettingValue::Bool(b)) => Some(Action::SetPiUserMarkdown(*b)),
         ("show_other_tool_args", SettingValue::Bool(b)) => Some(Action::SetShowOtherToolArgs(*b)),
         ("review_file_tree", SettingValue::Bool(b)) => Some(Action::SetReviewFileTree(*b)),
         ("review_include_reads", SettingValue::Bool(b)) => Some(Action::SetReviewIncludeReads(*b)),
@@ -1087,6 +1093,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
                 .map(Action::SetPiBashRunDisplay)
         }
         ("prompt_suggestions", SettingValue::Bool(b)) => Some(Action::SetPromptSuggestions(*b)),
+        ("prompt_cursor", SettingValue::String(s)) => Some(Action::SetPromptCursor(s.clone())),
         ("respect_manual_folds", SettingValue::Bool(b)) => Some(Action::SetRespectManualFolds(*b)),
         ("default_selected_permission", SettingValue::Enum(s)) => {
             Some(Action::SetDefaultSelectedPermission((*s).to_owned()))
@@ -1266,6 +1273,10 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("pi_btw", SettingValue::Bool(b)) => app.current_ui.pi_btw = *b,
         ("pi_cache_graph", SettingValue::Bool(b)) => app.current_ui.pi_cache_graph = *b,
+        ("pi_user_markdown", SettingValue::Bool(b)) => {
+            app.current_ui.pi_user_markdown = *b;
+            crate::appearance::cache::set_pi_user_markdown(*b);
+        }
         ("show_other_tool_args", SettingValue::Bool(b)) => {
             app.current_ui.show_other_tool_args = *b;
             let mut config = app.appearance.clone();
@@ -1299,6 +1310,11 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("contextual_hints.ssh_wrap", SettingValue::Bool(b)) => {
             set_contextual_hint_inner(app, |h, v| h.ssh_wrap = v, *b)
+        }
+        ("prompt_cursor", SettingValue::String(s)) => {
+            if let Some(cursor) = crate::appearance::PromptCursor::parse_config(s) {
+                set_prompt_cursor_inner(app, cursor);
+            }
         }
         ("respect_manual_folds", SettingValue::Bool(b)) => set_respect_manual_folds_inner(app, *b),
         ("theme", SettingValue::Enum(s)) => set_theme_inner(app, s),

@@ -1309,6 +1309,15 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "prompt_cursor" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("prompt_cursor", "String", &value));
+            };
+            tokio::task::spawn_blocking(move || crate::appearance::persist_prompt_cursor(&s))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())
+        }
         "respect_manual_folds" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("respect_manual_folds", "Bool", &value));
@@ -1545,6 +1554,14 @@ pub(crate) async fn persist_setting(
                 return Err(kind_mismatch("pi_cache_graph", "Bool", &value));
             };
             xai_grok_shell::util::config::set_pi_cache_graph(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_user_markdown" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_user_markdown", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_user_markdown(b)
                 .await
                 .map_err(|e| e.to_string())
         }

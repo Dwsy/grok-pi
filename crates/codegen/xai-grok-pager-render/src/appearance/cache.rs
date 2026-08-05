@@ -47,6 +47,8 @@ const THINKING_BORDER_COLORS_DEFAULT: bool = true;
 const GROUP_TOOL_VERBS_DEFAULT: bool = true;
 /// Collapsed-Edit-blocks rollout flag defaults OFF (legacy expanded diffs).
 const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;
+/// grok-pi user prompts use the agent markdown renderer by default.
+const PI_USER_MARKDOWN_DEFAULT: bool = true;
 /// Next-prompt suggestions (tab autocomplete ghost text) default ON.
 const PROMPT_SUGGESTIONS_DEFAULT: bool = true;
 const KEEP_TEXT_SELECTION_DEFAULT: TextSelection = TextSelection::Flash;
@@ -422,6 +424,38 @@ pub fn set_collapsed_edit_blocks(enabled: bool) {
     COLLAPSED_EDIT_BLOCKS_LOADED.with(|l| l.set(true));
 }
 
+// -- Pi user markdown (agent-style user prompts) ------------------------------
+
+thread_local! {
+    static PI_USER_MARKDOWN_CURRENT: Cell<bool> =
+        const { Cell::new(PI_USER_MARKDOWN_DEFAULT) };
+    static PI_USER_MARKDOWN_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read cached `pi_user_markdown`, seeding from `[ui]` on first call.
+/// Default ON when unset. Render path also requires the external-agent
+/// (grok-pi) profile; stock Grok ignores this flag.
+pub fn load_pi_user_markdown() -> bool {
+    PI_USER_MARKDOWN_LOADED.with(|loaded| {
+        if !loaded.get() {
+            PI_USER_MARKDOWN_CURRENT.with(|c| {
+                c.set(load_bool_from_effective_config(
+                    "pi_user_markdown",
+                    PI_USER_MARKDOWN_DEFAULT,
+                ))
+            });
+            loaded.set(true);
+        }
+    });
+    PI_USER_MARKDOWN_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `pi_user_markdown`.
+pub fn set_pi_user_markdown(enabled: bool) {
+    PI_USER_MARKDOWN_CURRENT.with(|c| c.set(enabled));
+    PI_USER_MARKDOWN_LOADED.with(|l| l.set(true));
+}
+
 // -- Side-by-side edit diffs --------------------------------------------------
 
 /// Default for the grok-pi-only F2 side-by-side edit preference.
@@ -748,6 +782,7 @@ pub fn prime(ui: &UiConfig) {
     let _ = load_thinking_border_colors();
     let _ = load_group_tool_verbs();
     let _ = load_collapsed_edit_blocks();
+    set_pi_user_markdown(ui.pi_user_markdown);
     let _ = load_prompt_suggestions();
     // `default_selected_permission` owns its own cache in `permission_cursor`.
     crate::appearance::permission_cursor::prime();
@@ -874,12 +909,17 @@ mod tests {
             ui.collapsed_edit_blocks
                 .unwrap_or(COLLAPSED_EDIT_BLOCKS_DEFAULT)
         );
+        assert_eq!(PI_USER_MARKDOWN_DEFAULT, ui.pi_user_markdown);
         // Deliberate constant pin: the rollout contract is default-OFF.
         #[allow(clippy::assertions_on_constants)]
         {
             assert!(
                 !COLLAPSED_EDIT_BLOCKS_DEFAULT,
                 "collapsed_edit_blocks must default OFF (rollout flag)"
+            );
+            assert!(
+                PI_USER_MARKDOWN_DEFAULT,
+                "pi_user_markdown must default ON for grok-pi"
             );
         }
         assert_eq!(

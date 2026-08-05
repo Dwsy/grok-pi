@@ -6,6 +6,7 @@
 
 use super::registry::{
     DynamicEnumSource, EnumChoice, SettingCategory, SettingKind, SettingMeta, SettingOwner,
+    StringValidator,
 };
 use crate::appearance::ScrollMode;
 use crate::appearance::TextSelection;
@@ -1038,6 +1039,25 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.prompt_suggestions.unwrap_or(true),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
+        // PAGER-owned, persisted to `[prompt].cursor` in pager.toml.
+        // Live-applied to every agent through `AppView::set_appearance`.
+        SettingMeta {
+            key: "prompt_cursor",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Pager,
+            label: "Prompt cursor",
+            description: "Cursor in the input box: native, block, underline, bar, or one single-column character.",
+            keywords: &[
+                "prompt", "input", "cursor", "caret", "symbol", "glyph", "block", "bar",
+            ],
+            kind: SettingKind::String {
+                default: "native",
+                validator: StringValidator::PromptCursor,
             },
             restart_required: false,
             hidden_in_minimal: false,
@@ -2165,6 +2185,20 @@ pub fn default_settings() -> Vec<SettingMeta> {
             keywords: &["pi", "cache", "graph", "context", "stats", "hit"],
             kind: SettingKind::Bool {
                 default: ui_default.pi_cache_graph,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_user_markdown",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Markdown user messages",
+            description: "Render grok-pi user prompts with the agent markdown renderer (expanded, user chrome preserved). Off restores classic collapsible plain-text prompts. Default on.",
+            keywords: &["pi", "user", "markdown", "prompt", "message"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_user_markdown,
             },
             restart_required: false,
             hidden_in_minimal: false,

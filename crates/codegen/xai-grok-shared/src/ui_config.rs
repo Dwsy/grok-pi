@@ -62,6 +62,11 @@ pub struct UiConfig {
     /// Default on for grok-pi; F2 can disable without restart.
     #[serde(default = "default_true")]
     pub pi_cache_graph: bool,
+    /// Render grok-pi user prompts with the agent markdown renderer (no
+    /// collapse). Default on; F2 can disable to restore classic collapsible
+    /// plain-text prompts. Applies immediately.
+    #[serde(default = "default_true")]
+    pub pi_user_markdown: bool,
     /// Show `raw_input` args on Other/generic tool cards when expanded.
     /// Default off; F2 can enable without restart. Not fabric-only.
     #[serde(default)]
@@ -414,6 +419,7 @@ impl Default for UiConfig {
             pi_ask_user_question_notifications: true,
             pi_btw: false,
             pi_cache_graph: true,
+            pi_user_markdown: true,
             show_other_tool_args: false,
             review_file_tree: false,
             review_include_reads: false,

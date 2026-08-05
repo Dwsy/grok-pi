@@ -639,6 +639,7 @@ pub enum Action {
     /// Set `[scrollback.scroll].respect_manual_folds`. PAGER-owned:
     /// live-applied via `AppView::set_appearance` and persisted to
     /// pager.toml via `Effect::PersistSetting`.
+    SetPromptCursor(String),
     SetRespectManualFolds(bool),
     /// Set the canonical for `[ui].default_selected_permission`. Persists
     /// via `Effect::PersistSetting`. Payload is the registry's canonical
@@ -774,6 +775,9 @@ pub enum Action {
     /// Enable native /btw for grok-pi (restart required).
     SetPiBtw(bool),
     SetPiCacheGraph(bool),
+    /// Render grok-pi user prompts with the agent markdown renderer
+    /// (`[ui].pi_user_markdown`, default on).
+    SetPiUserMarkdown(bool),
     /// Show raw_input JSON on Other/generic tool cards when expanded (`[ui].show_other_tool_args`, default off).
     SetShowOtherToolArgs(bool),
     /// Default tree layout for `/review-*` left pane (`[ui].review_file_tree`).

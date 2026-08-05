@@ -1,5 +1,6 @@
 //! UserPromptBlock - displays user input.
 
+use std::cell::RefCell;
 use std::ops::Range;
 
 use ratatui::style::{Modifier, Style};
@@ -11,6 +12,8 @@ use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{
     AccentStyle, BlockBackground, BlockContext, BlockLine, BlockOutput, DisplayMode, Selectable,
 };
+
+use super::markdown_content::MarkdownContent;
 
 const USER_PROMPT_BODY_RANGE: u16 = 0;
 /// Max visible lines when a user prompt is collapsed.
@@ -79,7 +82,7 @@ fn token_styled_line(
 }
 
 /// Block displaying a user's prompt.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct UserPromptBlock {
     /// The user's input text.
     pub text: String,
@@ -97,6 +100,22 @@ pub struct UserPromptBlock {
     /// (recognized `/command` tokens). Empty = plain prompt styling. This is
     /// the sole skill signal — a leading skill invocation is `[0..token_end]`.
     pub skill_token_ranges: Vec<Range<usize>>,
+    /// Lazy agent-style markdown renderer (grok-pi + `pi_user_markdown` only).
+    markdown: RefCell<Option<MarkdownContent>>,
+}
+
+impl Clone for UserPromptBlock {
+    fn clone(&self) -> Self {
+        Self {
+            text: self.text.clone(),
+            is_bash: self.is_bash,
+            is_cron: self.is_cron,
+            is_interjection: self.is_interjection,
+            prompt_index: self.prompt_index,
+            skill_token_ranges: self.skill_token_ranges.clone(),
+            markdown: RefCell::new(self.markdown.borrow().clone()),
+        }
+    }
 }
 
 impl UserPromptBlock {
@@ -109,6 +128,29 @@ impl UserPromptBlock {
             is_interjection: false,
             prompt_index: None,
             skill_token_ranges: Vec::new(),
+            markdown: RefCell::new(None),
+        }
+    }
+
+    /// Whether grok-pi should render this prompt with the agent markdown path.
+    fn use_agent_renderer() -> bool {
+        crate::app::external_agent_active() && crate::appearance::cache::load_pi_user_markdown()
+    }
+
+    fn ensure_markdown(&self) {
+        let mut slot = self.markdown.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(MarkdownContent::new(self.text.clone()));
+        }
+    }
+
+    /// Set raw mode on the cached markdown renderer (when active).
+    pub fn set_raw_mode(&mut self, raw: bool) {
+        if Self::use_agent_renderer() {
+            self.ensure_markdown();
+            if let Some(md) = self.markdown.get_mut() {
+                md.set_raw_mode(raw);
+            }
         }
     }
 
@@ -126,6 +168,7 @@ impl UserPromptBlock {
             is_interjection: false,
             prompt_index: None,
             skill_token_ranges: Vec::new(),
+            markdown: RefCell::new(None),
         }
     }
 
@@ -149,6 +192,7 @@ impl UserPromptBlock {
             is_interjection: false,
             prompt_index: None,
             skill_token_ranges,
+            markdown: RefCell::new(None),
         }
     }
 
@@ -165,6 +209,7 @@ impl UserPromptBlock {
             is_interjection: false,
             prompt_index: None,
             skill_token_ranges,
+            markdown: RefCell::new(None),
         }
     }
 
@@ -177,6 +222,7 @@ impl UserPromptBlock {
             is_interjection: false,
             prompt_index: None,
             skill_token_ranges: Vec::new(),
+            markdown: RefCell::new(None),
         }
     }
 
@@ -190,6 +236,7 @@ impl UserPromptBlock {
             is_interjection: true,
             prompt_index: None,
             skill_token_ranges: Vec::new(),
+            markdown: RefCell::new(None),
         }
     }
 
@@ -455,10 +502,89 @@ impl UserPromptBlock {
 
         all_lines
     }
+
+    /// Agent-markdown path: render body via [`MarkdownContent`], keep user
+    /// prompt prefix/indent and elevated band. Ignores collapse limits.
+    fn markdown_prompt_lines(&self, ctx: &BlockContext) -> Vec<BlockLine> {
+        self.ensure_markdown();
+        let md = self.markdown.borrow();
+        let md = md.as_ref().expect("ensure_markdown");
+
+        let theme = Theme::current();
+        let terminal_native = crate::theme::cache::terminal_native_locked();
+        let (prefix_style, _, _) = Self::prompt_styles(&theme, terminal_native);
+        let band = Self::prompt_band_color_for(&theme, ctx.is_selected, terminal_native);
+        let with_band = |line: BlockLine| -> BlockLine {
+            match band {
+                Some(c) => line.with_background(c),
+                None => line,
+            }
+        };
+
+        let prompt_cfg = &ctx.appearance.scrollback.blocks.prompt;
+        let compact = ctx.appearance.prompt.compact;
+        let show_prefix = prompt_cfg.show_prefix && !compact;
+
+        let prefix = if !show_prefix {
+            ""
+        } else if self.is_bash {
+            "$ "
+        } else if self.is_cron {
+            "\u{21BB}  "
+        } else {
+            crate::glyphs::prompt_arrow()
+        };
+        let prefix_width = prefix.width();
+        let has_visible_prefix = prefix_width > 0;
+        let indent = " ".repeat(prefix_width);
+        let content_width = (ctx.width as usize).saturating_sub(prefix_width).max(1);
+
+        let body = md.output(content_width);
+        let mut out = Vec::with_capacity(body.lines.len());
+        for (i, mut bl) in body.lines.into_iter().enumerate() {
+            let line_prefix = if !show_prefix {
+                ""
+            } else if i == 0 {
+                prefix
+            } else {
+                &indent
+            };
+            if !line_prefix.is_empty() {
+                let mut spans = vec![Span::styled(line_prefix.to_string(), prefix_style)];
+                spans.extend(bl.content.spans.into_iter().map(|s| Span {
+                    content: s.content.to_string().into(),
+                    style: s.style,
+                }));
+                let content_end = spans.len();
+                bl.content = Line::from(spans);
+                bl.selectable = if has_visible_prefix {
+                    Selectable::Spans(1..content_end)
+                } else {
+                    Selectable::All
+                };
+            }
+            bl.selection_range = Some(USER_PROMPT_BODY_RANGE);
+            out.push(with_band(bl));
+        }
+        if out.is_empty() {
+            out.push(with_band(BlockLine {
+                content: Line::from(Span::styled(prefix.trim().to_string(), prefix_style)),
+                selectable: Selectable::All,
+                selection_range: Some(USER_PROMPT_BODY_RANGE),
+                ..Default::default()
+            }));
+        }
+        out
+    }
 }
 
 impl BlockContent for UserPromptBlock {
     fn output(&self, ctx: &BlockContext) -> BlockOutput {
+        if Self::use_agent_renderer() {
+            let lines = self.markdown_prompt_lines(ctx);
+            return BlockOutput { lines };
+        }
+
         let max_lines = match ctx.mode {
             DisplayMode::Expanded => None,
             DisplayMode::Collapsed | DisplayMode::Truncated => Some(COLLAPSED_MAX_LINES),
@@ -501,10 +627,13 @@ impl BlockContent for UserPromptBlock {
     }
 
     fn has_raw_mode(&self) -> bool {
-        false
+        Self::use_agent_renderer()
     }
 
     fn is_foldable(&self) -> bool {
+        if Self::use_agent_renderer() {
+            return false;
+        }
         // Estimate visual line count to catch long single-line prompts that
         // wrap past the limit. Uses a conservative content width (terminal
         // width minus prefix/padding); at wider terminals we may slightly
@@ -526,6 +655,9 @@ impl BlockContent for UserPromptBlock {
     }
 
     fn default_display_mode(&self) -> DisplayMode {
+        if Self::use_agent_renderer() {
+            return DisplayMode::Expanded;
+        }
         if self.is_foldable() {
             DisplayMode::Collapsed
         } else {
@@ -1169,5 +1301,73 @@ mod tests {
                 crate::theme::cache::terminal_native_locked(),
             )
         );
+    }
+
+    fn with_external_agent_markdown(on: bool, f: impl FnOnce()) {
+        let prev_agent = crate::app::external_agent_active();
+        let prev_md = crate::appearance::cache::load_pi_user_markdown();
+        crate::app::set_external_agent_active(true);
+        crate::appearance::cache::set_pi_user_markdown(on);
+        f();
+        crate::appearance::cache::set_pi_user_markdown(prev_md);
+        crate::app::set_external_agent_active(prev_agent);
+    }
+
+    #[test]
+    fn external_agent_markdown_on_expanded_not_foldable() {
+        with_external_agent_markdown(true, || {
+            let block = UserPromptBlock::new("one\ntwo\nthree\nfour");
+            assert!(!block.is_foldable());
+            assert_eq!(block.default_display_mode(), DisplayMode::Expanded);
+            assert!(block.has_raw_mode());
+        });
+    }
+
+    #[test]
+    fn external_agent_markdown_off_classic_fold() {
+        with_external_agent_markdown(false, || {
+            let block = UserPromptBlock::new("one\ntwo\nthree\nfour");
+            assert!(block.is_foldable());
+            assert_eq!(block.default_display_mode(), DisplayMode::Collapsed);
+            assert!(!block.has_raw_mode());
+        });
+    }
+
+    #[test]
+    fn stock_grok_ignores_markdown_cache() {
+        let prev_agent = crate::app::external_agent_active();
+        let prev_md = crate::appearance::cache::load_pi_user_markdown();
+        crate::app::set_external_agent_active(false);
+        crate::appearance::cache::set_pi_user_markdown(true);
+        let block = UserPromptBlock::new("one\ntwo\nthree\nfour");
+        assert!(block.is_foldable());
+        assert!(!block.has_raw_mode());
+        crate::appearance::cache::set_pi_user_markdown(prev_md);
+        crate::app::set_external_agent_active(prev_agent);
+    }
+
+    #[test]
+    fn markdown_path_ignores_collapsed_mode() {
+        use crate::appearance::AppearanceConfig;
+        use crate::scrollback::types::BlockContext;
+
+        with_external_agent_markdown(true, || {
+            let block = UserPromptBlock::new("line one\nline two\nline three\nline four");
+            let ctx = BlockContext {
+                mode: DisplayMode::Collapsed,
+                is_running: false,
+                width: 80,
+                raw: false,
+                max_lines: None,
+                appearance: AppearanceConfig::default(),
+                is_selected: false,
+                cwd: None,
+            };
+            let out = block.output(&ctx);
+            assert!(
+                out.lines.len() > 3,
+                "markdown path must ignore collapse max_lines"
+            );
+        });
     }
 }

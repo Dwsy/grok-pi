@@ -142,6 +142,8 @@ pub enum StringValidator {
     /// Validated against the live model catalog at commit time.
     /// Empty input is accepted as a "clear-default" sentinel.
     KnownModel,
+    /// `native`, `block`, `underline`, `bar`, or one single-column character.
+    PromptCursor,
     /// No constraint (any UTF-8 accepted).
     Any,
 }
@@ -292,6 +294,8 @@ pub struct PagerLocalSnapshot {
     /// Mirrors `AppView::appearance.scrollback.scroll.respect_manual_folds`
     /// at snapshot time.
     pub respect_manual_folds: bool,
+    /// Canonical `[prompt].cursor` value from `AppView::appearance`.
+    pub prompt_cursor: String,
     /// Mirrors `AppView::auto_mode_gate` at snapshot time. When false the
     /// permission-mode picker hides the "Auto" choice (matches the Shift+Tab
     /// cycle, which skips Auto when the feature gate is off).
@@ -329,6 +333,7 @@ impl Default for PagerLocalSnapshot {
             // would be `0` (out-of-range) so we override.
             scroll_speed: 50,
             respect_manual_folds: crate::appearance::ScrollConfig::default().respect_manual_folds,
+            prompt_cursor: crate::appearance::PromptCursor::default().to_config_value(),
             auto_mode_gate: false,
             ask_user_question_timeout_enabled: None,
             voice_stt_language: xai_grok_voice::STT_LANGUAGE_DEFAULT.to_string(),
@@ -537,6 +542,9 @@ pub fn current_value_for(
         }
         "pi_btw" => Some(SettingValue::Bool(ui.pi_btw)),
         "pi_cache_graph" => Some(SettingValue::Bool(ui.pi_cache_graph)),
+        "pi_user_markdown" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_pi_user_markdown(),
+        )),
         "show_other_tool_args" => Some(SettingValue::Bool(ui.show_other_tool_args)),
         "review_file_tree" => Some(SettingValue::Bool(ui.review_file_tree)),
         "review_include_reads" => Some(SettingValue::Bool(ui.review_include_reads)),
@@ -629,6 +637,7 @@ pub fn current_value_for(
         "prompt_suggestions" => Some(SettingValue::Bool(
             crate::appearance::cache::load_prompt_suggestions(),
         )),
+        "prompt_cursor" => Some(SettingValue::String(pager.prompt_cursor.clone())),
         "respect_manual_folds" => Some(SettingValue::Bool(pager.respect_manual_folds)),
         // SHELL — canonicalized from `[ui].hunk_tracker_mode`.
         "hunk_tracker_mode" => Some(SettingValue::Enum(canonical_hunk_tracker_mode(
@@ -1389,6 +1398,13 @@ mod tests {
                         "pi_cache_graph default drifts from UiConfig::default()"
                     );
                     assert!(*default, "pi_cache_graph must default ON");
+                }
+                ("pi_user_markdown", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default, ui.pi_user_markdown,
+                        "pi_user_markdown default drifts from UiConfig::default()"
+                    );
+                    assert!(*default, "pi_user_markdown must default ON");
                 }
                 ("show_other_tool_args", SettingKind::Bool { default }) => {
                     assert_eq!(

@@ -943,6 +943,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         }
         "pi_btw" => Some(Action::SetPiBtw(new)),
         "pi_cache_graph" => Some(Action::SetPiCacheGraph(new)),
+        "pi_user_markdown" => Some(Action::SetPiUserMarkdown(new)),
         "show_other_tool_args" => Some(Action::SetShowOtherToolArgs(new)),
         "review_file_tree" => Some(Action::SetReviewFileTree(new)),
         "review_include_reads" => Some(Action::SetReviewIncludeReads(new)),
@@ -1070,6 +1071,7 @@ pub(super) fn action_for_string(
     snapshot: &PagerLocalSnapshot,
 ) -> Option<Action> {
     match key {
+        "prompt_cursor" => Some(Action::SetPromptCursor(value)),
         "default_model" => {
             if value.is_empty() {
                 Some(Action::ClearDefaultModel)
@@ -1160,6 +1162,15 @@ pub(super) fn validate_string(
 ) -> Option<String> {
     match validator {
         StringValidator::Any => None,
+        StringValidator::PromptCursor => {
+            if crate::appearance::PromptCursor::parse_config(buffer).is_some() {
+                None
+            } else {
+                Some(
+                    "Use native, block, underline, bar, or one single-column character".to_string(),
+                )
+            }
+        }
         StringValidator::NonEmptyToken => {
             if buffer.is_empty() {
                 Some("Value cannot be empty".to_string())

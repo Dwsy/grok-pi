@@ -1389,6 +1389,33 @@ impl ScrollbackState {
         self.invalidate_heights();
     }
 
+    /// Re-materialize UserPrompt display modes when grok-pi toggles markdown
+    /// user rendering. Enabling expands collapsed/truncated prompts; disabling
+    /// restores each block's classic default (collapsed when foldable). Pins
+    /// win under `respect_manual_folds`.
+    pub fn apply_pi_user_markdown_flip(&mut self, enabled: bool) {
+        let respect_manual_folds = self.appearance.scrollback.scroll.respect_manual_folds;
+        for entry in self.entries.values_mut() {
+            let RenderBlock::UserPrompt(_) = &entry.block else {
+                continue;
+            };
+            if respect_manual_folds && entry.display_mode_pinned {
+                continue;
+            }
+            if enabled {
+                if matches!(
+                    entry.display_mode,
+                    DisplayMode::Collapsed | DisplayMode::Truncated
+                ) {
+                    entry.display_mode = DisplayMode::Expanded;
+                }
+            } else {
+                entry.display_mode = entry.block.default_display_mode();
+            }
+        }
+        self.invalidate_heights();
+    }
+
     /// Get the index of an entry by its ID. O(1) average via IndexMap.
     pub fn index_of_id(&self, id: EntryId) -> Option<usize> {
         self.entries.get_index_of(&id)
@@ -2392,6 +2419,36 @@ mod tests {
                 state.get_by_id(id).unwrap().display_mode,
                 DisplayMode::Expanded,
                 "explicit expanded_by_default pins the default across flips"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn pi_user_markdown_flip_expands_collapsed_then_restores_default() {
+        std::thread::spawn(|| {
+            crate::app::set_external_agent_active(true);
+            crate::appearance::cache::set_pi_user_markdown(false);
+            let mut state = ScrollbackState::new();
+            let id = state.push_block(RenderBlock::user_prompt("one\ntwo\nthree\nfour"));
+            assert_eq!(
+                state.get_by_id(id).unwrap().display_mode,
+                DisplayMode::Collapsed
+            );
+
+            state.apply_pi_user_markdown_flip(true);
+            assert_eq!(
+                state.get_by_id(id).unwrap().display_mode,
+                DisplayMode::Expanded,
+                "enabling markdown must expand collapsed prompts"
+            );
+
+            state.apply_pi_user_markdown_flip(false);
+            assert_eq!(
+                state.get_by_id(id).unwrap().display_mode,
+                DisplayMode::Collapsed,
+                "disabling markdown must restore classic default"
             );
         })
         .join()

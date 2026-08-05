@@ -1250,6 +1250,7 @@ impl RenderBlock {
         match self {
             RenderBlock::AgentMessage(block) => block.set_raw_mode(raw),
             RenderBlock::Thinking(block) => block.set_raw_mode(raw),
+            RenderBlock::UserPrompt(block) if block.has_raw_mode() => block.set_raw_mode(raw),
             _ => {} // Other blocks don't support raw mode
         }
     }

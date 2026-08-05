@@ -97,24 +97,44 @@ pub enum PromptCursor {
 
 impl PromptCursor {
     /// Parse a pager.toml value. Preset names are case-insensitive; any other
-    /// single-column character becomes a custom cursor. Invalid or wide values
-    /// fall back to [`Self::Native`] so a bad dev config never hides the caret.
-    pub fn from_config(value: &str) -> Self {
+    /// single-column character becomes a custom cursor. Returns `None` for an
+    /// empty, multi-character, control, zero-width, or wide value.
+    pub fn parse_config(value: &str) -> Option<Self> {
         let trimmed = value.trim();
         match trimmed.to_ascii_lowercase().as_str() {
-            "native" | "default" => Self::Native,
-            "block" | "box" => Self::Block,
-            "underline" | "underscore" | "line" => Self::Underline,
-            "bar" | "pipe" | "vertical" => Self::Bar,
+            "native" | "default" => Some(Self::Native),
+            "block" | "box" => Some(Self::Block),
+            "underline" | "underscore" | "line" => Some(Self::Underline),
+            "bar" | "pipe" | "vertical" => Some(Self::Bar),
             _ => {
                 let mut chars = trimmed.chars();
                 match (chars.next(), chars.next()) {
-                    (Some(ch), None) if unicode_width::UnicodeWidthChar::width(ch) == Some(1) => {
-                        Self::Custom(ch)
+                    (Some(ch), None)
+                        if !ch.is_control()
+                            && unicode_width::UnicodeWidthChar::width(ch) == Some(1) =>
+                    {
+                        Some(Self::Custom(ch))
                     }
-                    _ => Self::Native,
+                    _ => None,
                 }
             }
+        }
+    }
+
+    /// Parse a pager.toml value, falling back to the safe native cursor when a
+    /// hand-edited developer config contains an invalid value.
+    pub fn from_config(value: &str) -> Self {
+        Self::parse_config(value).unwrap_or_default()
+    }
+
+    /// Canonical pager.toml / settings-modal representation.
+    pub fn to_config_value(self) -> String {
+        match self {
+            Self::Native => "native".to_string(),
+            Self::Block => "block".to_string(),
+            Self::Underline => "underline".to_string(),
+            Self::Bar => "bar".to_string(),
+            Self::Custom(ch) => ch.to_string(),
         }
     }
 }
@@ -2056,6 +2076,76 @@ pub fn persist_respect_manual_folds(enabled: bool) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
+/// Persist the prompt cursor to `[prompt].cursor` in pager.toml.
+pub fn persist_prompt_cursor(value: &str) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+
+    let cursor = PromptCursor::parse_config(value).ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "prompt cursor must be native, block, underline, bar, or one single-column character",
+        )
+    })?;
+    if xai_grok_config::user_grok_home().is_none() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            "no user grok home resolved; refusing to write a cwd-relative pager.toml that startup would never read",
+        ));
+    }
+    let _guard = PAGER_TOML_SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let path = crate::util::pager_toml_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let updated = upsert_prompt_cursor(&content, &cursor.to_config_value())
+        .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    #[cfg(unix)]
+    let prior_mode: Option<u32> = std::fs::metadata(&path).ok().map(|m| {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode()
+    });
+
+    let suffix = {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("toml.tmp.{}.{}", std::process::id(), nanos)
+    };
+    let tmp = path.with_extension(suffix);
+    std::fs::write(&tmp, updated)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(mode) = prior_mode {
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    std::fs::rename(&tmp, &path)
+}
+
+fn upsert_prompt_cursor(content: &str, value: &str) -> Result<String, String> {
+    let mut doc: DocumentMut = content
+        .parse()
+        .map_err(|e: toml_edit::TomlError| e.to_string())?;
+    let prompt = doc
+        .entry("prompt")
+        .or_insert_with(implicit_table)
+        .as_table_mut()
+        .ok_or_else(|| "pager.toml `prompt` is not a table".to_string())?;
+    prompt.insert("cursor", toml_edit::value(value));
+    Ok(doc.to_string())
+}
+
 fn upsert_respect_manual_folds(content: &str, enabled: bool) -> Result<String, String> {
     let mut doc: DocumentMut = content
         .parse()
@@ -2255,6 +2345,24 @@ gutter_bg = true
         assert!(
             upsert_respect_manual_folds("[scrollback]\nscroll = 5", true).is_err(),
             "non-table `scrollback.scroll` must be a hard error, not a panic"
+        );
+    }
+
+    #[test]
+    fn prompt_cursor_upsert_round_trips_and_preserves_prompt_siblings() {
+        let existing = "[prompt]\nmouse_hover = false\ncursor = \"native\"\n";
+        let updated = upsert_prompt_cursor(existing, "bar").unwrap();
+        let raw: RawAppearanceConfig = toml::from_str(&updated).unwrap();
+        let cfg: AppearanceConfig = raw.into();
+
+        assert_eq!(cfg.prompt.cursor, PromptCursor::Bar);
+        assert!(
+            !cfg.prompt.mouse_hover,
+            "sibling prompt keys must be preserved"
+        );
+        assert!(
+            upsert_prompt_cursor("prompt = 5", "bar").is_err(),
+            "non-table `prompt` must be a hard error",
         );
     }
 
