@@ -10,8 +10,11 @@
  * `/btw-history` is a model-free command whose projection is handled by the
  * adapter. Args JSON: `{ requestId, question, models?: string[], thinkingLevel? }`.
  */
-import { streamSimple, type Message } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { type Message, streamSimple } from "@earendil-works/pi-ai/compat";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_TYPE = "pi-grok-btw/v1";
 const HISTORY_ENTRY_TYPE = "pi-grok-btw/history/v1";
@@ -56,13 +59,15 @@ function truncateText(text: string, maxChars: number): string {
 
 function messageText(message: Record<string, unknown>): string {
 	const content = message.content;
-	if (typeof content === "string") return truncateText(content, MAX_MESSAGE_CHARS);
+	if (typeof content === "string")
+		return truncateText(content, MAX_MESSAGE_CHARS);
 	if (!Array.isArray(content)) return "";
 	const parts: string[] = [];
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue;
 		const item = block as Record<string, unknown>;
-		if (item.type === "text" && typeof item.text === "string") parts.push(item.text);
+		if (item.type === "text" && typeof item.text === "string")
+			parts.push(item.text);
 		if (item.type === "toolCall" && typeof item.name === "string") {
 			parts.push(`[tool: ${item.name}]`);
 		}
@@ -80,11 +85,17 @@ function messageText(message: Record<string, unknown>): string {
 }
 
 /** Drop trailing incomplete assistant tool runs (mid-turn snapshot safety). */
-function stripIncompleteTail(branch: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+function stripIncompleteTail(
+	branch: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
 	const out = branch.slice();
 	while (out.length > 0) {
 		const last = out[out.length - 1];
-		if (last.type === "message" && last.message && typeof last.message === "object") {
+		if (
+			last.type === "message" &&
+			last.message &&
+			typeof last.message === "object"
+		) {
 			const msg = last.message as Record<string, unknown>;
 			const role = msg.role;
 			if (role === "toolResult") {
@@ -121,12 +132,21 @@ function buildSideContext(branch: Array<Record<string, unknown>>): string {
 			if (summary) lines.push(`[Earlier summary]: ${summary}`);
 			continue;
 		}
-		if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") {
+		if (
+			entry.type !== "message" ||
+			!entry.message ||
+			typeof entry.message !== "object"
+		) {
 			continue;
 		}
 		const message = entry.message as Record<string, unknown>;
 		const role = message.role;
-		if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "system") {
+		if (
+			role !== "user" &&
+			role !== "assistant" &&
+			role !== "toolResult" &&
+			role !== "system"
+		) {
 			continue;
 		}
 		const text = messageText(message);
@@ -174,7 +194,10 @@ function sideQuestionInstruction(question: string): string {
 	].join("\n");
 }
 
-function resolveModel(ctx: ExtensionCommandContext, modelRef: string | undefined) {
+function resolveModel(
+	ctx: ExtensionCommandContext,
+	modelRef: string | undefined,
+) {
 	if (!modelRef || !modelRef.trim()) return undefined;
 	const sessionModel = ctx.model;
 	const raw = modelRef.trim();
@@ -205,7 +228,10 @@ function resolveModel(ctx: ExtensionCommandContext, modelRef: string | undefined
 	);
 }
 
-function modelChain(parsed: BtwArgs, sessionModel: { provider?: string; id?: string } | undefined): string[] {
+function modelChain(
+	parsed: BtwArgs,
+	sessionModel: { provider?: string; id?: string } | undefined,
+): string[] {
 	const out: string[] = [];
 	const push = (ref: string | undefined) => {
 		const t = (ref ?? "").trim();
@@ -238,7 +264,9 @@ export default function (pi: ExtensionAPI) {
 		pi.sendMessage(
 			{
 				customType: BRIDGE_TYPE,
-				content: payload.ok ? (payload.answer ?? "") : (payload.error ?? "error"),
+				content: payload.ok
+					? (payload.answer ?? "")
+					: (payload.error ?? "error"),
 				display: false,
 				details: {
 					version: 1,
@@ -254,7 +282,8 @@ export default function (pi: ExtensionAPI) {
 		description: "Internal Pi-Grok bridge: /btw side question",
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const parsed = parseArgs(args);
-			const requestId = String(parsed.requestId ?? "").trim() || `btw-${Date.now()}`;
+			const requestId =
+				String(parsed.requestId ?? "").trim() || `btw-${Date.now()}`;
 			const question = String(parsed.question ?? "").trim();
 			if (!question) {
 				emit(requestId, { ok: false, error: "Empty side question" });
@@ -262,13 +291,19 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				const branch = ctx.sessionManager.getBranch() as Array<Record<string, unknown>>;
+				const branch = ctx.sessionManager.getBranch() as Array<
+					Record<string, unknown>
+				>;
 				const conversation = buildSideContext(branch);
-				const chain = modelChain(parsed, ctx.model as { provider?: string; id?: string } | undefined);
+				const chain = modelChain(
+					parsed,
+					ctx.model as { provider?: string; id?: string } | undefined,
+				);
 				if (chain.length === 0) {
 					emit(requestId, {
 						ok: false,
-						error: "No model available for /btw. Configure btw models in F2 or select a session model.",
+						error:
+							"No model available for /btw. Configure btw models in F2 or select a session model.",
 					});
 					return;
 				}
@@ -307,7 +342,9 @@ export default function (pi: ExtensionAPI) {
 								headers: auth.headers,
 								env: auth.env,
 								reasoning:
-									model.reasoning && parsed.thinkingLevel && parsed.thinkingLevel !== "max"
+									model.reasoning &&
+									parsed.thinkingLevel &&
+									parsed.thinkingLevel !== "max"
 										? parsed.thinkingLevel
 										: model.reasoning && parsed.thinkingLevel === "max"
 											? "xhigh"
@@ -316,16 +353,25 @@ export default function (pi: ExtensionAPI) {
 						);
 						for await (const event of stream) {
 							if (event.type === "text_delta" && event.delta) {
-								emit(requestId, { ok: true, phase: "delta", delta: event.delta });
+								emit(requestId, {
+									ok: true,
+									phase: "delta",
+									delta: event.delta,
+								});
 							}
 						}
 						const response = await stream.result();
-						if (response.stopReason === "aborted" || response.stopReason === "error") {
+						if (
+							response.stopReason === "aborted" ||
+							response.stopReason === "error"
+						) {
 							errors.push(`${modelRef}: ${response.stopReason}`);
 							continue;
 						}
 						const answer = (response.content ?? [])
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
+							.filter(
+								(c): c is { type: "text"; text: string } => c.type === "text",
+							)
 							.map((c) => c.text)
 							.join("\n")
 							.trim();
@@ -354,7 +400,9 @@ export default function (pi: ExtensionAPI) {
 						});
 						return;
 					} catch (e) {
-						errors.push(`${modelRef}: ${e instanceof Error ? e.message : String(e)}`);
+						errors.push(
+							`${modelRef}: ${e instanceof Error ? e.message : String(e)}`,
+						);
 					}
 				}
 
