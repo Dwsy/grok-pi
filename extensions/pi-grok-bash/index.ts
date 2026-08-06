@@ -5,30 +5,31 @@
  * promote an active foreground tool call into its existing background-task UI
  * without rerunning the command. Pager still owns all visible task surfaces.
  */
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
 import {
 	closeSync,
 	createWriteStream,
 	existsSync,
+	type FSWatcher,
 	openSync,
 	readFileSync,
 	unlinkSync,
+	type WriteStream,
 	watch,
 	writeFileSync,
-	type FSWatcher,
-	type WriteStream,
 } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Type } from "@sinclair/typebox";
+
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	createBashToolDefinition,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 
 const BRIDGE_TYPE = "pi-grok-background-bash/v1";
 const MAX_OUTPUT_BYTES = 50 * 1024;
@@ -74,6 +75,359 @@ type BashControl = {
 	sync: () => void;
 	close: () => void;
 };
+
+type EvalLanguage = "py" | "js";
+
+type EvalParams = {
+	language: EvalLanguage;
+	code: string;
+	title?: string;
+	timeout?: number;
+	reset?: boolean;
+};
+
+type EvalExecution = {
+	output: string;
+	truncated: boolean;
+};
+
+type EvalWorkerReply = {
+	id: string;
+	ok: boolean;
+	value?: string;
+	error?: string;
+};
+
+type PendingEval = {
+	id: string;
+	resolve: (result: EvalExecution) => void;
+	reject: (error: Error) => void;
+	output: Buffer;
+	truncated: boolean;
+	timer?: ReturnType<typeof setTimeout>;
+	signal?: AbortSignal;
+	abortHandler?: () => void;
+};
+
+const JS_EVAL_WORKER = String.raw`
+const fs = require("node:fs");
+const repl = require("node:repl");
+const readline = require("node:readline");
+const util = require("node:util");
+const { PassThrough } = require("node:stream");
+
+const protocol = fs.createWriteStream(null, { fd: 3, autoClose: false });
+const input = new PassThrough();
+const server = repl.start({
+  prompt: "",
+  input,
+  output: process.stdout,
+  terminal: false,
+  useGlobal: false,
+  ignoreUndefined: true,
+});
+server.context.display = value => {
+  console.log(util.inspect(value, { depth: 8, colors: false, maxArrayLength: 200 }));
+};
+
+function reply(message) {
+  protocol.write(JSON.stringify(message) + "\n");
+}
+
+const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+lines.on("line", line => {
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch (error) {
+    reply({ id: "", ok: false, error: String(error) });
+    return;
+  }
+  server.eval(request.code, server.context, "eval", (error, value) => {
+    if (error) {
+      reply({ id: request.id, ok: false, error: error.stack || error.message || String(error) });
+      return;
+    }
+    reply({
+      id: request.id,
+      ok: true,
+      value: value === undefined
+        ? ""
+        : util.inspect(value, { depth: 8, colors: false, maxArrayLength: 200 }),
+    });
+  });
+});
+`;
+
+const PYTHON_EVAL_WORKER = String.raw`
+import ast
+import asyncio
+import inspect
+import json
+import os
+import sys
+import traceback
+
+protocol = os.fdopen(3, "w", buffering=1)
+namespace = {"__name__": "__eval__"}
+
+def display(value):
+    print(repr(value))
+
+namespace["display"] = display
+
+async def evaluate(code):
+    tree = ast.parse(code, filename="<eval>", mode="exec")
+    last_expression = None
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        last_expression = tree.body.pop()
+    if tree.body:
+        ast.fix_missing_locations(tree)
+        compiled = compile(tree, "<eval>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        result = eval(compiled, namespace)
+        if inspect.isawaitable(result):
+            await result
+    if last_expression is None:
+        return None
+    expression = ast.Expression(last_expression.value)
+    ast.fix_missing_locations(expression)
+    compiled = compile(expression, "<eval>", "eval", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    result = eval(compiled, namespace)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+async def main():
+    loop = asyncio.get_running_loop()
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            return
+        try:
+            request = json.loads(line)
+            value = await evaluate(request["code"])
+            protocol.write(json.dumps({
+                "id": request["id"],
+                "ok": True,
+                "value": "" if value is None else repr(value),
+            }, ensure_ascii=False) + "\n")
+        except BaseException:
+            request_id = request.get("id", "") if isinstance(request, dict) else ""
+            protocol.write(json.dumps({
+                "id": request_id,
+                "ok": False,
+                "error": traceback.format_exc(),
+            }, ensure_ascii=False) + "\n")
+
+asyncio.run(main())
+`;
+
+function validateEvalTimeout(timeout: number) {
+	if (
+		!Number.isFinite(timeout) ||
+		timeout < 0 ||
+		timeout > MAX_TIMEOUT_SECONDS
+	) {
+		throw new Error(
+			`Invalid eval timeout: must be between 0 and ${MAX_TIMEOUT_SECONDS} seconds`,
+		);
+	}
+}
+
+class PersistentEvalKernel {
+	private child?: ChildProcess;
+	private input?: NonNullable<ChildProcess["stdin"]>;
+	private cwd?: string;
+	private protocolBuffer = "";
+	private pending?: PendingEval;
+
+	constructor(private readonly language: EvalLanguage) {}
+
+	async execute(
+		code: string,
+		cwd: string,
+		timeout: number,
+		signal: AbortSignal | undefined,
+		reset: boolean,
+	): Promise<EvalExecution> {
+		validateEvalTimeout(timeout);
+		if (this.pending)
+			throw new Error(
+				`${this.language} eval kernel is already executing a cell`,
+			);
+		if (reset || (this.cwd !== undefined && this.cwd !== cwd))
+			this.resetKernel();
+		this.ensureStarted(cwd);
+		if (signal?.aborted) {
+			this.resetKernel();
+			throw new Error("aborted");
+		}
+
+		const id = randomUUID();
+		return new Promise<EvalExecution>((resolve, reject) => {
+			const pending: PendingEval = {
+				id,
+				resolve,
+				reject,
+				output: Buffer.alloc(0),
+				truncated: false,
+				signal,
+			};
+			if (timeout > 0) {
+				pending.timer = setTimeout(() => {
+					this.resetKernel(
+						new Error(
+							`Eval timed out after ${timeout} seconds; ${this.language} kernel reset`,
+						),
+					);
+				}, timeout * 1000);
+			}
+			if (signal) {
+				pending.abortHandler = () =>
+					this.resetKernel(new Error("aborted; eval kernel reset"));
+				signal.addEventListener("abort", pending.abortHandler, { once: true });
+			}
+			this.pending = pending;
+			this.input?.write(`${JSON.stringify({ id, code })}\n`, (error) => {
+				if (error) this.resetKernel(error);
+			});
+		});
+	}
+
+	close() {
+		this.resetKernel(new Error("session_shutdown"));
+	}
+
+	private ensureStarted(cwd: string) {
+		if (this.child) return;
+		const command =
+			this.language === "js"
+				? process.execPath
+				: process.env.PI_GROK_PYTHON ||
+					(process.platform === "win32" ? "python" : "python3");
+		const args =
+			this.language === "js"
+				? ["-e", JS_EVAL_WORKER]
+				: ["-u", "-c", PYTHON_EVAL_WORKER];
+		const child = spawn(command, args, {
+			cwd,
+			env: process.env,
+			detached: process.platform !== "win32",
+			stdio: ["pipe", "pipe", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		const input = child.stdin;
+		const stdout = child.stdout;
+		const stderr = child.stderr;
+		const protocol = child.stdio[3] as NodeJS.ReadableStream | null;
+		if (!input || !stdout || !stderr || !protocol) {
+			killChildProcess(child);
+			throw new Error(`Failed to start ${this.language} eval kernel pipes`);
+		}
+		this.child = child;
+		this.input = input;
+		this.cwd = cwd;
+		this.protocolBuffer = "";
+		stdout.on("data", (chunk) => this.appendOutput(chunk));
+		stderr.on("data", (chunk) => this.appendOutput(chunk));
+		protocol.on("data", (chunk) => this.consumeProtocol(chunk));
+		child.once("error", (error) => {
+			if (this.child === child) this.resetKernel(error);
+		});
+		child.once("close", (code, childSignal) => {
+			if (this.child !== child) return;
+			const reason = `Eval kernel exited (code=${code ?? "none"}, signal=${childSignal ?? "none"})`;
+			this.child = undefined;
+			this.input = undefined;
+			this.cwd = undefined;
+			this.protocolBuffer = "";
+			this.takePending()?.reject(new Error(reason));
+		});
+	}
+
+	private appendOutput(chunk: Buffer | string) {
+		const pending = this.pending;
+		if (!pending) return;
+		const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		const joined = Buffer.concat([pending.output, bytes]);
+		if (joined.length > MAX_OUTPUT_BYTES) {
+			pending.output = joined.subarray(joined.length - MAX_OUTPUT_BYTES);
+			pending.truncated = true;
+			return;
+		}
+		pending.output = joined;
+	}
+
+	private consumeProtocol(chunk: Buffer | string) {
+		this.protocolBuffer += Buffer.isBuffer(chunk)
+			? chunk.toString("utf8")
+			: chunk;
+		let newline = this.protocolBuffer.indexOf("\n");
+		while (newline >= 0) {
+			const line = this.protocolBuffer.slice(0, newline);
+			this.protocolBuffer = this.protocolBuffer.slice(newline + 1);
+			if (line.trim()) this.handleReply(line);
+			newline = this.protocolBuffer.indexOf("\n");
+		}
+	}
+
+	private handleReply(line: string) {
+		let reply: EvalWorkerReply;
+		try {
+			reply = JSON.parse(line) as EvalWorkerReply;
+		} catch (error) {
+			this.resetKernel(
+				new Error(
+					`Invalid ${this.language} eval protocol reply: ${String(error)}`,
+				),
+			);
+			return;
+		}
+		if (!this.pending || reply.id !== this.pending.id) return;
+		const pending = this.takePending();
+		if (!pending) return;
+		const streamed = pending.output.toString("utf8");
+		const output = [streamed, reply.value ?? ""]
+			.filter((part) => part.length > 0)
+			.join(
+				streamed && reply.value ? (streamed.endsWith("\n") ? "" : "\n") : "",
+			);
+		const rendered = pending.truncated
+			? `[output truncated to ${MAX_OUTPUT_BYTES} bytes]\n${output}`
+			: output;
+		if (reply.ok) {
+			pending.resolve({ output: rendered, truncated: pending.truncated });
+			return;
+		}
+		pending.reject(
+			new Error(
+				[reply.error || "Eval failed", rendered].filter(Boolean).join("\n"),
+			),
+		);
+	}
+
+	private takePending(): PendingEval | undefined {
+		const pending = this.pending;
+		this.pending = undefined;
+		if (!pending) return undefined;
+		if (pending.timer) clearTimeout(pending.timer);
+		if (pending.signal && pending.abortHandler) {
+			pending.signal.removeEventListener("abort", pending.abortHandler);
+		}
+		return pending;
+	}
+
+	private resetKernel(error?: Error) {
+		const child = this.child;
+		this.child = undefined;
+		this.input = undefined;
+		this.cwd = undefined;
+		this.protocolBuffer = "";
+		const pending = this.takePending();
+		if (child) killChildProcess(child);
+		if (pending && error) pending.reject(error);
+	}
+}
 
 function taskState(task: BackgroundTask): string {
 	if (!task.completed) return "running";
@@ -137,8 +491,8 @@ function appendOutput(task: BackgroundTask, chunk: Buffer) {
 	task.output = joined;
 }
 
-function killProcessTree(task: BackgroundTask) {
-	const pid = task.child.pid;
+function killChildProcess(child: ChildProcess) {
+	const pid = child.pid;
 	if (!pid) return;
 	if (process.platform !== "win32") {
 		try {
@@ -149,10 +503,14 @@ function killProcessTree(task: BackgroundTask) {
 		}
 	}
 	try {
-		task.child.kill("SIGKILL");
+		child.kill("SIGKILL");
 	} catch {
-		// The close handler will establish final task state when it is still alive.
+		// The close handler will establish final state when it is still alive.
 	}
+}
+
+function killProcessTree(task: BackgroundTask) {
+	killChildProcess(task.child);
 }
 
 function waitForCompletion(task: BackgroundTask, timeoutMs: number | undefined, signal: AbortSignal | undefined) {
@@ -398,6 +756,88 @@ export default function (pi: ExtensionAPI) {
 	const tasks = new Map<string, BackgroundTask>();
 	const control = createBashControl(tasks);
 	const nativeBash = createBashToolDefinition(process.cwd());
+	const evalKernels: Record<EvalLanguage, PersistentEvalKernel> = {
+		py: new PersistentEvalKernel("py"),
+		js: new PersistentEvalKernel("js"),
+	};
+	const EvalParameters = Type.Object({
+		language: StringEnum(["py", "js"] as const),
+		code: Type.String({
+			minLength: 1,
+			description:
+				"Code to run verbatim in the selected persistent kernel. Top-level await is supported.",
+		}),
+		title: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "Short transcript label for this cell",
+			}),
+		),
+		timeout: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				maximum: MAX_TIMEOUT_SECONDS,
+				description:
+					"Cell timeout in seconds; defaults to 30. Set 0 to disable the timeout.",
+			}),
+		),
+		reset: Type.Optional(
+			Type.Boolean({
+				description: "Destroy this language's kernel before running the cell",
+			}),
+		),
+	});
+
+	pi.registerTool({
+		name: "eval",
+		label: "Eval",
+		description:
+			"Run one step of Python or JavaScript in a persistent per-language kernel. " +
+			"State survives across calls until reset, timeout, abort, process failure, cwd change, or session shutdown.",
+		promptSnippet:
+			"Run Python or JavaScript in a persistent kernel; reuse prior state and reset only when needed.",
+		parameters: EvalParameters,
+		async execute(
+			_toolCallId,
+			params: EvalParams,
+			signal,
+			_onUpdate,
+			ctx: ExtensionContext,
+		) {
+			if (!params.code.trim()) throw new Error("eval code must not be empty");
+			const startedAt = Date.now();
+			const result = await evalKernels[params.language].execute(
+				params.code,
+				ctx.cwd,
+				params.timeout ?? 30,
+				signal,
+				params.reset ?? false,
+			);
+			const language = params.language === "py" ? "python" : "js";
+			return {
+				content: [
+					{ type: "text" as const, text: result.output || "(no output)" },
+				],
+				details: {
+					language,
+					languages: [language],
+					cells: [
+						{
+							index: 0,
+							title: params.title?.trim() || undefined,
+							code: params.code,
+							language,
+							output: result.output,
+							status: "complete",
+							durationMs: Date.now() - startedAt,
+						},
+					],
+					truncated: result.truncated,
+				},
+			};
+		},
+	});
+
 	const BashParameters = Type.Object({
 		command: Type.String({
 			description:
@@ -548,10 +988,17 @@ export default function (pi: ExtensionAPI) {
 			const ids = ensureTaskIds(params.task_ids);
 			const selected = ids.map((id) => [...tasks.values()].find((task) => task.taskId === id));
 			if (selected.some((task) => !task)) return { content: jsonContent({ task_not_found: ids.filter((id) => !selected.find((task) => task?.taskId === id)) }) };
+			const found = selected.filter(
+				(task): task is BackgroundTask => task !== undefined,
+			);
 			if (params.timeout_ms && params.timeout_ms > 0) {
-				await Promise.all(selected.map((task) => waitForCompletion(task!, params.timeout_ms, signal)));
+				await Promise.all(
+					found.map((task) =>
+						waitForCompletion(task, params.timeout_ms, signal),
+					),
+				);
 			}
-			const results = selected.map((task) => taskResult(task!));
+			const results = found.map(taskResult);
 			return { content: jsonContent(results.length === 1 ? results[0] : { mode: "wait_all", results }) };
 		},
 	});
@@ -569,10 +1016,15 @@ export default function (pi: ExtensionAPI) {
 			const ids = ensureTaskIds(params.task_ids);
 			const selected = ids.map((id) => [...tasks.values()].find((task) => task.taskId === id));
 			if (selected.some((task) => !task)) return { content: jsonContent({ task_not_found: ids.filter((id) => !selected.find((task) => task?.taskId === id)) }) };
-			const waits = selected.map((task) => waitForCompletion(task!, params.timeout_ms, signal));
+			const found = selected.filter(
+				(task): task is BackgroundTask => task !== undefined,
+			);
+			const waits = found.map((task) =>
+				waitForCompletion(task, params.timeout_ms, signal),
+			);
 			if (params.mode === "wait_any") await Promise.race(waits);
 			else await Promise.all(waits);
-			const results = selected.map((task) => taskResult(task!));
+			const results = found.map(taskResult);
 			return { content: jsonContent({ mode: params.mode, results }) };
 		},
 	});
@@ -595,6 +1047,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", () => {
 		control.close();
+		for (const kernel of Object.values(evalKernels)) kernel.close();
 		for (const task of tasks.values()) {
 			if (task.completed) continue;
 			task.explicitlyKilled = true;

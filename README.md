@@ -135,7 +135,7 @@ Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then f
 
 Herdr lifecycle reporting is **off by default**. Enable it with F2 → Agent → **Pi Herdr integration**, then restart. See the [Herdr setup guide](docs/usage/grok-pi-herdr.md).
 
-Use `--no-extensions` to disable bundled bridge extensions. Pi startup options can be passed directly after `--`.
+Use `--no-extensions` (`-ne`) to disable Pi extension auto-discovery; explicit `-e` paths and grok-pi host bridges still load. Use `--no-bridge-extensions` to disable the bundled host bridges, or combine both flags for a fully extension-free launch. Pi startup options can be passed directly after `--`.
 
 ```bash
 grok-pi -- --model openai/gpt-4o

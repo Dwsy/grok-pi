@@ -929,6 +929,10 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             tool: crate::app::actions::PiBuiltinTool::Ls,
             enabled: new,
         }),
+        "pi_builtin_tools.eval" => Some(Action::SetPiBuiltinTool {
+            tool: crate::app::actions::PiBuiltinTool::Eval,
+            enabled: new,
+        }),
         "psm_resume_index" => Some(Action::SetPsmResumeIndex(new)),
         "pi_tree_file_rollback" => Some(Action::SetPiTreeFileRollback(new)),
         "pi_tree_skip_summary_prompt" => Some(Action::SetPiTreeSkipSummaryPrompt(new)),

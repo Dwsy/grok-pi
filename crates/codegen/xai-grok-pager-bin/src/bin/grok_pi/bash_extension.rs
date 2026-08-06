@@ -58,6 +58,10 @@ mod tests {
         let source = std::fs::read_to_string(extension.source_path()).expect("read extension");
         assert!(source.contains("const nativeBash = createBashToolDefinition"));
         assert!(source.contains("pi.registerTool({"));
+        assert!(source.contains("name: \"eval\""));
+        assert!(source.contains("PersistentEvalKernel"));
+        assert!(source.contains("JS_EVAL_WORKER"));
+        assert!(source.contains("PYTHON_EVAL_WORKER"));
         assert!(source.contains("is_background"));
         assert!(source.contains("name: \"get_task_output\""));
         assert!(source.contains("name: \"wait_tasks\""));

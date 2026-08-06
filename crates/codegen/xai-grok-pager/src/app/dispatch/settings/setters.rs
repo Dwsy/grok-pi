@@ -2211,6 +2211,7 @@ pub(in crate::app::dispatch) fn set_pi_builtin_tool(
         PiBuiltinTool::Grep => &mut app.current_ui.pi_builtin_tools.grep,
         PiBuiltinTool::Find => &mut app.current_ui.pi_builtin_tools.find,
         PiBuiltinTool::Ls => &mut app.current_ui.pi_builtin_tools.ls,
+        PiBuiltinTool::Eval => &mut app.current_ui.pi_builtin_tools.eval,
     };
     if *current == enabled {
         return vec![];
@@ -2228,6 +2229,7 @@ pub(in crate::app::dispatch) fn set_pi_builtin_tool(
             PiBuiltinTool::Grep => "grep",
             PiBuiltinTool::Find => "find",
             PiBuiltinTool::Ls => "ls",
+            PiBuiltinTool::Eval => "eval",
         },
         if enabled { "on" } else { "off" },
     ));

@@ -360,11 +360,19 @@ pub struct PiBuiltinTools {
     pub grep: bool,
     pub find: bool,
     pub ls: bool,
+    pub eval: bool,
 }
 
 impl PiBuiltinTools {
     pub fn is_default(&self) -> bool {
-        self.read && self.bash && self.edit && self.write && !self.grep && !self.find && !self.ls
+        self.read
+            && self.bash
+            && self.edit
+            && self.write
+            && !self.grep
+            && !self.find
+            && !self.ls
+            && !self.eval
     }
 }
 
@@ -378,6 +386,7 @@ impl Default for PiBuiltinTools {
             grep: false,
             find: false,
             ls: false,
+            eval: false,
         }
     }
 }

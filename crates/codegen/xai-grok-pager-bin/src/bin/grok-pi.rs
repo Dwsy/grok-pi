@@ -292,7 +292,9 @@ async fn run(mut args: Args) -> Result<()> {
     // Resource discovery adapts when cwd is Pi agent home (see PiResourceCatalog).
     let _theme_report = xai_grok_pager::theme::pi::init_discovery(&cwd);
 
-    let bridge_extensions_enabled = !args.no_extensions;
+    // Pi's --no-extensions controls auto-discovery only. Bundled host bridges
+    // have a separate kill switch because they are passed as explicit paths.
+    let bridge_extensions_enabled = !args.no_bridge_extensions;
     let navigate_tree_extension = bridge_extensions_enabled
         .then(|| write_navigate_tree_extension())
         .transpose()
@@ -790,7 +792,7 @@ async fn run(mut args: Args) -> Result<()> {
             std::env::set_var("PI_GROK_RECAP", "1");
         }
     } else {
-        // Avoid advertising recap when --no-extensions omits its bridge command.
+        // Avoid advertising recap when its host bridge is disabled.
         unsafe {
             std::env::remove_var("PI_GROK_RECAP");
         }
@@ -1150,7 +1152,7 @@ fn env_flag_default_off(name: &str) -> bool {
 // 3. Print a diagnostic naming the bad extension.
 // 4. Relaunch without it (self-heal) so the user is never stuck.
 //
-// The user can also run `grok-pi -ne` to skip all extensions manually.
+// The user can run `grok-pi -ne --no-bridge-extensions` to skip all extensions.
 
 /// Spawn Pi with the full extension set. If bootstrap fails, run the
 /// self-heal bisection and return a working process.
@@ -1183,12 +1185,12 @@ async fn spawn_with_extension_self_heal(
         // No extensions to bisect — the failure is not extension-related.
         anyhow::bail!(
             "Pi RPC bootstrap failed and no extensions are loaded.\n\
-             Try: grok-pi -ne  (disable all extensions)"
+             Try: grok-pi -ne --no-bridge-extensions"
         );
     }
 
     // Step 1: Confirm Pi boots with zero extensions.
-    let no_ext_args = strip_extension_args(&pi_args);
+    let no_ext_args = disable_all_extensions(&pi_args);
     let probe_config = SpawnConfig {
         program: args.pi_bin.clone(),
         prefix_args: args.pi_prefix_args.clone(),
@@ -1228,7 +1230,9 @@ async fn spawn_with_extension_self_heal(
             eprintln!();
             eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching without this extension.");
             eprintln!();
-            eprintln!("  To disable all extensions:  \x1b[1mgrok-pi -ne\x1b[0m");
+            eprintln!(
+                "  To disable all extensions:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m"
+            );
             eprintln!(
                 "  To permanently block it, add to {}/config.toml:",
                 home::display_home(&home::effective_grok_home())
@@ -1264,7 +1268,9 @@ async fn spawn_with_extension_self_heal(
             eprintln!("  Could not isolate a single culprit (possible combination conflict).");
             eprintln!();
             eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching with all extensions disabled.");
-            eprintln!("  To do this manually:  \x1b[1mgrok-pi -ne\x1b[0m");
+            eprintln!(
+                "  To do this manually:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m"
+            );
             eprintln!();
 
             prompt_and_maybe_report_ext_crash("combo", "combo");
@@ -1576,9 +1582,9 @@ fn extract_extension_paths(pi_args: &[String]) -> Vec<String> {
     paths
 }
 
-/// Remove all `--extension <path>` pairs from pi_args.
-fn strip_extension_args(pi_args: &[String]) -> Vec<String> {
-    let mut result = Vec::with_capacity(pi_args.len());
+/// Remove explicit extension paths and disable Pi extension auto-discovery.
+fn disable_all_extensions(pi_args: &[String]) -> Vec<String> {
+    let mut result = Vec::with_capacity(pi_args.len() + 1);
     let mut i = 0;
     while i < pi_args.len() {
         if pi_args[i] == "--extension" && i + 1 < pi_args.len() {
@@ -1587,6 +1593,9 @@ fn strip_extension_args(pi_args: &[String]) -> Vec<String> {
             result.push(pi_args[i].clone());
             i += 1;
         }
+    }
+    if !result.iter().any(|arg| arg == "--no-extensions") {
+        result.push("--no-extensions".to_owned());
     }
     result
 }
@@ -1680,7 +1689,7 @@ async fn probe_extensions_ok(
 mod env_flag_tests {
     use super::{
         Args, PI_GROK_NATIVE_COMMANDS, env_flag_default_off, env_flag_default_on,
-        herdr_enabled_from_config, subagents_enabled_from_config,
+        disable_all_extensions, herdr_enabled_from_config, subagents_enabled_from_config,
     };
     use clap::Parser;
 
@@ -1765,9 +1774,44 @@ mod env_flag_tests {
     }
 
     #[test]
-    fn no_extensions_disables_bridge_extensions() {
-        let args = Args::try_parse_from(["grok-pi", "--no-extensions"]).expect("parse args");
-        assert!(args.no_extensions);
+    fn zero_extension_probe_disables_auto_discovery() {
+        let args = [
+            "--extension",
+            "bridge-a.ts",
+            "--model",
+            "provider/model",
+            "--extension",
+            "bridge-b.ts",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            disable_all_extensions(&args),
+            vec![
+                "--model".to_owned(),
+                "provider/model".to_owned(),
+                "--no-extensions".to_owned(),
+            ]
+        );
+        assert_eq!(
+            disable_all_extensions(&["--no-extensions".to_owned()]),
+            vec!["--no-extensions".to_owned()]
+        );
+    }
+
+    #[test]
+    fn extension_discovery_and_host_bridges_have_independent_switches() {
+        let discovery =
+            Args::try_parse_from(["grok-pi", "--no-extensions"]).expect("parse args");
+        assert!(discovery.no_extensions);
+        assert!(!discovery.no_bridge_extensions);
+
+        let bridges = Args::try_parse_from(["grok-pi", "--no-bridge-extensions"])
+            .expect("parse args");
+        assert!(!bridges.no_extensions);
+        assert!(bridges.no_bridge_extensions);
     }
 
     #[test]

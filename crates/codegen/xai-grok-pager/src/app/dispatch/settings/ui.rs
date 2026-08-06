@@ -1008,6 +1008,10 @@ pub(in crate::app::dispatch) fn action_for_reset(
             tool: crate::app::actions::PiBuiltinTool::Ls,
             enabled: *b,
         }),
+        ("pi_builtin_tools.eval", SettingValue::Bool(b)) => Some(Action::SetPiBuiltinTool {
+            tool: crate::app::actions::PiBuiltinTool::Eval,
+            enabled: *b,
+        }),
         ("psm_resume_index", SettingValue::Bool(b)) => Some(Action::SetPsmResumeIndex(*b)),
         ("pi_tree_file_rollback", SettingValue::Bool(b)) => Some(Action::SetPiTreeFileRollback(*b)),
         ("pi_tree_skip_summary_prompt", SettingValue::Bool(b)) => {

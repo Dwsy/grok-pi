@@ -528,6 +528,7 @@ pub fn current_value_for(
         "pi_builtin_tools.grep" => Some(SettingValue::Bool(ui.pi_builtin_tools.grep)),
         "pi_builtin_tools.find" => Some(SettingValue::Bool(ui.pi_builtin_tools.find)),
         "pi_builtin_tools.ls" => Some(SettingValue::Bool(ui.pi_builtin_tools.ls)),
+        "pi_builtin_tools.eval" => Some(SettingValue::Bool(ui.pi_builtin_tools.eval)),
         "psm_resume_index" => Some(SettingValue::Bool(ui.psm_resume_index)),
         "pi_tree_file_rollback" => Some(SettingValue::Bool(ui.pi_tree_file_rollback)),
         "pi_tree_skip_summary_prompt" => Some(SettingValue::Bool(ui.pi_tree_skip_summary_prompt)),
@@ -913,6 +914,9 @@ mod tests {
                 }
                 ("pi_builtin_tools.ls", SettingKind::Bool { default }) => {
                     assert_eq!(*default, ui.pi_builtin_tools.ls);
+                }
+                ("pi_builtin_tools.eval", SettingKind::Bool { default }) => {
+                    assert_eq!(*default, ui.pi_builtin_tools.eval);
                 }
                 ("page_flip_on_send", SettingKind::Bool { default }) => {
                     assert_eq!(

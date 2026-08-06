@@ -1,4 +1,13 @@
-const BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+const BUILTIN_TOOLS = [
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"grep",
+	"find",
+	"ls",
+	"eval",
+] as const;
 
 /**
  * Applies the host's persisted grok-pi built-in-tool preference at session
@@ -11,30 +20,32 @@ const BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as
  * - --tools / -t: extension is not injected (authoritative allowlist).
  */
 export default function (pi: {
-  on(event: "session_start", handler: () => void): void;
-  getActiveTools(): string[];
-  setActiveTools(toolNames: string[]): void;
+	on(event: "session_start", handler: () => void): void;
+	getActiveTools(): string[];
+	setActiveTools(toolNames: string[]): void;
 }) {
-  const configured = process.env.PI_GROK_BUILTIN_TOOLS;
-  if (!configured) return;
+	const configured = process.env.PI_GROK_BUILTIN_TOOLS;
+	if (!configured) return;
 
-  const excluded = new Set(
-    (process.env.PI_GROK_EXCLUDE_TOOLS ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
+	const excluded = new Set(
+		(process.env.PI_GROK_EXCLUDE_TOOLS ?? "")
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean),
+	);
 
-  const selected = configured
-    .split(",")
-    .filter((name): name is (typeof BUILTIN_TOOLS)[number] =>
-      (BUILTIN_TOOLS as readonly string[]).includes(name),
-    )
-    .filter((name) => !excluded.has(name));
+	const selected = configured
+		.split(",")
+		.filter((name): name is (typeof BUILTIN_TOOLS)[number] =>
+			(BUILTIN_TOOLS as readonly string[]).includes(name),
+		)
+		.filter((name) => !excluded.has(name));
 
-  pi.on("session_start", () => {
-    const builtin = new Set<string>(BUILTIN_TOOLS);
-    const activeNonBuiltin = pi.getActiveTools().filter((name) => !builtin.has(name));
-    pi.setActiveTools([...activeNonBuiltin, ...selected]);
-  });
+	pi.on("session_start", () => {
+		const builtin = new Set<string>(BUILTIN_TOOLS);
+		const activeNonBuiltin = pi
+			.getActiveTools()
+			.filter((name) => !builtin.has(name));
+		pi.setActiveTools([...activeNonBuiltin, ...selected]);
+	});
 }

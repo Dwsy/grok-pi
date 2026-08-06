@@ -133,7 +133,7 @@ Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后�
 
 Herdr 生命周期上报**默认关闭**。可在 F2 → Agent → **Pi Herdr integration** 中开启，然后重启。详见 [Herdr 设置指南](docs/usage/grok-pi-herdr.zh-CN.md)。
 
-使用 `--no-extensions` 可关闭所有内置桥接扩展。Pi 启动参数可放在 `--` 之后直接传递：
+使用 `--no-extensions`（`-ne`）可关闭 Pi 扩展自动发现；显式 `-e` 路径与 grok-pi 宿主桥接仍会加载。使用 `--no-bridge-extensions` 可关闭内置宿主桥接；组合两个开关可实现完全无扩展启动。Pi 启动参数可放在 `--` 之后直接传递：
 
 ```bash
 grok-pi -- --model openai/gpt-4o

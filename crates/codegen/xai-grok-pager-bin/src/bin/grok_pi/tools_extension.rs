@@ -32,16 +32,18 @@ pub(super) fn configured_builtin_tools() -> String {
     else {
         return defaults.join(",");
     };
-    ["read", "bash", "edit", "write", "grep", "find", "ls"]
-        .into_iter()
-        .filter(|name| {
-            tools
-                .get(*name)
-                .and_then(toml::Value::as_bool)
-                .unwrap_or(matches!(*name, "read" | "bash" | "edit" | "write"))
-        })
-        .collect::<Vec<_>>()
-        .join(",")
+    [
+        "read", "bash", "edit", "write", "grep", "find", "ls", "eval",
+    ]
+    .into_iter()
+    .filter(|name| {
+        tools
+            .get(*name)
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(matches!(*name, "read" | "bash" | "edit" | "write"))
+    })
+    .collect::<Vec<_>>()
+    .join(",")
 }
 
 /// Whether the user passed an explicit `--tools` / `-t` allowlist.
@@ -99,6 +101,7 @@ mod tests {
         let source = std::fs::read_to_string(file.path()).expect("read extension");
         assert!(source.contains("PI_GROK_BUILTIN_TOOLS"));
         assert!(source.contains("setActiveTools"));
+        assert!(source.contains("\"eval\""));
         assert_eq!(
             file.path().extension().and_then(|value| value.to_str()),
             Some("ts")

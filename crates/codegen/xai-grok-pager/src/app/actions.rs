@@ -112,6 +112,7 @@ pub enum PiBuiltinTool {
     Grep,
     Find,
     Ls,
+    Eval,
 }
 
 /// Synchronous, side-effect-free user intent.

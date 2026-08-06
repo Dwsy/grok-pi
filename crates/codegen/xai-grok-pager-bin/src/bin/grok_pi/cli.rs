@@ -124,9 +124,13 @@ pub(super) struct Args {
     #[arg(short = 'e', long = "extension", value_name = "PATH")]
     pub(super) extensions: Vec<String>,
 
-    /// Disable extension discovery (explicit -e paths still work).
+    /// Disable extension discovery (explicit -e paths and host bridges still work).
     #[arg(long)]
     pub(super) no_extensions: bool,
+
+    /// Disable grok-pi's bundled host bridge extensions.
+    #[arg(long = "no-bridge-extensions")]
+    pub(super) no_bridge_extensions: bool,
 
     /// Comma-separated allowlist of tool names to enable.
     #[arg(short = 't', long = "tools", value_name = "TOOLS")]
@@ -475,6 +479,16 @@ mod tests {
                 "--approve",
                 "--offline",
             ]
+        );
+    }
+
+    #[test]
+    fn no_bridge_extensions_is_host_only() {
+        let args = Args::try_parse_from(["grok-pi", "--no-bridge-extensions"]).unwrap();
+        assert!(args.no_bridge_extensions);
+        assert_eq!(
+            pi_args_with_startup_flags(args.pi_args.clone(), &args, None),
+            Vec::<String>::new()
         );
     }
 

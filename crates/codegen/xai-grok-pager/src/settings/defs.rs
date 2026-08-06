@@ -583,6 +583,7 @@ const PI_BUILTIN_TOOLS_CHILDREN: &[&str] = &[
     "pi_builtin_tools.grep",
     "pi_builtin_tools.find",
     "pi_builtin_tools.ls",
+    "pi_builtin_tools.eval",
 ];
 
 /// Build the catalog. Called once at process start via
@@ -1830,7 +1831,19 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Pi built-in tools",
             description: "Choose the Pi built-in tools for the next grok-pi session. Existing extension and custom tools stay enabled.",
             keywords: &[
-                "pi", "tools", "read", "bash", "edit", "write", "grep", "find", "ls", "search",
+                "pi",
+                "tools",
+                "read",
+                "bash",
+                "edit",
+                "write",
+                "grep",
+                "find",
+                "ls",
+                "eval",
+                "python",
+                "javascript",
+                "search",
             ],
             kind: SettingKind::Group {
                 children: PI_BUILTIN_TOOLS_CHILDREN,
@@ -1932,6 +1945,28 @@ pub fn default_settings() -> Vec<SettingMeta> {
             keywords: &["pi", "tool", "ls", "list", "directory"],
             kind: SettingKind::Bool {
                 default: ui_default.pi_builtin_tools.ls,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
+            key: "pi_builtin_tools.eval",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Eval",
+            description: "Allow Pi to run Python or JavaScript in persistent per-language kernels.",
+            keywords: &[
+                "pi",
+                "tool",
+                "eval",
+                "python",
+                "javascript",
+                "kernel",
+                "repl",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_builtin_tools.eval,
             },
             restart_required: true,
             hidden_in_minimal: false,
