@@ -52,7 +52,7 @@ pub struct PermissionEvent {
     /// a request reached a prompt even when `user_prompted=true`. Values:
     /// yolo, policy_allow, policy_deny, policy_ask, bash_command_gate_ask,
     /// shell_file_gate_ask, auto_fast_path,
-    /// auto_classifier_allow, auto_classifier_block, auto_classifier_deny,
+    /// auto_classifier_allow, auto_classifier_deny,
     /// auto_classifier_timeout, auto_classifier_unavailable, auto_denial_limit,
     /// sandbox_auto, persisted_grant, session_grant, static_allowlist, safe_command,
     /// session_deny, prompt_deny, needs_user, bash_request_floor, opaque_shell,
@@ -229,8 +229,12 @@ impl<'de> Deserialize<'de> for EditPolicy {
         deserializer.deserialize_str(V)
     }
 }
+/// The requesting session's execution cwd for one permission request. Shared
+/// parent/subagent managers serve sessions whose cwd differs from the
+/// manager's, so path rules and edit-target resolution must anchor to where
+/// the requesting tool actually resolves paths, not where the manager lives.
 #[derive(Debug, Clone)]
-pub struct EditPathContext {
+pub struct RequestPathContext {
     pub real_cwd: std::path::PathBuf,
     pub display_cwd: Option<std::path::PathBuf>,
 }
@@ -239,7 +243,7 @@ pub enum PermissionCommand {
     Request {
         access: AccessKind,
         tool_call_update: acp::ToolCallUpdate,
-        edit_path_context: Option<EditPathContext>,
+        path_context: Option<RequestPathContext>,
         respond_to: oneshot::Sender<Decision>,
         /// Session ID originating this request. Used to attribute
         /// permission events to child subagents.

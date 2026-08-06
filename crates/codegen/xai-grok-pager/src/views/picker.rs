@@ -1046,12 +1046,22 @@ pub fn render_picker_row(
     } else {
         row.badge.width() as u16 + 1
     }; // +1 space before badge
-    let right_width = row.right_label.width() as u16;
-    let gap = if right_width > 0 { 2u16 } else { 0 };
-    let max_label_width = width
-        .saturating_sub(right_width + gap + trailing_pad + badge_width + prefix_width)
-        as usize;
+    // Cap right column at half width so long descriptions don't crush labels.
+    let fixed = prefix_width + trailing_pad + badge_width;
+    let content_width = width.saturating_sub(fixed);
+    let (max_label_width, truncated_right) = if row.right_label.is_empty() {
+        (content_width as usize, String::new())
+    } else {
+        let gap = 2u16;
+        let usable = content_width.saturating_sub(gap);
+        let max_right = (usable / 2) as usize;
+        let right = truncate_str(row.right_label, max_right);
+        let right_cols = right.width() as u16;
+        let max_label = usable.saturating_sub(right_cols) as usize;
+        (max_label, right)
+    };
     let truncated_label = truncate_str(row.label, max_label_width);
+    let right_width = truncated_right.width() as u16;
 
     // Render as separate spans: indent, fold indicator (shared), label.
     let mut cur_x = x;
@@ -1122,14 +1132,13 @@ pub fn render_picker_row(
         );
     }
 
-    // Right side (with trailing padding).
     if right_width > 0 {
         let right_style = Style::default().fg(meta_fg).bg(row_bg);
         let right_x = x + width.saturating_sub(right_width + trailing_pad);
         buf.set_span(
             right_x,
             y,
-            &Span::styled(row.right_label, right_style),
+            &Span::styled(&truncated_right, right_style),
             right_width,
         );
     }
@@ -2591,27 +2600,41 @@ pub fn render_picker(
     }
 }
 
+/// First selectable index at or after `selected`.
+///
+/// Scans forward from the clamped selection, then restarts from the top when
+/// needed. If every row is non-selectable, both scans stop at the last index,
+/// so that last index is returned. Shared by picker input clamping and modal
+/// render so highlight and footer stay aligned.
+pub fn first_selectable_index(
+    selected: usize,
+    entry_count: usize,
+    non_selectable: &[bool],
+) -> usize {
+    if entry_count == 0 {
+        return 0;
+    }
+    let is_non_sel = |i: usize| non_selectable.get(i).copied().unwrap_or(false);
+    let mut s = selected.min(entry_count - 1);
+    while is_non_sel(s) && s < entry_count - 1 {
+        s += 1;
+    }
+    if is_non_sel(s) {
+        s = 0;
+        while is_non_sel(s) && s < entry_count - 1 {
+            s += 1;
+        }
+    }
+    s
+}
+
 /// Clamp selection to a selectable row after a host changes the picker entries.
 pub fn clamp_picker_selection(
     state: &mut PickerState,
     entry_count: usize,
     non_selectable: &[bool],
 ) {
-    let is_non_sel = |i: usize| non_selectable.get(i).copied().unwrap_or(false);
-    if entry_count > 0 {
-        state.selected = state.selected.min(entry_count.saturating_sub(1));
-        while is_non_sel(state.selected) && state.selected < entry_count - 1 {
-            state.selected += 1;
-        }
-        if is_non_sel(state.selected) {
-            state.selected = 0;
-            while is_non_sel(state.selected) && state.selected < entry_count - 1 {
-                state.selected += 1;
-            }
-        }
-    } else {
-        state.selected = 0;
-    }
+    state.selected = first_selectable_index(state.selected, entry_count, non_selectable);
 }
 
 /// Handle one picker event; hosts re-filter only after [`PickerOutcome::QueryChanged`].

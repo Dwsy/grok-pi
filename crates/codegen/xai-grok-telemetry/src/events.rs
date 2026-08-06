@@ -767,11 +767,24 @@ pub struct SkillRemoved {
     pub success: bool,
 }
 
+#[derive(Serialize, Clone, Copy, strum::IntoStaticStr)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum SkillTrigger {
+    /// The user ran `/skill-name`, at turn start or mid-turn.
+    SlashCommand,
+    /// The model read the skill's `SKILL.md` with `read_file`.
+    SkillMdRead,
+    /// The model called the skill tool, which only vendor-compat toolsets register.
+    SkillTool,
+}
+
 #[derive(Serialize)]
 pub struct SkillDispatched {
     pub skill_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_source: Option<String>,
+    pub trigger: SkillTrigger,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -988,6 +1001,66 @@ pub struct NonGitDecisionEvent {
 // Prompt Latency (every turn)
 // ---------------------------------------------------------------------------
 
+/// Why a [`ProcessResourceUsage`] was sampled, so a mid-life reading is not
+/// read as a post-teardown one.
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceReportTrigger {
+    SessionClose,
+    Periodic,
+}
+
+/// The ceilings this process runs under. The denominator for
+/// `ProcessResourceUsage`: usage against limits is headroom.
+#[derive(Serialize)]
+pub struct ProcessResourceLimits {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nofile_soft: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nofile_hard: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nproc_soft: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nproc_hard: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_parallelism: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cgroup_pids_max: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cgroup_memory_max: Option<String>,
+}
+
+/// Emitted when the jemalloc heap monitor crosses a configured threshold.
+/// The acute signal that a build is growing without bound.
+#[derive(Serialize)]
+pub struct HeapThresholdCrossed {
+    pub threshold_bytes: u64,
+    pub resident_bytes: u64,
+    pub allocated_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rss_peak_bytes: Option<u64>,
+}
+
+/// What this process still holds just after a session was removed. Aggregated
+/// per release, a rising tail is a leak; `resident_sessions` separates leader
+/// mode, where one process serves many sessions and a leak compounds.
+#[derive(Serialize)]
+pub struct ProcessResourceUsage {
+    pub trigger: ResourceReportTrigger,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rss_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_rss_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footprint_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_files: Option<u64>,
+    pub resident_sessions: usize,
+    pub session_threads: usize,
+}
+
 #[derive(Serialize)]
 pub struct PromptLatency {
     pub turn_index: u32,
@@ -1122,33 +1195,6 @@ pub struct PagerSlashCommand {
 #[derive(Serialize)]
 pub struct PlanSubmit {
     pub action: String,
-}
-
-/// Which option the user chose in the project-directory picker (shown on the
-/// first prompt when Grok Build is launched from a non-project directory).
-#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectPickerOutcome {
-    RecentProject,
-    CustomPath,
-    CurrentDir,
-    DontAskAgain,
-    Dismissed,
-}
-
-impl ProjectPickerOutcome {
-    pub fn picked_project(self) -> bool {
-        matches!(self, Self::RecentProject | Self::CustomPath)
-    }
-}
-
-/// User resolved the project-directory picker. `picked_project` is the headline
-/// signal: did they actually choose a project directory?
-#[derive(Serialize)]
-pub struct ProjectPickerSelected {
-    pub outcome: ProjectPickerOutcome,
-    pub picked_project: bool,
-    pub project_dir_options: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -1416,6 +1462,31 @@ pub struct DashboardOpened {
     pub leader_mode: bool,
 }
 
+/// User pressed an allowlisted registry shortcut.
+///
+/// **Product contract (authoritative):** intent-only telemetry for the
+/// bindings that can own **Ctrl+L**. Emits when the chord resolves to the
+/// action, whether the effect succeeds, defers, or soft-no-ops. Soft no-ops
+/// still count as intent.
+///
+/// Allowlist: `interject_prompt` (VS Code family often Ctrl+L; elsewhere the
+/// interject/send-now chord) and `open_extensions` (Ctrl+L on other
+/// terminals). Absence of other actions is not “unused.” Expand the allowlist
+/// deliberately; this is not full-registry coverage.
+///
+/// Fields are content-free. `key` is a platform-stable encoding (`Ctrl+L`,
+/// not locale-specific `Cmd`/`Opt` or mixed case). `context` is a surface
+/// label (`prompt_focused`, `agent_screen`, `queue`, …).
+#[derive(Serialize)]
+pub struct ShortcutUsed {
+    /// Stable chord encoding (`Ctrl+L`, `Ctrl+Enter`, …).
+    pub key: String,
+    /// Allowlisted action id (`interject_prompt`, `open_extensions`).
+    pub action: String,
+    /// Surface label (`prompt_focused`, `agent_screen`, `queue`, …).
+    pub context: String,
+}
+
 #[derive(Serialize)]
 pub struct DashboardClosed {
     pub agents: usize,
@@ -1579,6 +1650,9 @@ pub enum ManualAuthReason {
     RefreshTokenRejected,
     /// Token type has no refresh authority (API key / legacy / OIDC sans refresh token).
     NoRefreshAuthority,
+    /// The operator's auth-provider command could not mint a credential
+    /// unattended, so only an interactive run of it can restore the session.
+    ProviderInteractiveRequired,
     RecoveryExhausted,
     TokenExpiredNoRefresh,
     /// Recovered session violated the `force_login_team_uuid` pin.
@@ -1762,6 +1836,9 @@ telemetry_event!(MultiAgentDiscard, "multi_agent_discard");
 telemetry_event!(RepoChanges, "repo_changes");
 telemetry_event!(NonGitDecisionEvent, "non_git_decision");
 telemetry_event!(PromptLatency, "prompt_latency");
+telemetry_event!(HeapThresholdCrossed, "heap_threshold_crossed");
+telemetry_event!(ProcessResourceUsage, "process_resource_usage");
+telemetry_event!(ProcessResourceLimits, "process_resource_limits");
 telemetry_event!(
     TurnCompleted,
     "turn_completed",
@@ -1788,7 +1865,6 @@ telemetry_event!(
 );
 telemetry_event!(PagerSlashCommand, "pager_slash_command");
 telemetry_event!(PlanSubmit, "plan_submit");
-telemetry_event!(ProjectPickerSelected, "project_picker_selected");
 telemetry_event!(SuperGrokUpsellShown, "supergrok_upsell_shown");
 telemetry_event!(SuperGrokUpsellClicked, "supergrok_upsell_clicked");
 telemetry_event!(AnnouncementCtaShown, "announcement_cta_shown");
@@ -1805,6 +1881,7 @@ telemetry_event!(DashboardOpened, "dashboard_opened");
 telemetry_event!(DashboardClosed, "dashboard_closed");
 telemetry_event!(DashboardAgentAttached, "dashboard_agent_attached");
 telemetry_event!(DashboardAgentLaunched, "dashboard_agent_launched");
+telemetry_event!(ShortcutUsed, "shortcut_used");
 telemetry_event!(
     RateLimitHit,
     "rate_limit_hit",
@@ -1987,75 +2064,6 @@ mod tests {
     }
 
     #[test]
-    fn project_picker_selected_name_and_shape() {
-        assert_eq!(ProjectPickerSelected::NAME, "project_picker_selected");
-
-        let picked = serde_json::to_value(ProjectPickerSelected {
-            outcome: ProjectPickerOutcome::RecentProject,
-            picked_project: ProjectPickerOutcome::RecentProject.picked_project(),
-            project_dir_options: 3,
-        })
-        .unwrap();
-        assert_eq!(
-            picked,
-            serde_json::json!({
-                "outcome": "recent_project",
-                "picked_project": true,
-                "project_dir_options": 3,
-            })
-        );
-
-        let dismissed = serde_json::to_value(ProjectPickerSelected {
-            outcome: ProjectPickerOutcome::Dismissed,
-            picked_project: ProjectPickerOutcome::Dismissed.picked_project(),
-            project_dir_options: 1,
-        })
-        .unwrap();
-        assert_eq!(
-            dismissed,
-            serde_json::json!({
-                "outcome": "dismissed",
-                "picked_project": false,
-                "project_dir_options": 1,
-            })
-        );
-    }
-
-    #[test]
-    fn project_picker_outcome_picked_project_mapping() {
-        assert!(ProjectPickerOutcome::RecentProject.picked_project());
-        assert!(ProjectPickerOutcome::CustomPath.picked_project());
-        assert!(!ProjectPickerOutcome::CurrentDir.picked_project());
-        assert!(!ProjectPickerOutcome::DontAskAgain.picked_project());
-        assert!(!ProjectPickerOutcome::Dismissed.picked_project());
-    }
-
-    #[test]
-    fn project_picker_outcome_wire_strings() {
-        let s = |o: ProjectPickerOutcome| serde_json::to_value(o).unwrap();
-        assert_eq!(
-            s(ProjectPickerOutcome::RecentProject),
-            serde_json::json!("recent_project")
-        );
-        assert_eq!(
-            s(ProjectPickerOutcome::CustomPath),
-            serde_json::json!("custom_path")
-        );
-        assert_eq!(
-            s(ProjectPickerOutcome::CurrentDir),
-            serde_json::json!("current_dir")
-        );
-        assert_eq!(
-            s(ProjectPickerOutcome::DontAskAgain),
-            serde_json::json!("dont_ask_again")
-        );
-        assert_eq!(
-            s(ProjectPickerOutcome::Dismissed),
-            serde_json::json!("dismissed")
-        );
-    }
-
-    #[test]
     fn plugin_cta_event_names() {
         assert_eq!(PluginCtaImpression::NAME, "plugin_cta_impression");
         assert_eq!(PluginCtaConnectClicked::NAME, "plugin_cta_connect_clicked");
@@ -2067,6 +2075,25 @@ mod tests {
     fn announcement_cta_event_names() {
         assert_eq!(AnnouncementCtaShown::NAME, "announcement_cta_shown");
         assert_eq!(AnnouncementCtaClicked::NAME, "announcement_cta_clicked");
+    }
+
+    #[test]
+    fn shortcut_used_name_and_shape() {
+        assert_eq!(ShortcutUsed::NAME, "shortcut_used");
+        let value = serde_json::to_value(ShortcutUsed {
+            key: "Ctrl+L".into(),
+            action: "interject_prompt".into(),
+            context: "prompt_focused".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "key": "Ctrl+L",
+                "action": "interject_prompt",
+                "context": "prompt_focused",
+            })
+        );
     }
 
     #[test]
@@ -2091,6 +2118,27 @@ mod tests {
                 "changed": false,
             })
         );
+    }
+
+    /// Serde renames the payload field, strum renders the external label: two snake_case implementations, so pin that they agree on every variant.
+    #[test]
+    fn skill_trigger_serializes_the_same_string_strum_yields() {
+        for trigger in [
+            SkillTrigger::SlashCommand,
+            SkillTrigger::SkillMdRead,
+            SkillTrigger::SkillTool,
+        ] {
+            let serde = serde_json::to_value(SkillDispatched {
+                skill_name: "pdf".into(),
+                plugin_source: None,
+                trigger,
+            })
+            .unwrap();
+            assert_eq!(
+                serde,
+                serde_json::json!({ "skill_name": "pdf", "trigger": <&'static str>::from(trigger) })
+            );
+        }
     }
 
     #[test]

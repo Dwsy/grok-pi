@@ -58,7 +58,7 @@ use super::rewind::{
 };
 use super::session::foreign::dispatch_fetch_session_list;
 use super::session::fork::{
-    apply_persist_worktree_mode, dispatch_fork, dispatch_fork_resolved, dispatch_project_selected,
+    apply_persist_worktree_mode, dispatch_fork, dispatch_fork_resolved,
     dispatch_startup_fork_session,
 };
 use super::session::lifecycle::{
@@ -94,11 +94,11 @@ use super::settings::setters::{
     set_pi_ask_user_question_notifications, set_pi_bash_run_display, set_pi_btw,
     set_pi_builtin_tool, set_pi_cache_graph, set_pi_goal, set_pi_herdr, set_pi_loop,
     set_pi_subagents, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt,
-    set_pi_user_markdown, set_pi_workflows,
-    set_progress_bar, set_prompt_cursor, set_prompt_suggestions, set_psm_resume_index,
-    set_recap_mermaid, set_recap_model, set_remember_tool_approvals, set_remote_tui_footer,
-    set_render_mermaid, set_respect_manual_folds, set_review_file_tree, set_review_include_reads,
-    set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
+    set_pi_user_markdown, set_pi_workflows, set_progress_bar, set_prompt_cursor,
+    set_prompt_suggestions, set_psm_resume_index, set_recap_mermaid, set_recap_model,
+    set_remember_tool_approvals, set_remote_tui_footer, set_render_mermaid,
+    set_respect_manual_folds, set_review_file_tree, set_review_include_reads, set_screen_mode,
+    set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
     set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_side_by_side_edit,
     set_simple_mode, set_theme, set_thinking_border_colors, set_timeline, set_timestamps,
     set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled, set_voice_stt_language,
@@ -977,7 +977,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 return vec![];
             };
             let Some(session_id) = agent.session.session_id.clone() else {
-                agent.session.deferred_model_switch = Some((model_id, effort));
+                agent.session.deferred_model_switch =
+                    Some(crate::app::agent::DeferredModelSwitch {
+                        prev_model_id: agent.session.models.current.clone(),
+                        model_id,
+                        effort,
+                    });
                 return vec![];
             };
             agent.session.model_switch_pending = true;
@@ -1038,8 +1043,32 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 return vec![];
             };
             let Some(session_id) = agent.session.session_id.clone() else {
-                agent.session.deferred_model_switch = Some((model_id, effort));
-                return vec![];
+                let prev_model = agent.session.models.current.clone();
+                let prev_effort = agent.session.models.reasoning_effort;
+                agent.session.models.set_current(model_id.clone(), effort);
+                let resolved_effort = agent.session.models.reasoning_effort;
+                let unchanged =
+                    prev_model.as_ref() == Some(&model_id) && prev_effort == resolved_effort;
+                let rollback_prev = agent
+                    .session
+                    .deferred_model_switch
+                    .take()
+                    .and_then(|prior| prior.prev_model_id)
+                    .or(prev_model);
+                agent.session.deferred_model_switch =
+                    Some(crate::app::agent::DeferredModelSwitch {
+                        model_id: model_id.clone(),
+                        effort,
+                        prev_model_id: rollback_prev,
+                    });
+                return if unchanged {
+                    vec![]
+                } else {
+                    vec![Effect::PersistPreferredModel {
+                        model_id,
+                        reasoning_effort: resolved_effort,
+                    }]
+                };
             };
             agent.session.model_switch_pending = true;
             vec![Effect::SwitchModel {
@@ -1409,11 +1438,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             );
             effects
         }
-        Action::ProjectSelected {
-            path,
-            stashed_prompt,
-            disable_picker,
-        } => dispatch_project_selected(app, path, stashed_prompt, disable_picker),
         Action::NewSessionAnswered {
             worktree,
             persist_mode,

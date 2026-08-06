@@ -523,6 +523,7 @@ mod link_click_tests {
             },
             &bundle,
             false,
+            false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
         );
@@ -2005,14 +2006,14 @@ mod link_click_tests {
         let (mut agent, reg) = make_search_agent();
         agent
             .permission_queue
-            .push_back(super::paste_key_tests::make_followup_permission_state());
+            .push_back(super::test_fixtures::make_followup_permission_state());
         route_slash(&mut agent, &reg);
         assert!(agent.scrollback_search.is_none());
     }
     #[test]
     fn router_slash_blocked_while_plan_approval_pending() {
         let (mut agent, reg) = make_search_agent();
-        agent.plan_approval_view = Some(super::paste_key_tests::make_plan_approval_view_state());
+        agent.plan_approval_view = Some(super::test_fixtures::make_plan_approval_view_state());
         route_slash(&mut agent, &reg);
         assert!(agent.scrollback_search.is_none());
     }
@@ -2252,6 +2253,7 @@ mod link_click_tests {
             crate::app::agent_view::BannerSlotParams::none(),
             &bundle,
             false,
+            false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
         );
@@ -2353,6 +2355,7 @@ mod link_click_tests {
             },
             &bundle,
             false,
+            false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
         );
@@ -2430,6 +2433,7 @@ mod link_click_tests {
                 tip: Some(long_tip.as_str()),
             },
             &bundle,
+            false,
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),

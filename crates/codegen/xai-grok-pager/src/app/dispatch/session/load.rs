@@ -264,7 +264,6 @@ fn dispatch_load_session_ungated(
         .slash_controller
         .registry_mut()
         .set_plugins_visible(!app.appearance.disable_plugins);
-    app.mark_project_picker_done();
     switch_to_agent(app, agent_id, SwitchCause::Load);
     vec![Effect::LoadSession {
         agent_id,
@@ -1163,10 +1162,11 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         let page_flip_entry = drain.page_flip_entry;
         effects.extend(drain.effects);
         let cwd = agent.session.cwd.clone();
-        effects.push(Effect::HydrateSessionTitleFromDisk {
+        effects.push(Effect::HydrateSessionMetaFromDisk {
             agent_id,
             session_id: hydrate_sid.clone(),
             cwd: cwd.clone(),
+            last_turn_summary_gen: agent.last_turn_summary_gen,
         });
         agent.session.prompt_history_loading = true;
         effects.push(Effect::FetchPromptHistory {
@@ -1188,14 +1188,14 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             agent_id,
             silent: true,
         });
-        if let Some((model_id, effort)) = deferred {
+        if let Some(switch) = deferred {
             agent.session.model_switch_pending = true;
             effects.push(Effect::SwitchModel {
                 agent_id,
                 session_id: hydrate_sid.clone(),
-                model_id,
-                effort,
-                prev_model_id: None,
+                model_id: switch.model_id,
+                effort: switch.effort,
+                prev_model_id: switch.prev_model_id,
             });
         }
         if std::mem::take(&mut agent.pending_extensions_fetch)

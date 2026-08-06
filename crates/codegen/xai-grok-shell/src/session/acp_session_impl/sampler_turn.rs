@@ -739,6 +739,58 @@ impl SessionActor {
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         self.sampler_handle.update_config(sampler_config);
     }
+    /// Fold an auth remedy into a turn failure: its advice becomes the tail of
+    /// the message, and its `turn_error_type` the classification the client
+    /// keys its re-auth prompt off.
+    fn apply_auth_remedy(
+        &self,
+        remedy: &crate::auth::AuthRemedy,
+        message: String,
+        status_code: Option<u16>,
+    ) -> (&'static str, String) {
+        xai_grok_telemetry::unified_log::info(
+            "auth: turn failure classified",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({
+                "status_code": status_code,
+                "remedy": format!("{remedy:?}"),
+            })),
+        );
+        let message = match remedy.advice() {
+            Some(advice) => format!("{message}\n\n{advice}"),
+            None => message,
+        };
+        (remedy.turn_error_type(), message)
+    }
+    /// Terminal failure for a turn the auth-retry budget gave up on — the one
+    /// terminal path that lives outside [`Self::handle_sampling_failure`].
+    ///
+    /// Every terminal path owes the client one `RetryState::Failed`: it is
+    /// what raises the pager's re-auth prompt and its turn-failed block. This
+    /// arm used to return its `acp::Error` without one, so a turn that died on
+    /// repeated 401s ended in silence.
+    pub(crate) async fn fail_turn_auth_budget_exhausted(&self, message: String) -> acp::Error {
+        const STATUS: Option<u16> = Some(401);
+        let (error_type, message) = match self.auth_manager.as_ref() {
+            Some(auth_manager) => self.apply_auth_remedy(
+                &auth_manager.auth_remedy().after_retries_exhausted(),
+                message,
+                STATUS,
+            ),
+            None => ("auth", message),
+        };
+        self.log_terminal_failure(error_type, STATUS, &message);
+        self.send_xai_notification(XaiSessionUpdate::RetryState(
+            crate::extensions::notification::RetryState::Failed {
+                error_type: error_type.to_owned(),
+                message: message.clone(),
+            },
+        ))
+        .await;
+        acp::Error::internal_error().data(crate::sampling::error::error_data_with_status(
+            message, STATUS,
+        ))
+    }
     fn log_terminal_failure(&self, error_type: &str, status_code: Option<u16>, message: &str) {
         let auth = self
             .auth_manager
@@ -753,7 +805,7 @@ impl SessionActor {
                 "status_code": status_code,
                 "reauthable": reauthable,
                 "auth_mode": auth.as_ref().map(|a| format!("{:?}", a.auth_mode)),
-                "key_prefix": auth.as_ref().map(|a| crate::auth::token_suffix(&a.key).to_owned()),
+                "key_prefix": auth.as_ref().map(|a| xai_grok_auth::bearer_suffix(&a.key).to_owned()),
                 "expires_at": auth
                     .as_ref()
                     .and_then(|a| a.expires_at.map(|e| e.to_rfc3339())),
@@ -913,37 +965,6 @@ impl SessionActor {
                 })),
             );
         }
-        if auth_recovery_eligible
-            && crate::auth::devbox_login::is_devbox_environment()
-            && let Some(ref am) = self.auth_manager
-        {
-            match am.try_devbox_recovery().await {
-                Ok(auth) => {
-                    tracing::info!(
-                        session_id = %self.session_info.id.0,
-                        user_id = %auth.user_id,
-                        "auth recovery: sampler 401, devbox re-mint, retrying"
-                    );
-                    self.prepare_sampler_for_turn().await;
-                    return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
-                        credential: error.credential,
-                        store: RecoveredStore::SessionToken,
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        session_id = %self.session_info.id.0,
-                        error = %e,
-                        "auth recovery: sampler 401, devbox re-mint failed"
-                    );
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth recovery: sampler 401, devbox re-mint failed",
-                        Some(self.session_info.id.0.as_ref()),
-                        Some(serde_json::json!({ "error": format!("{e}") })),
-                    );
-                }
-            }
-        }
         if auth_recovery_eligible && let Some(ref am) = self.auth_manager {
             if am
                 .try_recover_unauthorized(crate::auth::recovery::RecoverySource::Turn)
@@ -1009,7 +1030,7 @@ impl SessionActor {
         let auth_mode = self
             .auth_manager
             .as_ref()
-            .and_then(|am| am.current())
+            .and_then(|am| am.current_or_expired())
             .map(|a| a.auth_mode)
             .unwrap_or(crate::auth::AuthMode::ApiKey);
         let auth_mode_str = format!("{auth_mode:?}");
@@ -1082,28 +1103,13 @@ impl SessionActor {
         } else {
             error.kind.as_str()
         };
-        let (error_type, detailed_message) = if error_type == "auth"
-            && self
-                .auth_manager
-                .as_ref()
-                .is_some_and(|am| !am.requires_manual_reauth())
-        {
-            xai_grok_telemetry::unified_log::info(
-                "auth: turn failure downgraded to auth_transient (refreshable credential present)",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({ "status_code": error.status_code })),
-            );
-            (
-                "auth_transient",
-                format!(
-                    "{detailed_message}\n\nAuthentication is temporarily unavailable \
-                     (often a network blip right after wake). Your session is still \
-                     signed in and will recover automatically — retry in a few seconds; \
-                     no need to run /login."
-                ),
-            )
-        } else {
-            (error_type, detailed_message)
+        let (error_type, detailed_message) = match self.auth_manager.as_ref() {
+            Some(auth_manager) if error_type == "auth" => self.apply_auth_remedy(
+                &auth_manager.auth_remedy(),
+                detailed_message,
+                error.status_code,
+            ),
+            _ => (error_type, detailed_message),
         };
         self.log_terminal_failure(error_type, error.status_code, &detailed_message);
         self.send_xai_notification(XaiSessionUpdate::RetryState(

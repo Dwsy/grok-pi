@@ -85,6 +85,13 @@ pub(in crate::app) fn find_user_prompt_entry_for_shell_index(
 }
 
 pub(super) fn dispatch_rewind(app: &mut AppView) -> Vec<Effect> {
+    // Rewind supersedes the client-side jump preview. Restore its captured
+    // viewport before opening either the native Pi tree or Grok rewind flow.
+    if let ActiveView::Agent(id) = app.active_view
+        && let Some(agent) = app.agents.get_mut(&id)
+    {
+        agent.dismiss_jump_picker();
+    }
     // Pi owns session branching via SessionTree + navigateTree; Grok Shell
     // rewind (x.ai/rewind/*) is not implemented by pi-grok-adapter.
     if app.external_agent {
@@ -600,6 +607,11 @@ pub(super) fn dispatch_rewind_success(
     let stashed_draft = agent.rewind_state.take().and_then(|s| s.stashed_draft);
 
     if !is_files_only {
+        // The summary describes turns the rewind just removed (the shell
+        // clears its persisted copy on the same branch). Bump gen so a
+        // late SessionMetaFromDisk hydrate cannot restore the pre-rewind
+        // summary.json value into the cleared field.
+        agent.set_last_turn_summary(None);
         let target_idx = find_user_prompt_entry_for_shell_index(&agent.scrollback, target);
         if let Some(anchor_idx) = target_idx {
             let removed = agent.scrollback.remove_from(anchor_idx);

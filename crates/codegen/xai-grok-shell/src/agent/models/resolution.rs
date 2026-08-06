@@ -148,7 +148,7 @@ pub(crate) fn resolve_default_model(
 }
 
 /// Filter hidden and auth-gated entries out of `catalog` and convert to ACP wire format.
-pub fn available_models(
+pub(crate) fn available_models(
     catalog: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
 ) -> IndexMap<acp::ModelId, acp::ModelInfo> {
@@ -195,7 +195,7 @@ impl ModelGlobSet {
 }
 
 /// Single source of truth for the catalog. Applies, in order: `disabled_models`
-pub fn resolve_model_catalog(
+pub(crate) fn resolve_model_catalog(
     cfg: &config::Config,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {

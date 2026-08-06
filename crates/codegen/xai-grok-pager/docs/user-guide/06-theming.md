@@ -78,9 +78,11 @@ auto_light_theme = "grokday"
 | **macOS** | Reads `AppleInterfaceStyle` system preference |
 | **Linux** | Queries XDG Desktop Portal (`org.freedesktop.appearance.color-scheme`) |
 | **Windows** | Reads the system personalization registry |
-| **SSH / headless** | Falls back to an OSC 11 terminal background query at startup |
+| **SSH / tmux / headless** | `GROK_APPEARANCE` or `LC_GROK_APPEARANCE` (`dark`/`light`), then `COLORFGBG`, then a startup OSC 11 background query. `grok wrap ssh …` stamps `LC_GROK_APPEARANCE` from the local OS theme so it survives SSH into the login shell. New tmux sessions inherit it only if the tmux server/session was created with that env (or `update-environment` includes it). OSC 11 is DCS-wrapped for tmux ≥ 3.3 when tmux is the immediate terminal (not an editor `:terminal`); reaching the outer emulator also needs `allow-passthrough`, and replies are best-effort. |
 
-Once running, Grok polls for appearance changes every 5 seconds. Toggling your OS between light and dark mode takes effect within seconds without restarting.
+Once running, Grok polls desktop APIs and env hints every 5 seconds. Toggling your OS between light and dark mode on a local desktop takes effect within seconds without restarting. Over SSH the wrap-stamped env is fixed for that hop.
+
+You can also set `GROK_THEME` (or `LC_GROK_THEME`) to force a theme or `auto` without editing `config.toml`.
 
 ### Via the Settings Pane
 
@@ -189,7 +191,7 @@ gap_right = 0           # Gap between scrollbar and screen edge (0 = at edge)
 [scrollback.scroll]
 margin = 0                  # Context lines above/below selected entry (0 = edge)
 min_page_fraction = 0       # Minimum scroll as % of viewport (0-100)
-follow_indicator = "center" # "center" = show down-arrow, "none" = hidden
+follow_indicator = "center" # "center" = show the ▼/▲ scroll arrows, "none" = hidden
 follow_auto_select = true   # Auto-select latest entry when following
 follow_by_overscroll = true # Scrolling past bottom engages follow mode
 anchor_on_fold = true       # Keep block header at same screen position when folding

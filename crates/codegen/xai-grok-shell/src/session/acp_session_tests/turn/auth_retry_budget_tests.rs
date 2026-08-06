@@ -65,21 +65,52 @@ fn expired_auth_manager(
     (dir, am)
 }
 
-fn drain_gateway(mut rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>) {
+/// `x.ai/session_notification` payloads the client was sent.
+type XaiUpdates = Arc<parking_lot::Mutex<Vec<serde_json::Value>>>;
+
+fn drain_gateway(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+) -> XaiUpdates {
+    let captured = XaiUpdates::default();
+    let sink = captured.clone();
     tokio::task::spawn_local(async move {
         while let Some(msg) = rx.recv().await {
-            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
-                let _ = args.response_tx.send(Ok(()));
+            match msg {
+                xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                    let _ = args.response_tx.send(Ok(()));
+                }
+                xai_acp_lib::AcpClientMessage::ExtNotification(args) => {
+                    if let Ok(value) = serde_json::from_str(args.params.get()) {
+                        sink.lock().push(value);
+                    }
+                }
+                _ => {}
             }
         }
     });
+    captured
+}
+
+/// `(error_type, message)` of the turn's terminal `retryState`, if the client
+/// was told about one at all.
+fn terminal_failure(updates: &XaiUpdates) -> Option<(String, String)> {
+    updates.lock().iter().find_map(|value| {
+        let update = value.get("update")?;
+        if update.get("sessionUpdate")? != "retry_state" || update.get("type")? != "failed" {
+            return None;
+        }
+        Some((
+            update.get("error_type")?.as_str()?.to_owned(),
+            update.get("message")?.as_str()?.to_owned(),
+        ))
+    })
 }
 
 fn drain_persistence(mut rx: tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>) {
     tokio::task::spawn_local(async move {
         while let Some(msg) = rx.recv().await {
             if let PersistenceMsg::FlushAndAck { respond_to } = msg {
-                let _ = respond_to.send(());
+                let _ = respond_to.send(Ok(()));
             }
         }
     });
@@ -91,7 +122,7 @@ fn drain_persistence(mut rx: tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg
 async fn session_token_actor(
     server: &MockInferenceServer,
     auth_manager: Arc<AuthManager>,
-) -> Arc<SessionActor> {
+) -> (Arc<SessionActor>, XaiUpdates) {
     let sampling_cfg = xai_grok_sampler::SamplerConfig {
         base_url: server.url(),
         model: "test".to_string(),
@@ -114,7 +145,7 @@ async fn session_token_actor(
     );
 
     let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
-    drain_gateway(gateway_rx);
+    let xai_updates = drain_gateway(gateway_rx);
     let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     drain_persistence(persistence_rx);
 
@@ -171,7 +202,7 @@ async fn session_token_actor(
             }
         });
     }
-    actor
+    (actor, xai_updates)
 }
 
 async fn run_prompt(
@@ -225,7 +256,7 @@ async fn fail_closed_401_is_uncharged_and_turn_survives() {
                 fail_pre_request: true,
             });
             let (_dir, am) = expired_auth_manager(refresher);
-            let actor = session_token_actor(&server, am).await;
+            let (actor, _updates) = session_token_actor(&server, am).await;
 
             let outcome = run_prompt(&actor, "auth-retry-budget-fail-closed").await;
             assert!(
@@ -283,7 +314,7 @@ async fn authenticated_401s_still_exhaust_after_three_retries() {
                 fail_pre_request: false,
             });
             let (_dir, am) = expired_auth_manager(refresher);
-            let actor = session_token_actor(&server, am).await;
+            let (actor, updates) = session_token_actor(&server, am).await;
 
             let outcome = run_prompt(&actor, "auth-retry-budget-exhaust").await;
             let err = outcome.expect_err("authenticated 401s must exhaust and fail the turn");
@@ -302,6 +333,21 @@ async fn authenticated_401s_still_exhaust_after_three_retries() {
             assert_eq!(
                 authenticated, 4,
                 "initial send plus MAX_RETRIES resubmits, all authenticated"
+            );
+
+            // The budget is the one terminal path that lives outside
+            // `handle_sampling_failure`, and it used to return its error with
+            // no notification at all — leaving the pager with no re-auth
+            // prompt and no turn-failed block for a turn that died on 401s.
+            let (error_type, message) = terminal_failure(&updates)
+                .expect("an exhausted turn must report a terminal retryState");
+            assert_eq!(
+                error_type, "auth",
+                "the client keys its re-auth prompt off this: {message}"
+            );
+            assert!(
+                message.contains("authenticated inference requests were still rejected"),
+                "the notification must carry the same story as the error: {message}"
             );
         })
         .await;

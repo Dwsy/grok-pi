@@ -124,12 +124,14 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     pending_notifications: Vec::new(),
                     notifications_suppressed: false,
                     rewindable: false,
+                    front_message_committed: false,
                     nudges_used_this_session: 0,
                 }),
                 notifications: NotificationSender {
                     gateway: GatewaySender::new(gateway_tx),
                     gateway_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     persistence_tx: persistence.tx.clone(),
+                    disk_full: persistence.subscribe_disk_full(),
                 },
                 permissions: PermissionHandle::allow_all(),
                 tool_context,
@@ -286,6 +288,9 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
+                turn_summary_task: std::cell::RefCell::new(None),
+                turn_summary_generation: std::cell::Cell::new(0),
+                turn_summary_enabled: false,
                 session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
                 turn_stream_drained: parking_lot::Mutex::new(None),
@@ -450,7 +455,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     respond_to: flush_tx,
                 })
                 .unwrap();
-            flush_rx.await.unwrap();
+            flush_rx.await.unwrap().unwrap();
             let loaded = storage
                 .load_session_without_updates(&session_info)
                 .await
@@ -591,12 +596,14 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     pending_notifications: Vec::new(),
                     notifications_suppressed: false,
                     rewindable: false,
+                    front_message_committed: false,
                     nudges_used_this_session: 0,
                 }),
                 notifications: NotificationSender {
                     gateway: GatewaySender::new(gateway_tx),
                     gateway_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     persistence_tx: persistence.tx.clone(),
+                    disk_full: persistence.subscribe_disk_full(),
                 },
                 permissions: PermissionHandle::allow_all(),
                 tool_context,
@@ -756,6 +763,9 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
+                turn_summary_task: std::cell::RefCell::new(None),
+                turn_summary_generation: std::cell::Cell::new(0),
+                turn_summary_enabled: false,
                 session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
                 turn_stream_drained: parking_lot::Mutex::new(None),
@@ -779,7 +789,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     respond_to: flush_tx,
                 })
                 .unwrap();
-            flush_rx.await.unwrap();
+            flush_rx.await.unwrap().unwrap();
             let storage = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
                 session_dir.path().to_path_buf(),
             );
@@ -844,6 +854,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 pending_notifications: Vec::new(),
                 notifications_suppressed: false,
                 rewindable: false,
+                front_message_committed: false,
                 nudges_used_this_session: 0,
             });
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<
@@ -875,6 +886,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                         std::sync::atomic::AtomicBool::new(true),
                     ),
                     persistence_tx,
+                    disk_full: crate::session::notifications::idle_disk_full_rx(),
                 },
                 permissions: PermissionHandle::allow_all(),
                 tool_context,
@@ -1054,6 +1066,9 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
+                turn_summary_task: std::cell::RefCell::new(None),
+                turn_summary_generation: std::cell::Cell::new(0),
+                turn_summary_enabled: false,
                 session_turn_active: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
@@ -1104,7 +1119,14 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                         send_now: false,
                     });
             }
-            actor.cancel_running_task(true, true, false, None).await;
+            actor
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    kill_background_tasks: true,
+                    user_initiated: true,
+                    ..Default::default()
+                })
+                .await;
             let scoped_prompt_id = bridge
                 .read_resource::<
                     xai_grok_tools::implementations::grok_build::task::types::CurrentPromptIdResource,
@@ -1174,7 +1196,12 @@ async fn cancel_records_mid_turn_abort_interrupt_marker() {
             }
             assert_eq!(actor.events.take_prior_interrupt_category(), None);
             actor
-                .cancel_running_task(true, false, false, Some("ctrl_c".to_string()))
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    trigger: Some(crate::session::CancelTrigger::CtrlC),
+                    user_initiated: true,
+                    ..Default::default()
+                })
                 .await;
             assert_eq!(
                 actor.events.take_prior_interrupt_category(),
@@ -1217,7 +1244,12 @@ async fn cancel_without_active_tool_arms_interrupt_reminder() {
             assert!(!actor.events.has_active_tool());
             assert!(!actor.events.take_pending_interrupt_reminder());
             actor
-                .cancel_running_task(true, false, false, Some("ctrl_c".to_string()))
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    trigger: Some(crate::session::CancelTrigger::CtrlC),
+                    user_initiated: true,
+                    ..Default::default()
+                })
                 .await;
             assert!(
                 actor.events.take_pending_interrupt_reminder(),
@@ -1321,7 +1353,12 @@ async fn cancel_with_dangling_tool_call_skips_interrupt_reminder() {
             }
             assert!(!actor.events.has_active_tool());
             actor
-                .cancel_running_task(true, false, false, Some("ctrl_c".to_string()))
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    trigger: Some(crate::session::CancelTrigger::CtrlC),
+                    user_initiated: true,
+                    ..Default::default()
+                })
                 .await;
             assert!(
                 !actor.events.take_pending_interrupt_reminder(),
@@ -1372,26 +1409,6 @@ async fn maybe_inject_interrupt_reminder_injects_once() {
             );
         })
         .await;
-}
-/// Build an `Arc<SessionActor>` whose persistence channel answers the
-/// `FlushAndAck` barrier, so a `handle_prompt` turn driven with a `persist_ack`
-/// resolves deterministically (the bare `build_actor` drops the persistence
-/// receiver, so its flush barrier never completes). Returns the actor; the
-/// gateway/persistence drains run on the `LocalSet` for the test's lifetime.
-async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActor> {
-    let (gateway_tx, mut gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-    tokio::task::spawn_local(async move { while gateway_rx.recv().await.is_some() {} });
-    let (persistence_tx, mut persistence_rx) =
-        tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-    tokio::task::spawn_local(async move {
-        while let Some(msg) = persistence_rx.recv().await {
-            if let PersistenceMsg::FlushAndAck { respond_to } = msg {
-                let _ = respond_to.send(());
-            }
-        }
-    });
-    std::sync::Arc::new(create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await)
 }
 /// Integration (production wiring + ordering): with the one-shot armed, a real
 /// user turn driven through `handle_prompt` injects the interrupt
@@ -1570,7 +1587,13 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
                 state.pending_inputs.push_back(q1_item);
                 state.pending_inputs.push_back(q2_item);
             }
-            actor.cancel_running_task(true, false, false, None).await;
+            actor
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    user_initiated: true,
+                    ..Default::default()
+                })
+                .await;
             assert!(
                 actor
                     .current_prompt_id
@@ -1657,7 +1680,12 @@ async fn cancel_after_own_completion_sweep_preserves_queued_user_prompt() {
                 .drop_pending_items_for_consumed_completions(&["bg-1"])
                 .await;
             actor
-                .cancel_running_task(true, false, false, Some("ctrl_c".to_string()))
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    trigger: Some(crate::session::CancelTrigger::CtrlC),
+                    user_initiated: true,
+                    ..Default::default()
+                })
                 .await;
             let state = actor.state.lock().await;
             let surviving: Vec<&str> = state
@@ -1733,7 +1761,12 @@ async fn interactive_cancel_drops_queued_task_wakes_and_promotes_user() {
                 state.pending_inputs.push_back(wake_item);
                 state.pending_inputs.push_back(queued_user);
             }
-            let cancel = actor.cancel_running_task(true, false, false, Some("ctrl_c".to_string()));
+            let cancel = actor.cancel_running_task(crate::session::CancelOptions {
+                cancel_subagents: true,
+                trigger: Some(crate::session::CancelTrigger::CtrlC),
+                user_initiated: true,
+                ..Default::default()
+            });
             tokio::pin!(cancel);
             tokio::select! {
                 _ = &mut cancel => {}
@@ -1828,7 +1861,12 @@ async fn ctrl_c_clears_turn_active_before_background_completion_routes() {
                 state.pending_inputs.push_back(running_item);
             }
             actor
-                .cancel_running_task(true, false, false, Some("ctrl_c".to_string()))
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    trigger: Some(crate::session::CancelTrigger::CtrlC),
+                    user_initiated: true,
+                    ..Default::default()
+                })
                 .await;
             assert!(!is_turn_active.load(std::sync::atomic::Ordering::Relaxed));
             assert!(actor.state.lock().await.notifications_suppressed);
@@ -1864,7 +1902,12 @@ async fn non_ctrl_c_cancel_preserves_queued_task_wakes_and_does_not_arm_barrier(
                     state.pending_inputs.push_back(queued_user);
                 }
                 actor
-                    .cancel_running_task(true, false, false, trigger.map(str::to_string))
+                    .cancel_running_task(crate::session::CancelOptions {
+                        cancel_subagents: true,
+                        trigger: trigger.map(crate::session::CancelTrigger::from_client),
+                        user_initiated: true,
+                        ..Default::default()
+                    })
                     .await;
                 let state = actor.state.lock().await;
                 let remaining: Vec<&str> = state
@@ -1955,7 +1998,13 @@ async fn cancel_resolves_front_when_running_task_is_none() {
                 state.pending_inputs.push_back(running_item);
                 state.pending_inputs.push_back(q2_item);
             }
-            actor.cancel_running_task(true, false, false, None).await;
+            actor
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    user_initiated: true,
+                    ..Default::default()
+                })
+                .await;
             assert!(
                 matches!(
                     running_rx.try_recv(),
@@ -2101,6 +2150,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 pending_notifications: Vec::new(),
                 notifications_suppressed: false,
                 rewindable: false,
+                front_message_committed: false,
                 nudges_used_this_session: 0,
             });
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<
@@ -2132,6 +2182,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                         std::sync::atomic::AtomicBool::new(true),
                     ),
                     persistence_tx,
+                    disk_full: crate::session::notifications::idle_disk_full_rx(),
                 },
                 permissions: PermissionHandle::allow_all(),
                 tool_context,
@@ -2311,6 +2362,9 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
+                turn_summary_task: std::cell::RefCell::new(None),
+                turn_summary_generation: std::cell::Cell::new(0),
+                turn_summary_enabled: false,
                 session_turn_active: std::sync::Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
                 ),
@@ -2362,7 +2416,13 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     handle: task.abort_handle(),
                 });
             }
-            actor.cancel_running_task(true, false, false, None).await;
+            actor
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    user_initiated: true,
+                    ..Default::default()
+                })
+                .await;
             let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
             let mut still_active = true;
             while tokio::time::Instant::now() < deadline {
@@ -2513,7 +2573,13 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
                 state.pending_inputs.push_back(make_item("q1-pid", "q1"));
                 state.pending_inputs.push_back(make_item("q2-pid", "q2"));
             }
-            actor.cancel_running_task(true, false, false, None).await;
+            actor
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    user_initiated: true,
+                    ..Default::default()
+                })
+                .await;
             let state = actor.state.lock().await;
             let wire = actor.build_queue_wire(&state);
             let wire_ids: Vec<&str> = wire.iter().map(|e| e.id.as_str()).collect();

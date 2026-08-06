@@ -1130,7 +1130,7 @@ fn read_subdirs(
             };
             out.push(LocationCandidate {
                 label: name,
-                detail: crate::project_picker::sources::display_path(&path),
+                detail: crate::recent_dirs::display_path(&path),
                 path,
                 worktree,
             });
@@ -1516,6 +1516,16 @@ impl DashboardState {
         self.new_agent_button_focused = false;
         self.selected_section = None;
         self.selected_idle_overflow = false;
+    }
+
+    /// Follow session overlay attach from `previous` to `new_id` when
+    /// attach already names `previous`. No-op otherwise so overlay chrome
+    /// is never invented. Keeps row focus aligned with attach.
+    pub fn repoint_attach_if_on(&mut self, previous: AgentId, new_id: AgentId) {
+        if self.attached_agent == Some(previous) {
+            self.attached_agent = Some(new_id);
+            self.focus_row(DashboardRowId::TopLevel(new_id));
+        }
     }
 
     /// Focus the section header identified by `key` — the third cursor
@@ -4144,7 +4154,7 @@ impl DashboardState {
             let Some(c) = visible.get(lp.picker.selected) else {
                 return InputOutcome::Unchanged;
             };
-            let mut filled = crate::project_picker::sources::display_path(&c.path);
+            let mut filled = crate::recent_dirs::display_path(&c.path);
             if !filled.ends_with('/') {
                 filled.push('/');
             }
@@ -5443,7 +5453,7 @@ mod tests {
         let path = tmp.path().join("config.toml");
         std::fs::write(
             &path,
-            "[hints]\nproject_picker_disabled = true\n\n[ui]\ncompact_mode = false\n",
+            "[hints]\nmemory_modal_fullscreen = true\n\n[ui]\ncompact_mode = false\n",
         )
         .unwrap();
         let p = PersistedDashboard {
@@ -5455,7 +5465,7 @@ mod tests {
         write_persisted_to_path(&path, &p).unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("[hints]"));
-        assert!(after.contains("project_picker_disabled = true"));
+        assert!(after.contains("memory_modal_fullscreen = true"));
         assert!(after.contains("[ui]"));
         assert!(after.contains("compact_mode = false"));
         assert!(after.contains("[dashboard]"));

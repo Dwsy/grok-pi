@@ -521,7 +521,8 @@ impl VoiceState {
         matches!(self, Self::ColdStart { hold, .. } | Self::Recording { hold, .. } if *hold)
     }
 }
-/// Entry in the session picker list on the welcome screen.
+/// Entry from the session list wire: welcome/resume pickers and non-leader
+/// dashboard roster fallback (`session_picker_entry_to_roster`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionPickerEntry {
     pub id: String,
@@ -553,6 +554,9 @@ pub struct SessionPickerEntry {
     /// Backing Pi session path of the fork/copy parent, when this session was
     /// branched from another. Used to render the fork/copy relationship tree.
     pub parent_session_path: Option<String>,
+    /// Per-turn secondary line (`lastTurnSummary` on the session/list wire).
+    /// Used for non-leader roster rows today; reserved for picker display later.
+    pub last_turn_summary: Option<String>,
     /// Lazy-loaded detail for the expanded card view.
     pub card_detail: Option<CardDetail>,
 }
@@ -575,6 +579,7 @@ fn session_picker_entry_to_dashboard_roster(
         activity: RosterActivity::Dormant,
         resident: false,
         last_change_unix_ms: last_change.timestamp_millis(),
+        last_turn_summary: entry.last_turn_summary.clone(),
         origin: RosterOrigin {
             kind: entry.source.clone(),
             host: entry.hostname.clone(),
@@ -824,11 +829,6 @@ pub struct AppView {
     pub current_ui: xai_grok_shell::agent::config::UiConfig,
     /// Working directory.
     pub cwd: PathBuf,
-    /// Whether the project picker question has already been shown this session.
-    pub project_picker_shown: bool,
-    /// "Don't ask me again" opt-out from [`xai_grok_shell::util::config::resolve_hints`];
-    /// TUI writes to user `config.toml` only.
-    pub project_picker_disabled: bool,
     /// Whether the cwd is inside a git repository (any ancestor has `.git`).
     /// Pre-computed at startup so dispatch stays free of filesystem I/O.
     pub cwd_has_git_ancestor: bool,
@@ -1243,6 +1243,11 @@ pub struct AppView {
     pub fork_worktree_mode: WorktreeMode,
     /// Restore code state on resume (`--restore-code`).
     pub restore_code: Option<bool>,
+    /// One-shot session id: matching `LoadSession` / worktree resume injects
+    /// `restore_code: false`, then this clears. Used after conversation-only
+    /// remote restore (and remote worktree without `--restore-code`) so agent
+    /// `[cli] restore_code` cannot checkout in-place. Not sticky.
+    pub suppress_code_restore_once: Option<String>,
     /// Startup resume target that missed local id/title resolution and was
     /// deferred to the worktree resume handler (set from materialization).
     /// Worktree failure messages append the no-match hint only for this
@@ -1627,8 +1632,6 @@ impl AppView {
             settings_registry: Arc::new(crate::settings::SettingsRegistry::defaults()),
             current_ui: xai_grok_shell::agent::config::UiConfig::default(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            project_picker_shown: false,
-            project_picker_disabled: false,
             cwd_has_git_ancestor: std::env::current_dir()
                 .ok()
                 .is_some_and(|c| c.ancestors().any(|p| p.join(".git").exists())),
@@ -1749,6 +1752,7 @@ impl AppView {
             new_session_worktree_mode: WorktreeMode::Never,
             fork_worktree_mode: WorktreeMode::Ask,
             restore_code: None,
+            suppress_code_restore_once: None,
             resume_local_miss: None,
             agent_override: None,
             bootstrap_acp_commands,
@@ -1842,13 +1846,12 @@ impl AppView {
     /// [`take_deferred_model_switch`](crate::app::dispatch::session::lifecycle::take_deferred_model_switch);
     /// resolving it here would use the pre-session dashboard catalog and a
     /// remapped menu id could resolve differently.
-    pub fn deferred_model_switch_from_cli(
-        &self,
-    ) -> Option<(
-        acp::ModelId,
-        Option<xai_grok_shell::sampling::types::ReasoningEffort>,
-    )> {
-        Some((self.cli_model_override.clone()?, None))
+    pub fn deferred_model_switch_from_cli(&self) -> Option<crate::app::agent::DeferredModelSwitch> {
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id: self.cli_model_override.clone()?,
+            effort: None,
+            prev_model_id: None,
+        })
     }
     /// Voice capture is armed: the in-prompt dictation overlay can show and
     /// Ctrl+Space can start capture.
@@ -2199,21 +2202,7 @@ impl AppView {
             _ => None,
         }
     }
-    /// Whether the project picker should intercept the next prompt.
-    ///
-    /// External ACP hosts (Pi) own cwd themselves and run under a Tokio
-    /// `LocalSet`, where Grok's project-picker path (`block_in_place`) panics.
-    /// Skip the picker for external agents entirely.
-    pub fn needs_project_picker(&self) -> bool {
-        !self.external_agent
-            && !self.project_picker_shown
-            && !self.project_picker_disabled
-            && !crate::project_picker::detection::is_project_dir(&self.cwd)
-    }
-    /// Mark the project picker as resolved so it won't fire again.
-    pub fn mark_project_picker_done(&mut self) {
-        self.project_picker_shown = true;
-    }
+
     /// Show a toast on the currently active view.
     ///
     /// From the dashboard, toasts route into the dispatch input's inline
@@ -4592,9 +4581,10 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 None => return InputOutcome::Changed,
             },
             PickerOutcome::SubmitQuery => {
-                let query = ctx.sp_state.query().trim().to_string();
-                if !query.is_empty() {
-                    return InputOutcome::Action(Action::LoadSession(query, None, false));
+                if let Some(sid) =
+                    crate::views::session_picker::session_id_for_direct_load(ctx.sp_state.query())
+                {
+                    return InputOutcome::Action(Action::LoadSession(sid.to_string(), None, false));
                 }
                 return InputOutcome::Unchanged;
             }
@@ -5817,6 +5807,7 @@ impl AppView {
                             } else {
                                 None
                             };
+                        let overlay_can_cycle = position.is_some_and(|(_, n)| n > 1);
                         let (agent_area, header) = if overlay_active {
                             let theme = crate::theme::Theme::current();
                             let title = agents
@@ -5906,6 +5897,7 @@ impl AppView {
                                 },
                                 &self.bundle_state,
                                 overlay_active,
+                                overlay_can_cycle,
                                 link_spans,
                                 AppRenderParams {
                                     voice_available,
@@ -6025,6 +6017,7 @@ impl AppView {
                                                     crate::app::agent_view::BannerSlotParams::none(
                                                     ),
                                                     bundle_state,
+                                                    false,
                                                     false,
                                                     link_spans,
                                                     AppRenderParams {
@@ -7023,8 +7016,6 @@ pub(crate) mod tests {
             settings_registry: std::sync::Arc::new(crate::settings::SettingsRegistry::defaults()),
             current_ui: xai_grok_shell::agent::config::UiConfig::default(),
             cwd: std::path::PathBuf::from("/tmp"),
-            project_picker_shown: true,
-            project_picker_disabled: false,
             cwd_has_git_ancestor: false,
             acp_tx: tx,
             scratch: crate::scrollback::render::ScratchBuffer::new(),
@@ -7080,6 +7071,7 @@ pub(crate) mod tests {
             new_session_worktree_mode: WorktreeMode::Never,
             fork_worktree_mode: WorktreeMode::Ask,
             restore_code: None,
+            suppress_code_restore_once: None,
             resume_local_miss: None,
             agent_override: None,
             bootstrap_acp_commands: Vec::new(),
@@ -7430,6 +7422,7 @@ pub(crate) mod tests {
     fn remote_tui_forwards_paste_as_bracketed_sequence_not_local_prompt() {
         let mut app = test_app_with_agent();
         let id = super::super::agent::AgentId(0);
+        app.agents.get_mut(&id).unwrap().active_pane = crate::views::agent::ActivePane::Prompt;
         app.external_agent = true;
         assert!(app.apply_remote_tui("open", Some("sess-1".into()), None, None));
 
@@ -7970,6 +7963,7 @@ pub(crate) mod tests {
             repo_name: "r".into(),
             worktree_label: None,
             parent_session_path: None,
+            last_turn_summary: None,
             card_detail: None,
         };
         if let Some(crate::views::modal::ActiveModal::SessionPicker { entries, .. }) =
@@ -9383,6 +9377,7 @@ pub(crate) mod tests {
             repo_name: "tmp-repo".into(),
             worktree_label: None,
             parent_session_path: None,
+            last_turn_summary: None,
             card_detail: None,
         }
     }
@@ -11400,6 +11395,7 @@ pub(crate) mod tests {
             crate::app::agent_view::BannerSlotParams::none(),
             &BundleState::default(),
             false,
+            false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
         );
@@ -11445,6 +11441,7 @@ pub(crate) mod tests {
             false,
             crate::app::agent_view::BannerSlotParams::none(),
             &BundleState::default(),
+            false,
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
@@ -11495,6 +11492,7 @@ pub(crate) mod tests {
             false,
             crate::app::agent_view::BannerSlotParams::none(),
             &BundleState::default(),
+            false,
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
@@ -13477,30 +13475,6 @@ pub(crate) mod tests {
             "ExitSession intercept must NOT remove the agent (it only closes the popup)",
         );
     }
-    #[test]
-    fn needs_project_picker_false_when_disabled() {
-        let mut app = test_app();
-        app.project_picker_shown = false;
-        app.cwd = std::path::PathBuf::from("/tmp");
-        app.project_picker_disabled = true;
-        assert!(!app.needs_project_picker());
-    }
-    #[test]
-    fn needs_project_picker_false_when_already_shown() {
-        let mut app = test_app();
-        app.project_picker_shown = true;
-        app.cwd = std::path::PathBuf::from("/tmp");
-        app.project_picker_disabled = false;
-        assert!(!app.needs_project_picker());
-    }
-    #[test]
-    fn needs_project_picker_true_for_non_project_dir() {
-        let mut app = test_app();
-        app.project_picker_shown = false;
-        app.project_picker_disabled = false;
-        app.cwd = std::path::PathBuf::from("/tmp");
-        assert!(app.needs_project_picker());
-    }
     /// Chat mode hides the welcome picker's source filter, so `f` must not
     /// cycle it; Build mode keeps the cycle.
     #[test]
@@ -13525,6 +13499,7 @@ pub(crate) mod tests {
             repo_name: "r".into(),
             worktree_label: None,
             parent_session_path: None,
+            last_turn_summary: None,
             card_detail: None,
         };
         let f_key = Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));

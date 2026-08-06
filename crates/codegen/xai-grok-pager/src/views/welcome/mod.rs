@@ -498,10 +498,6 @@ pub(super) fn render_version_badge(
 }
 
 /// Optional external title and version for branded welcome surfaces.
-///
-/// External hosts supply both values through [`ExternalWelcomeBrand`], keeping
-/// the fullscreen and minimal welcome renderers in sync while preserving their
-/// distinct native defaults when no external host is active.
 pub fn external_welcome_brand() -> Option<(&'static str, &'static str)> {
     logo::welcome_brand_override().map(|brand| (brand.title, brand.version))
 }
@@ -1738,13 +1734,9 @@ fn render_welcome_done(
     } else {
         0
     };
-    // Changelog is reachable via this menu row. Show from the first frame so
-    // the menu doesn't shift while the CDN fetch completes. External hosts
-    // with a project changelog URL use the same gate (no CDN dependency).
-    let menu_policy = logo::welcome_menu_override();
+    // Changelog is reachable via this menu row (ctrl+l). Show from the first
+    // frame so the menu doesn't shift while the CDN fetch completes.
     let show_changelog_action = p.has_access && !show_picker;
-    let hide_new_worktree =
-        show_changelog_action && menu_policy.is_some_and(|m| m.hide_new_worktree);
 
     let gate_menu;
     let owned_menu;
@@ -1769,10 +1761,7 @@ fn render_welcome_done(
             // so [x] sits at the very end of the row.
             items.push((key_i_with_x, "Import Claude settings"));
         }
-        // External hosts (e.g. grok-pi) may hide Grok's worktree product row.
-        if !hide_new_worktree {
-            items.push((key_w, "New worktree"));
-        }
+        items.push((key_w, "New worktree"));
         items.push((key_s, "Resume session"));
         // "Changelog" above Quit; no shortcut — opened by click (row or block).
         if show_changelog_action {
@@ -2371,9 +2360,9 @@ pub(crate) fn render_session_picker(
                     summary_lines: &[],
                     dimmed: false,
                     indent: 0,
-                    label_color: b.label_color,
+                    label_color: None,
                     badge: b.badge,
-                    badge_color: b.badge_color,
+                    badge_color: None,
                     collapsible: b.collapsible,
                     underline_last_desc: false,
                 })
@@ -2387,6 +2376,7 @@ pub(crate) fn render_session_picker(
     // Content rows will start after fuzzy rows + 1 header row.
     let content_start = picker_entries.len() + 1;
     let content_entry_data: Vec<SessionEntryData> = if let Some(hits) = ctx.content_results
+        && ctx.source_filter != crate::views::session_picker::SourceFilter::External
         && !filter_query.is_empty()
     {
         build_content_entry_data(
@@ -2402,7 +2392,8 @@ pub(crate) fn render_session_picker(
 
     // Show header only if there are actual deduped content rows to display.
     let has_content_rows = !content_entry_data.is_empty();
-    let content_loading = ctx.content_loading;
+    let content_loading = ctx.content_loading
+        && ctx.source_filter != crate::views::session_picker::SourceFilter::External;
     let spinner_label = build_content_header_label(content_loading, has_content_rows, ctx.tick);
     // Only show the header when content results exist or when content
     // search is in progress with a non-empty query.  This must match the
@@ -2822,6 +2813,7 @@ mod tests {
             repo_name: repo_name.into(),
             worktree_label: None,
             parent_session_path: None,
+            last_turn_summary: None,
             card_detail: None,
         }
     }
@@ -3491,25 +3483,6 @@ mod tests {
         assert!(layout.hero_logo.height > 0);
         assert!(layout.hero_menu.height > 0);
         assert_eq!(layout.hero_version.height, 1);
-    }
-
-    #[test]
-    fn external_welcome_brand_is_shared_with_minimal_mode() {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                logo::set_welcome_brand_override(None);
-            }
-        }
-        let _reset = Reset;
-        logo::set_welcome_brand_override(Some(logo::ExternalWelcomeBrand {
-            title: "grok-pi",
-            subtitle: "Pi agent core",
-            version: "0.0.5",
-        }));
-
-        assert_eq!(external_welcome_brand(), Some(("grok-pi", "0.0.5")));
-        assert_eq!(hero_inline_brand(), ("grok-pi", "0.0.5"));
     }
 
     #[test]

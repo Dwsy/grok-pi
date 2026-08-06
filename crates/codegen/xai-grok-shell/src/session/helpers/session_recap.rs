@@ -59,7 +59,8 @@ pub(crate) fn recap_instruction(tag: &str) -> String {
     )
 }
 
-/// Prepare the conversation snapshot for a recap request.
+/// Prepare the conversation snapshot for a recap / turn-summary request
+/// (same request shape, different instruction).
 ///
 /// 1. Optionally strips reasoning/thinking blocks (`strip_reasoning`). This is
 ///    only needed on the Anthropic Messages backend, which rejects thinking
@@ -72,10 +73,10 @@ pub(crate) fn recap_instruction(tag: &str) -> String {
 /// 2. Truncates a trailing incomplete assistant/tool-result run — a recap can
 ///    fire mid-turn, and the Anthropic Messages API rejects `tool_use` ids without a
 ///    matching `tool_result`.
-/// 3. Appends the recap instruction as a final user turn.
-pub(crate) fn build_recap_items(
+/// 3. Appends the instruction as a final user turn.
+pub(crate) fn build_instruction_items(
     conversation: Vec<ConversationItem>,
-    tag: &str,
+    instruction: String,
     strip_reasoning: bool,
 ) -> Vec<ConversationItem> {
     let mut items = if strip_reasoning {
@@ -86,7 +87,7 @@ pub(crate) fn build_recap_items(
 
     pop_trailing_tool_run(&mut items);
 
-    items.push(ConversationItem::user(recap_instruction(tag)));
+    items.push(ConversationItem::user(instruction));
     items
 }
 
@@ -106,7 +107,7 @@ const RECAP_BUDGET_THRESHOLD_PERCENT: u64 = 85;
 /// double-counted here. (`max_prompt_length` is input-length, so output doesn't count.)
 const RECAP_BUDGET_HEADROOM_TOKENS: u64 = 4_000;
 
-/// Budget-aware variant of [`build_recap_items`]. Best-effort: returns a
+/// Budget-aware variant of [`build_instruction_items`]. Best-effort: returns a
 /// structurally-valid, non-empty request trimmed to the estimated prompt budget
 /// (the same bytes/4 estimator compaction triggers on) to prevent
 /// `ic_400_prompt_too_long` on long sessions. Not an absolute guarantee — a
@@ -115,8 +116,8 @@ const RECAP_BUDGET_HEADROOM_TOKENS: u64 = 4_000;
 /// that unlikely for normal grok-build sessions).
 ///
 /// * Fast path — if the whole snapshot already fits, returns
-///   `build_recap_items(...)` verbatim (keeps the grok prefix KV cache warm;
-///   honors the caller's `strip_reasoning`).
+///   `build_instruction_items(...)` verbatim (keeps the grok prefix KV cache
+///   warm; honors the caller's `strip_reasoning`).
 /// * Over budget — strip reasoning (the prefix cache is lost once we trim),
 ///   normalize the trailing boundary ([`pop_trailing_tool_run`]),
 ///   front-trim to fit via `fit_conversation_to_budget` (System kept, most-recent
@@ -130,18 +131,34 @@ pub(crate) fn budget_recap_items(
     strip_reasoning: bool,
     context_window: u64,
 ) -> Vec<ConversationItem> {
+    budget_instruction_items(
+        conversation,
+        recap_instruction(tag),
+        strip_reasoning,
+        context_window,
+    )
+}
+
+/// Instruction-generic core of [`budget_recap_items`], shared with the
+/// turn-summary side-call.
+pub(crate) fn budget_instruction_items(
+    conversation: Vec<ConversationItem>,
+    instruction: String,
+    strip_reasoning: bool,
+    context_window: u64,
+) -> Vec<ConversationItem> {
     let effective_window = context_window.min(RECAP_CONTEXT_WINDOW_CAP);
     let prompt_budget = (effective_window.saturating_mul(RECAP_BUDGET_THRESHOLD_PERCENT) / 100)
         .saturating_sub(RECAP_BUDGET_HEADROOM_TOKENS);
 
-    let instruction = ConversationItem::user(recap_instruction(tag));
-    let snapshot_budget = prompt_budget.saturating_sub(estimate_item_tokens(&instruction));
+    let instruction_item = ConversationItem::user(instruction.clone());
+    let snapshot_budget = prompt_budget.saturating_sub(estimate_item_tokens(&instruction_item));
 
     // Un-stripped estimate is a safe upper bound (stripping only shrinks); the
     // verbatim path keeps the grok prefix cache warm.
     let pre_tokens = estimate_conversation_tokens(&conversation);
     if pre_tokens <= snapshot_budget {
-        return build_recap_items(conversation, tag, strip_reasoning);
+        return build_instruction_items(conversation, instruction, strip_reasoning);
     }
 
     // Normalize the trailing boundary BEFORE trimming (ordering matters — see doc).
@@ -159,22 +176,20 @@ pub(crate) fn budget_recap_items(
         post_tokens,
         "recap over budget: trimmed conversation to fit"
     );
-    items.push(instruction);
+    items.push(instruction_item);
     items
 }
 
-/// Trailing normalization shared by [`build_recap_items`] and
-/// [`budget_recap_items`]: pop a trailing tool run — trailing `ToolResult`s and
-/// any trailing `Assistant` with `tool_calls` (complete runs included) — so it ends on
-/// a clean boundary and the appended `User` instruction never follows a
-/// `tool_use`/`tool_result`.
-fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
+/// Pops a trailing tool run so the appended `User` instruction never follows a `tool_use`/`tool_result`.
+/// Trailing `Reasoning` goes too: it precedes its owner, which the pop just removed.
+/// Shared by [`build_instruction_items`] and [`budget_recap_items`].
+pub(crate) fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
     while let Some(last) = items.last() {
         match last {
             ConversationItem::Assistant(a) if !a.tool_calls.is_empty() => {
                 items.pop();
             }
-            ConversationItem::ToolResult(_) => {
+            ConversationItem::ToolResult(_) | ConversationItem::Reasoning(_) => {
                 items.pop();
             }
             _ => break,
@@ -184,6 +199,10 @@ fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
 
 /// Minimum main turns before an automatic return-from-away recap (manual exempt).
 pub(crate) const MIN_TURNS_FOR_AUTO_RECAP: usize = 3;
+
+/// Durable auto-recap watermark under `{session_dir}/`. Written only when a
+/// recap commits (success or long-tail suppress), never on failure/cancel.
+pub(crate) const RECAP_WATERMARK_FILE: &str = "last_recap_main_turn";
 
 /// Real user prompts (`synthetic_reason.is_none()`), not assistant/tool items.
 pub(crate) fn main_turn_count(conversation: &[ConversationItem]) -> usize {
@@ -196,6 +215,30 @@ pub(crate) fn main_turn_count(conversation: &[ConversationItem]) -> usize {
             )
         })
         .count()
+}
+
+/// Load the last committed recap main-turn watermark (`0` if missing/invalid).
+pub(crate) fn load_recap_watermark(session_dir: &std::path::Path) -> usize {
+    let path = session_dir.join(RECAP_WATERMARK_FILE);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Persist the watermark after a successful/suppress commit. Best-effort.
+pub(crate) fn save_recap_watermark(session_dir: &std::path::Path, main_turns: usize) {
+    if !session_dir.is_dir() {
+        return;
+    }
+    let path = session_dir.join(RECAP_WATERMARK_FILE);
+    if let Err(e) = std::fs::write(&path, main_turns.to_string()) {
+        tracing::warn!(
+            error = %e,
+            path = %path.display(),
+            "failed to persist recap watermark"
+        );
+    }
 }
 
 /// Manual: any `main_turns > 0`. Auto: new turn since `last`, min turns, idle.
@@ -349,7 +392,7 @@ mod tests {
             ConversationItem::user("hello".to_string()),
             ConversationItem::assistant("hi".to_string()),
         ];
-        let items = build_recap_items(conv, "system-reminder", true);
+        let items = build_instruction_items(conv, recap_instruction("system-reminder"), true);
         assert!(matches!(items.last(), Some(ConversationItem::User(_))));
         // System prompt prefix is preserved verbatim for cache reuse.
         assert!(matches!(items.first(), Some(ConversationItem::System(_))));
@@ -362,7 +405,7 @@ mod tests {
             ConversationItem::user("hello".to_string()),
             ConversationItem::tool_result("call-1".to_string(), "output".to_string()),
         ];
-        let items = build_recap_items(conv, "system-reminder", false);
+        let items = build_instruction_items(conv, recap_instruction("system-reminder"), false);
         // The dangling ToolResult is dropped; only system + user + instruction remain.
         assert_eq!(items.len(), 3);
         assert!(matches!(items.last(), Some(ConversationItem::User(_))));
@@ -446,6 +489,39 @@ mod tests {
     #[test]
     fn gate_denies_zero_main_turns() {
         assert_eq!(recap_gate(0, 0, false, true), Err("no main turns yet"));
+    }
+
+    #[test]
+    fn recap_watermark_missing_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load_recap_watermark(dir.path()), 0);
+    }
+
+    #[test]
+    fn recap_watermark_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        save_recap_watermark(dir.path(), 7);
+        assert_eq!(load_recap_watermark(dir.path()), 7);
+        save_recap_watermark(dir.path(), 3);
+        assert_eq!(load_recap_watermark(dir.path()), 3);
+    }
+
+    #[test]
+    fn recap_watermark_invalid_or_empty_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(RECAP_WATERMARK_FILE), "not-a-number").unwrap();
+        assert_eq!(load_recap_watermark(dir.path()), 0);
+        std::fs::write(dir.path().join(RECAP_WATERMARK_FILE), "  \n").unwrap();
+        assert_eq!(load_recap_watermark(dir.path()), 0);
+    }
+
+    #[test]
+    fn recap_watermark_save_skips_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-session");
+        // Must not panic; no file created under a non-existent parent path.
+        save_recap_watermark(&missing, 5);
+        assert!(!missing.join(RECAP_WATERMARK_FILE).exists());
     }
 
     #[test]
@@ -555,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn budget_fast_path_matches_build_recap_items() {
+    fn budget_fast_path_matches_build_instruction_items() {
         // Include a reasoning block so `strip_reasoning=true` actually exercises
         // stripping on the fits path (not just a no-op).
         let conv = vec![
@@ -565,11 +641,11 @@ mod tests {
             ConversationItem::assistant("hi"),
         ];
         let budgeted = budget_recap_items(conv.clone(), "system-reminder", true, 256_000);
-        let built = build_recap_items(conv, "system-reminder", true);
+        let built = build_instruction_items(conv, recap_instruction("system-reminder"), true);
         assert_eq!(
             serde_json::to_string(&budgeted).unwrap(),
             serde_json::to_string(&built).unwrap(),
-            "under-budget snapshot must match build_recap_items verbatim"
+            "under-budget snapshot must match build_instruction_items verbatim"
         );
         assert!(
             !budgeted

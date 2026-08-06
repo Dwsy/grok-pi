@@ -61,7 +61,7 @@ pub struct PrivacyConfig {
     pub privacy_banner_acked: Option<String>,
 }
 
-pub fn get_mcp_server_config(name: &str) -> Option<McpServerConfig> {
+pub(crate) fn get_mcp_server_config(name: &str) -> Option<McpServerConfig> {
     let root: TomlValue = crate::config::load_effective_config().ok()?;
     let configs = parse_mcp_servers_from_toml(&root);
     configs.get(name).cloned()
@@ -72,7 +72,7 @@ pub fn get_mcp_server_config(name: &str) -> Option<McpServerConfig> {
 /// Project-scoped `.grok/config.toml` entries override global `~/.grok/config.toml`
 /// entries entirely (no deep merge of individual fields).
 /// Closer directories (cwd) take priority over further ones (repo root).
-pub fn get_mcp_server_config_with_project(
+pub(crate) fn get_mcp_server_config_with_project(
     name: &str,
     cwd: &std::path::Path,
 ) -> Option<McpServerConfig> {
@@ -117,7 +117,7 @@ pub(crate) fn mcp_server_scope(name: &str, cwd: &std::path::Path) -> &'static st
 /// Load MCP servers and their OAuth configurations from config.toml.
 ///
 /// Returns both the `acp::McpServer` list and a parallel [`McpOAuthConfigMap`].
-pub fn load_mcp_servers_with_oauth(
+pub(crate) fn load_mcp_servers_with_oauth(
     cwd: &std::path::Path,
     compat: &CompatConfig,
 ) -> (Vec<acp::McpServer>, McpOAuthConfigMap) {
@@ -223,18 +223,41 @@ pub(crate) fn load_mcp_servers_toml_only(cwd: &std::path::Path) -> Vec<acp::McpS
     load_all_mcp_configs(cwd)
         .into_iter()
         .filter_map(|(name, config)| {
-            let mut config = match config.resolve_setup(preferences.servers.get(&name)) {
-                McpSetupResolution::Resolved(config) => config,
-                McpSetupResolution::Required(_) => return None,
-                McpSetupResolution::Invalid(reason) => {
-                    tracing::warn!(server = %name, error = %reason, "MCP setup config is invalid");
-                    return None;
-                }
-            };
-            config.expand_strings(sub);
-            config.to_acp_mcp_server(name)
+            materialize_mcp_config(&name, config, &preferences, sub, McpEnabledFilter::Respect)
         })
         .collect()
+}
+
+/// Whether materialization respects the config `enabled` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpEnabledFilter {
+    /// Drop when `enabled = false` (live merge / load).
+    Respect,
+    /// Materialize even when `enabled = false` (list stubs / reenable probe).
+    Ignore,
+}
+
+/// Resolve setup, expand strings, and convert to ACP.
+pub(crate) fn materialize_mcp_config(
+    name: &str,
+    mut config: McpServerConfig,
+    preferences: &McpPreferencesFile,
+    sub: &dyn Fn(&str) -> String,
+    enabled_filter: McpEnabledFilter,
+) -> Option<acp::McpServer> {
+    if matches!(enabled_filter, McpEnabledFilter::Ignore) {
+        config.enabled = true;
+    }
+    let mut config = match config.resolve_setup(preferences.servers.get(name)) {
+        McpSetupResolution::Resolved(config) => config,
+        McpSetupResolution::Required(_) => return None,
+        McpSetupResolution::Invalid(reason) => {
+            tracing::warn!(server = %name, error = %reason, "MCP setup config is invalid");
+            return None;
+        }
+    };
+    config.expand_strings(sub);
+    config.to_acp_mcp_server(name)
 }
 
 /// Merge MCP servers from a pre-parsed global config with project-scoped overrides.
@@ -319,7 +342,7 @@ pub(crate) fn reload_mcp_servers_merged(
 }
 
 /// Load `.mcp.json` servers from repo root to `cwd` (closest wins on name conflict).
-pub fn load_mcp_json_servers(cwd: &std::path::Path) -> Vec<acp::McpServer> {
+pub(crate) fn load_mcp_json_servers(cwd: &std::path::Path) -> Vec<acp::McpServer> {
     // Phase 2 cutoff: if the user has imported, skip reading .mcp.json.
     if crate::claude_import::is_claude_import_marked_with_log("load_mcp_json_servers") {
         return vec![];
@@ -354,41 +377,43 @@ pub fn load_mcp_json_servers(cwd: &std::path::Path) -> Vec<acp::McpServer> {
 }
 
 /// All server names from config.toml (including `enabled = false`).
-pub fn all_toml_mcp_server_names(cwd: &std::path::Path) -> std::collections::HashSet<String> {
+pub(crate) fn all_toml_mcp_server_names(
+    cwd: &std::path::Path,
+) -> std::collections::HashSet<String> {
     load_all_mcp_configs(cwd).keys().cloned().collect()
 }
 
-pub fn mcp_preferences_path() -> PathBuf {
+pub(crate) fn mcp_preferences_path() -> PathBuf {
     xai_grok_config::grok_home().join("mcp_preferences.json")
 }
 
 /// Result of loading prefs. Corrupt files are readable as empty for resolution
 /// but must not be overwritten (would clobber other servers).
 #[derive(Debug, Clone)]
-pub enum McpPreferencesLoad {
+pub(crate) enum McpPreferencesLoad {
     Ok(McpPreferencesFile),
     Missing,
     Corrupt,
 }
 
 impl McpPreferencesLoad {
-    pub fn file(&self) -> McpPreferencesFile {
+    pub(crate) fn file(&self) -> McpPreferencesFile {
         match self {
             Self::Ok(f) => f.clone(),
             Self::Missing | Self::Corrupt => McpPreferencesFile::default(),
         }
     }
 
-    pub fn is_writable(&self) -> bool {
+    pub(crate) fn is_writable(&self) -> bool {
         !matches!(self, Self::Corrupt)
     }
 }
 
-pub fn load_mcp_preferences() -> McpPreferencesLoad {
+pub(crate) fn load_mcp_preferences() -> McpPreferencesLoad {
     load_mcp_preferences_from(&mcp_preferences_path())
 }
 
-pub fn load_mcp_preferences_from(path: &std::path::Path) -> McpPreferencesLoad {
+pub(crate) fn load_mcp_preferences_from(path: &std::path::Path) -> McpPreferencesLoad {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return McpPreferencesLoad::Missing,
@@ -406,11 +431,11 @@ pub fn load_mcp_preferences_from(path: &std::path::Path) -> McpPreferencesLoad {
     }
 }
 
-pub async fn save_mcp_preferences(prefs: &McpPreferencesFile) -> Result<()> {
+pub(crate) async fn save_mcp_preferences(prefs: &McpPreferencesFile) -> Result<()> {
     save_mcp_preferences_to(&mcp_preferences_path(), prefs).await
 }
 
-pub async fn save_mcp_preferences_to(
+pub(crate) async fn save_mcp_preferences_to(
     path: &std::path::Path,
     prefs: &McpPreferencesFile,
 ) -> Result<()> {
@@ -445,7 +470,7 @@ pub async fn save_mcp_preferences_to(
 }
 
 /// Restore a single server key after a failed setup (best-effort).
-pub async fn restore_mcp_preference_server(
+pub(crate) async fn restore_mcp_preference_server(
     server_name: &str,
     previous: Option<McpServerPreferences>,
 ) -> Result<()> {
@@ -475,14 +500,19 @@ pub struct McpSetupServerEntry {
 
 /// Collect MCP configs that declare a `setup` schema from config and plugins.
 /// Used to surface setup-required rows and drive `x.ai/mcp/setup`.
-pub fn collect_mcp_setup_configs(
+///
+/// User/project **TOML** includes `enabled = false` so Space-disabled setup
+/// servers stay visible (`handle_list` derives `session.enabled` from
+/// `disabled_mcp_servers`). Other sources still skip native `enabled = false`
+/// because Space cannot unstick those flags.
+pub(crate) fn collect_mcp_setup_configs(
     cwd: &std::path::Path,
     plugin_registry: Option<&xai_grok_agent::plugins::PluginRegistry>,
     compat: &CompatConfig,
 ) -> IndexMap<String, McpSetupServerEntry> {
     let mut result = IndexMap::new();
     for (name, (config, scope)) in load_mcp_server_configs_with_project(cwd) {
-        if !config.enabled || config.setup.is_none() {
+        if config.setup.is_none() {
             continue;
         }
         result.insert(
@@ -562,6 +592,8 @@ pub fn collect_mcp_setup_configs(
                 }
             }
             for (name, config) in plugin_configs {
+                // Native plugin `enabled: false` is not unstuck by Space; skip.
+                // Personal disable uses `disabled_mcp_servers` and leaves this true.
                 if toml_claimed_names.contains(&name) || !config.enabled || config.setup.is_none() {
                     continue;
                 }
@@ -586,7 +618,10 @@ pub const MANAGED_GATEWAY_DISABLED_CONNECTORS_KEY: &str = "__managed_gateway_con
 ///
 /// Uses a dedicated top-level section (not `[mcp_servers]`) to avoid creating
 /// incomplete server entries that fail to deserialize for managed servers.
-pub async fn save_mcp_disabled_tools(server_name: &str, disabled_tools: &[String]) -> Result<()> {
+pub(crate) async fn save_mcp_disabled_tools(
+    server_name: &str,
+    disabled_tools: &[String],
+) -> Result<()> {
     let path = config_path();
     let mut root: TomlValue = match tokio::fs::read_to_string(&path).await {
         Ok(s) => toml::from_str(&s).unwrap_or(TomlValue::Table(TomlMap::new())),
@@ -625,24 +660,11 @@ pub async fn save_mcp_disabled_tools(server_name: &str, disabled_tools: &[String
     Ok(())
 }
 
-/// Persist enable/disable for one MCP server in user config.
-///
-/// Always updates user `disabled_mcp_servers` (and user
-/// `[mcp_servers.<name>].enabled` when present). On **enable** only, also clears
-/// sticky `enabled = false` on the **nearest** project definition that defines
-/// the server (cwd-nearest wins; shadowed ancestors are left alone) — never
-/// writes project configs on disable.
-///
-/// Uses process cwd for project unstick; session callers should prefer
-/// [`save_mcp_server_enabled_in`] with the session cwd.
-pub async fn save_mcp_server_enabled(server_name: &str, enabled: bool) -> Result<()> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    save_mcp_server_enabled_in(server_name, enabled, &cwd)
-        .await
-        .map(|_| ())
-}
-
 /// Like [`save_mcp_server_enabled`], with explicit cwd for project config walks.
+///
+/// On enable, if the project unstick fails after a successful user-tier write,
+/// rolls back whatever was already written and returns the error so callers do
+/// not invent a personal disable that was never part of the prior state.
 pub async fn save_mcp_server_enabled_in(
     server_name: &str,
     enabled: bool,
@@ -662,11 +684,23 @@ pub async fn save_mcp_server_enabled_in(
     // Enable-only: unstick the nearest (winning) project def with
     // `enabled = false` via toml_edit (preserves comments/layout). Disable is
     // personal (user `disabled_mcp_servers`) and must not dirty shared files.
-    if enabled
-        && let Some(path) = nearest_project_mcp_definition(cwd, server_name)
-        && clear_sticky_project_disabled_at(&path, server_name).await?
-    {
-        modified.push(path);
+    if enabled && let Some(path) = nearest_project_mcp_definition(cwd, server_name) {
+        match clear_sticky_project_disabled_at(&path, server_name).await {
+            Ok(true) => modified.push(path),
+            Ok(false) => {}
+            Err(e) => {
+                if let Err(re) =
+                    restore_mcp_server_enabled_after_enable(server_name, &modified).await
+                {
+                    tracing::warn!(
+                        server = server_name,
+                        error = %re,
+                        "failed to roll back partial enable after project unstick error"
+                    );
+                }
+                return Err(e);
+            }
+        }
     }
 
     Ok(modified)
@@ -676,12 +710,36 @@ pub async fn save_mcp_server_enabled_in(
 ///
 /// Use after delete (or similar) when the toggle path dirtied
 /// `disabled_mcp_servers` but shared project configs must stay untouched.
-pub async fn save_user_mcp_server_enabled(server_name: &str, enabled: bool) -> Result<()> {
+pub(crate) async fn save_user_mcp_server_enabled(server_name: &str, enabled: bool) -> Result<()> {
     write_toml_table_if_changed(&config_path(), |table| {
         apply_mcp_server_enabled(table, server_name, enabled);
     })
     .await
     .map(|_| ())
+}
+
+/// Undo a prior [`save_mcp_server_enabled_in`]`(…, true, …)` using the paths
+/// that call returned. Restores only the tiers that were written.
+///
+/// Restores an **equivalent** disabled state, not necessarily the original
+/// encoding. User-tier restore always goes through
+/// [`save_user_mcp_server_enabled`]`(…, false)` (personal `disabled_mcp_servers`);
+/// project-tier restore re-sticks `enabled = false` via toml_edit. A server that
+/// was disabled only via a sticky project field may therefore pick up a personal
+/// list entry if the user tier was also written during enable.
+pub(crate) async fn restore_mcp_server_enabled_after_enable(
+    server_name: &str,
+    modified_paths: &[PathBuf],
+) -> Result<()> {
+    let user_path = config_path();
+    for path in modified_paths {
+        if path == user_path.as_path() {
+            save_user_mcp_server_enabled(server_name, false).await?;
+        } else {
+            set_sticky_project_disabled_at(path, server_name).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Nearest project config defining `server_name` (cwd last → reverse; nearest wins).
@@ -795,6 +853,46 @@ async fn clear_sticky_project_disabled_at(
     Ok(true)
 }
 
+/// Flip sticky project `enabled = true` → false with toml_edit (comments kept).
+/// Inverse of [`clear_sticky_project_disabled_at`].
+async fn set_sticky_project_disabled_at(path: &std::path::Path, server_name: &str) -> Result<bool> {
+    let original = match tokio::fs::read_to_string(path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(anyhow::anyhow!("failed to read {}: {e}", path.display()));
+        }
+    };
+    let mut doc: toml_edit::DocumentMut = original
+        .parse()
+        .map_err(|e| anyhow::anyhow!("refusing to rewrite unparseable {}: {e}", path.display()))?;
+
+    let Some(servers) = doc
+        .get_mut("mcp_servers")
+        .and_then(|item| item.as_table_like_mut())
+    else {
+        return Ok(false);
+    };
+    let Some(entry) = servers.get_mut(server_name) else {
+        return Ok(false);
+    };
+    let Some(server_table) = entry.as_table_like_mut() else {
+        return Ok(false);
+    };
+    if server_table.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(false);
+    }
+    server_table.insert("enabled", toml_edit::value(false));
+
+    let updated = doc.to_string();
+    if updated == original {
+        return Ok(false);
+    }
+    super::persist::atomic_write_string(path, &updated)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
+    Ok(true)
+}
+
 /// Update user `disabled_mcp_servers` and, if present, per-server `enabled`.
 fn apply_mcp_server_enabled(
     table: &mut TomlMap<String, TomlValue>,
@@ -848,7 +946,10 @@ fn set_mcp_server_enabled_field(
 /// Creates or replaces `[mcp_servers.<name>]` with the given config.
 /// Also removes the server from `disabled_mcp_servers` if present (a newly
 /// defined server should start enabled).
-pub async fn save_mcp_server_config(server_name: &str, config: &McpServerConfig) -> Result<()> {
+pub(crate) async fn save_mcp_server_config(
+    server_name: &str,
+    config: &McpServerConfig,
+) -> Result<()> {
     save_mcp_server_config_at(&config_path(), server_name, config).await
 }
 
@@ -904,7 +1005,7 @@ pub async fn save_mcp_server_config_at(
 ///
 /// Removes `[mcp_servers.<name>]`, cleans up `disabled_mcp_servers` and
 /// `[disabled_mcp_tools.<name>]` entries. Returns `true` if the entry existed.
-pub async fn delete_mcp_server_config(server_name: &str) -> Result<bool> {
+pub(crate) async fn delete_mcp_server_config(server_name: &str) -> Result<bool> {
     delete_mcp_server_config_at(&config_path(), server_name).await
 }
 
@@ -987,7 +1088,7 @@ pub async fn delete_mcp_server_config_at(
 }
 
 /// Load disabled_tools for all MCP servers from `[disabled_mcp_tools]` in config.toml.
-pub fn get_all_mcp_disabled_tools(
+pub(crate) fn get_all_mcp_disabled_tools(
     _cwd: &std::path::Path,
 ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
     let root = match crate::config::load_effective_config() {
@@ -1012,18 +1113,6 @@ pub fn get_all_mcp_disabled_tools(
             }
         })
         .collect()
-}
-
-/// Load all configured MCP servers as `(name, config)` pairs.
-///
-/// Reads from `load_effective_config()`, which merges the system-managed,
-/// managed, and user config layers only. Use
-/// [`load_mcp_server_configs_with_project`] for a view that also includes
-/// project-scoped `.grok/config.toml` files.
-pub fn load_mcp_server_configs() -> IndexMap<String, McpServerConfig> {
-    let root =
-        crate::config::load_effective_config().unwrap_or_else(|_| TomlValue::Table(TomlMap::new()));
-    parse_mcp_servers_from_toml(&root)
 }
 
 /// Deserialize one `[mcp_servers.<name>]` table, also returning any unrecognized keys.
@@ -1142,7 +1231,7 @@ pub use xai_grok_workspace::project_config::{
     MCP_JSON_FILENAME, find_mcp_json_files, mcp_json_candidate_paths,
 };
 
-pub fn load_mcp_json_file(path: &std::path::Path) -> Vec<acp::McpServer> {
+pub(crate) fn load_mcp_json_file(path: &std::path::Path) -> Vec<acp::McpServer> {
     if !path.is_file() {
         return vec![];
     }
@@ -1166,7 +1255,7 @@ pub(crate) fn load_mcp_json_servers_as_configs(
 /// Like [`load_mcp_json_servers_as_configs`] but bypasses the import-marker
 /// gate. Used by the `/import-claude` scanner so users can re-import items
 /// they previously skipped, even after the runtime cutoff is active.
-pub fn load_mcp_json_servers_as_configs_unfiltered(
+pub(crate) fn load_mcp_json_servers_as_configs_unfiltered(
     cwd: &std::path::Path,
 ) -> IndexMap<String, McpServerConfig> {
     let mcp_json_files = find_mcp_json_files(cwd);
@@ -1250,7 +1339,7 @@ pub(crate) fn parse_mcp_config_with_oauth(
 /// and per-project (local-scope) MCP servers under `projects.<cwd>.mcpServers`.
 ///
 /// Returns servers from both locations (project-specific first, then user-level).
-pub fn load_claude_json_mcp_servers(
+pub(crate) fn load_claude_json_mcp_servers(
     cwd: &std::path::Path,
     compat: &CompatConfig,
 ) -> Vec<acp::McpServer> {
@@ -1269,6 +1358,21 @@ pub fn load_claude_json_mcp_servers(
     let claude_json_path = home.join(".claude.json");
     load_claude_json_mcp_servers_from(&claude_json_path, cwd)
 }
+
+/// On-disk `~/.claude.json` MCP servers for kill-switch attribution only.
+///
+/// Bypasses `compat.claude.mcps` and the import-marker cutoff so a client
+/// reseed cannot re-admit Claude-sourced servers while the kill switch is off
+/// merely because the normal runtime loader is gated empty.
+pub(crate) fn load_claude_json_mcp_servers_for_attribution(
+    cwd: &std::path::Path,
+) -> Vec<acp::McpServer> {
+    let Some(home) = dirs::home_dir() else {
+        return vec![];
+    };
+    load_claude_json_mcp_servers_from(&home.join(".claude.json"), cwd)
+}
+
 /// Load ~/.claude.json MCP servers as McpServerConfig map (for merging into load_mcp_servers).
 pub(crate) fn load_claude_json_mcp_servers_as_configs(
     cwd: &std::path::Path,
@@ -1291,7 +1395,7 @@ pub(crate) fn load_claude_json_mcp_servers_as_configs(
 /// import-marker gate. Used by the `/import-claude` scanner so users can
 /// re-import items they previously skipped, even after the runtime cutoff
 /// is active.
-pub fn load_claude_json_mcp_servers_as_configs_unfiltered(
+pub(crate) fn load_claude_json_mcp_servers_as_configs_unfiltered(
     cwd: &std::path::Path,
 ) -> IndexMap<String, McpServerConfig> {
     let Some(home) = dirs::home_dir() else {
@@ -1362,7 +1466,7 @@ fn load_claude_json_mcp_servers_from_as_configs(
 /// Scans project-level `<cwd>/.cursor/mcp.json` first (higher priority),
 /// then global `~/.cursor/mcp.json`. Both use the `{"mcpServers": {...}}`
 /// format identical to `.mcp.json`. Gated by `compat.cursor.mcps`.
-pub fn load_cursor_mcp_servers(
+pub(crate) fn load_cursor_mcp_servers(
     cwd: &std::path::Path,
     compat: &CompatConfig,
 ) -> Vec<acp::McpServer> {
@@ -1584,7 +1688,9 @@ pub fn load_mcp_server_configs_with_project(
 
 /// MCP config problems across the same layers as
 /// [`load_mcp_server_configs_with_project`], for `grok inspect`.
-pub fn load_mcp_server_problems_with_project(cwd: &std::path::Path) -> Vec<McpServerConfigProblem> {
+pub(crate) fn load_mcp_server_problems_with_project(
+    cwd: &std::path::Path,
+) -> Vec<McpServerConfigProblem> {
     let mut problems = Vec::new();
     if let Ok(global_config) = crate::config::load_effective_config() {
         problems.extend(parse_mcp_servers_with_problems(&global_config).problems);
@@ -1714,25 +1820,9 @@ pub fn load_npm_registry_sync() -> Option<String> {
     }
 }
 
-/// Synchronously load just the management_api_key from the config file.
-/// This is intended for use in contexts where async is not available.
-pub fn load_management_api_key_sync() -> Option<String> {
-    let root: TomlValue = crate::config::load_effective_config().ok()?;
-    if let TomlValue::Table(table) = root
-        && let Some(TomlValue::Table(endpoints)) = table.get("endpoints")
-    {
-        endpoints
-            .get("management_api_key")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    } else {
-        None
-    }
-}
-
 /// Synchronously load the gcs_service_account_key from the config file.
 /// This is intended for use in contexts where async is not available.
-pub fn load_gcs_service_account_key_sync() -> Option<String> {
+pub(crate) fn load_gcs_service_account_key_sync() -> Option<String> {
     let root: TomlValue = crate::config::load_effective_config().ok()?;
     if let TomlValue::Table(table) = root
         && let Some(TomlValue::Table(endpoints)) = table.get("endpoints")
@@ -1770,7 +1860,7 @@ pub fn use_leader_from_toml(root: &TomlValue) -> bool {
 /// Returns `Some(true/false)` when `[cli] session_registry` is set in config.toml,
 /// `None` when absent (allowing remote settings fallback).
 /// Local config takes precedence over remote settings.
-pub fn session_registry_from_toml_opt(root: &TomlValue) -> Option<bool> {
+pub(crate) fn session_registry_from_toml_opt(root: &TomlValue) -> Option<bool> {
     if let TomlValue::Table(table) = root
         && let Some(TomlValue::Table(cli)) = table.get("cli")
     {
@@ -1783,7 +1873,7 @@ pub fn session_registry_from_toml_opt(root: &TomlValue) -> Option<bool> {
 /// Overrides `[cli] session_registry`; usable before `~/.grok/config.toml` exists.
 pub const SESSION_REGISTRY_ENV_VAR: &str = "GROK_SESSION_REGISTRY";
 
-pub fn session_registry_from_env_opt() -> Option<bool> {
+pub(crate) fn session_registry_from_env_opt() -> Option<bool> {
     xai_grok_config::env_bool(SESSION_REGISTRY_ENV_VAR)
 }
 
@@ -1817,7 +1907,7 @@ pub fn session_registry_local_override_sourced(
         .map(|v| (v, RegistrySource::ConfigToml))
 }
 
-pub fn session_registry_local_override(root: Option<&TomlValue>) -> Option<bool> {
+pub(crate) fn session_registry_local_override(root: Option<&TomlValue>) -> Option<bool> {
     session_registry_local_override_sourced(root).map(|(v, _)| v)
 }
 
@@ -2404,6 +2494,54 @@ expose_image_base64 = true
         assert!(config.mcp_servers.contains_key("test_server"));
     }
 
+    /// Path-based loader used by kill-switch attribution (no mcps/import gates).
+    #[test]
+    fn load_claude_json_mcp_servers_from_reads_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude_json = dir.path().join("claude.json");
+        let cwd = dir.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        // Build via serde so Windows paths with `\` are JSON-escaped correctly
+        // (string replace into a JSON literal produces invalid escapes).
+        let cwd_key = cwd.to_string_lossy().into_owned();
+        let fixture = serde_json::json!({
+            "mcpServers": {
+                "killswitch-claude": { "command": "true" }
+            },
+            "projects": {
+                cwd_key: {
+                    "mcpServers": {
+                        "killswitch-claude-proj": { "command": "true" }
+                    }
+                }
+            }
+        });
+        std::fs::write(
+            &claude_json,
+            serde_json::to_string(&fixture).expect("serialize claude.json fixture"),
+        )
+        .unwrap();
+
+        let servers = load_claude_json_mcp_servers_from(&claude_json, &cwd);
+        let names: Vec<_> = servers
+            .iter()
+            .map(|s| match s {
+                acp::McpServer::Stdio(stdio) => stdio.name.as_str(),
+                acp::McpServer::Http(http) => http.name.as_str(),
+                acp::McpServer::Sse(sse) => sse.name.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert!(
+            names.contains(&"killswitch-claude"),
+            "user-level server must load: {names:?}"
+        );
+        assert!(
+            names.contains(&"killswitch-claude-proj"),
+            "project-scoped server must load: {names:?}"
+        );
+    }
+
     #[test]
     fn load_cursor_mcp_servers_as_configs_returns_empty_for_missing_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -2663,6 +2801,53 @@ enabled = false
             ancestor_body.contains("enabled = false"),
             "shadowed ancestor must stay sticky: {ancestor_body}"
         );
+
+        set_sticky_project_disabled_at(&nearer, "svc")
+            .await
+            .unwrap();
+        let re_stuck = std::fs::read_to_string(&nearer).unwrap();
+        assert!(
+            re_stuck.contains("enabled = false"),
+            "re-stick must set enabled=false: {re_stuck}"
+        );
+        assert!(
+            re_stuck.contains("# keep me"),
+            "re-stick must preserve comments: {re_stuck}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_mcp_server_enabled_after_enable_scopes_tiers() {
+        // Hermetic: only touch a temp project path. Do not call
+        // save_mcp_server_enabled_in (that reads ambient config_path / grok_home).
+        let project = tempfile::tempdir().unwrap();
+        let project_cfg = project.path().join("config.toml");
+        std::fs::write(
+            &project_cfg,
+            r#"
+# keep me
+[mcp_servers.svc]
+command = "true"
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        clear_sticky_project_disabled_at(&project_cfg, "svc")
+            .await
+            .unwrap();
+        let unstuck = std::fs::read_to_string(&project_cfg).unwrap();
+        assert!(unstuck.contains("enabled = true"), "{unstuck}");
+        assert!(unstuck.contains("# keep me"), "{unstuck}");
+
+        // Project-only modified list: restore must re-stick without needing user tier.
+        restore_mcp_server_enabled_after_enable("svc", std::slice::from_ref(&project_cfg))
+            .await
+            .unwrap();
+
+        let project_body = std::fs::read_to_string(&project_cfg).unwrap();
+        assert!(project_body.contains("enabled = false"), "{project_body}");
+        assert!(project_body.contains("# keep me"), "{project_body}");
     }
 
     #[tokio::test]

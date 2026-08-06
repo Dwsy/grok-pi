@@ -33,7 +33,7 @@ pub const LEGACY_XAI_API_KEY_ENV_VAR: &str = "GROK_CODE_XAI_API_KEY";
 ///
 /// Checks `XAI_API_KEY` first, then falls back to the legacy
 /// `GROK_CODE_XAI_API_KEY` for backward compatibility.
-pub fn read_xai_api_key_env() -> Result<String, std::env::VarError> {
+pub(crate) fn read_xai_api_key_env() -> Result<String, std::env::VarError> {
     std::env::var(XAI_API_KEY_ENV_VAR).or_else(|_| std::env::var(LEGACY_XAI_API_KEY_ENV_VAR))
 }
 
@@ -60,14 +60,33 @@ pub fn has_xai_api_key_env() -> bool {
 /// `GROK_DISABLE_API_KEY_AUTH`) is the admin kill switch: when true the
 /// method is never advertised, regardless of available credentials, so
 /// `XAI_API_KEY` can't bypass a deployment's forced IdP login.
-pub fn should_advertise_xai_api_key<'a, I>(disable_api_key_auth: bool, models: I) -> bool
+///
+/// Presence-only for the first-party env key (treats it as usable). Login
+/// paths that have run the validity probe should call
+/// [`should_advertise_xai_api_key_with_env_ok`] with the probe result instead.
+pub(crate) fn should_advertise_xai_api_key<'a, I>(disable_api_key_auth: bool, models: I) -> bool
+where
+    I: IntoIterator<Item = &'a ModelEntry>,
+{
+    should_advertise_xai_api_key_with_env_ok(disable_api_key_auth, models, true)
+}
+
+/// Single advertise policy for `xai.api_key`: kill switch, BYOK, and first-party
+/// env gated by `first_party_env_ok` (probe result, or `true` for presence-only).
+/// BYOK still advertises without a probe.
+pub(crate) fn should_advertise_xai_api_key_with_env_ok<'a, I>(
+    disable_api_key_auth: bool,
+    models: I,
+    first_party_env_ok: bool,
+) -> bool
 where
     I: IntoIterator<Item = &'a ModelEntry>,
 {
     if disable_api_key_auth {
         return false;
     }
-    has_xai_api_key_env() || models.into_iter().any(ModelEntry::has_own_credentials)
+    let has_byok = models.into_iter().any(ModelEntry::has_own_credentials);
+    has_byok || (has_xai_api_key_env() && first_party_env_ok)
 }
 
 /// Inputs to [`build_auth_methods`].
@@ -77,7 +96,9 @@ where
 /// (`AuthManager`). The list-construction logic itself is pure so it can be
 /// unit-tested without any of that machinery.
 pub struct AuthMethodsBuildInputs<'a> {
-    /// True if `xai.api_key` should be advertised AT ALL. Caller computes via
+    /// True if `xai.api_key` should be advertised AT ALL. Login/initialize
+    /// callers compute via [`should_advertise_xai_api_key_with_env_ok`] after
+    /// the validity probe; presence-only paths may use
     /// [`should_advertise_xai_api_key`]. When `preferred_method` is `Oidc`,
     /// this is ignored (API key is never advertised under that pin).
     pub has_external_api_key: bool,
@@ -311,7 +332,7 @@ impl AuthMethodKind {
     }
 
     /// `true` for session-based methods (cached_token, grok.com, oidc).
-    pub fn is_session_based(self) -> bool {
+    pub(crate) fn is_session_based(self) -> bool {
         matches!(self, Self::CachedToken | Self::GrokCom | Self::Oidc)
     }
 
@@ -319,25 +340,17 @@ impl AuthMethodKind {
     pub fn needs_interactive_login(self) -> bool {
         matches!(self, Self::GrokCom | Self::Oidc)
     }
-
-    pub fn auth_error_message(self) -> &'static str {
-        if self.is_session_based() {
-            AUTH_ERROR_SESSION_EXPIRED
-        } else {
-            AUTH_ERROR_API_KEY
-        }
-    }
 }
 
 /// `true` for session-based ACP methods (cached_token, grok.com, oidc).
-pub fn is_session_based_method(method_id: &acp::AuthMethodId) -> bool {
+pub(crate) fn is_session_based_method(method_id: &acp::AuthMethodId) -> bool {
     AuthMethodKind::from_id(method_id).is_session_based()
 }
 
 /// Per-model BYOK status: whether the selected model carries its own
 /// `[model.*]` `api_key`/`env_key`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModelByok {
+pub(crate) enum ModelByok {
     /// Model has its own per-model key (not refreshable).
     Byok,
     /// Model has no per-model key (session auth governs).
@@ -347,7 +360,7 @@ pub enum ModelByok {
 }
 
 impl ModelByok {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Byok => "byok",
             Self::NotByok => "not_byok",
@@ -374,7 +387,7 @@ impl ModelByok {
 /// where sending the session token cannot leak to a third-party BYOK
 /// endpoint. A definite `NotByok` always refreshes (it only ever routes to
 /// the session endpoint); a definite `Byok` never does.
-pub fn session_token_auth_gate(
+pub(crate) fn session_token_auth_gate(
     is_session_based_method: bool,
     model_byok: ModelByok,
     endpoint_is_first_party: bool,
@@ -401,7 +414,7 @@ pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Run `grok login`, s
 /// Pinned `oidc`: **no** fallthrough to api_key — return `None` so the caller
 /// fails auth. Pinned `api_key` should not reach this path (cached_token is
 /// not advertised).
-pub fn method_id_after_cached_token_unavailable(
+pub(crate) fn method_id_after_cached_token_unavailable(
     has_external_api_key: bool,
     preferred_method: Option<PreferredAuthMethod>,
 ) -> Option<&'static str> {
@@ -423,7 +436,7 @@ pub const PREFERRED_OIDC_UNAVAILABLE: &str =
     "preferred_method=oidc but no session is available. Run `grok login` to authenticate.";
 
 pub const XAI_API_KEY_METHOD_ID: &str = "xai.api_key";
-pub fn xai_api_key_auth_method() -> acp::AuthMethod {
+pub(crate) fn xai_api_key_auth_method() -> acp::AuthMethod {
     acp::AuthMethod::Agent(
         acp::AuthMethodAgent::new(
             acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID),
@@ -436,7 +449,7 @@ pub fn xai_api_key_auth_method() -> acp::AuthMethod {
 }
 
 pub const CACHED_TOKEN_AUTH_METHOD_ID: &str = "cached_token";
-pub fn cached_token_auth_method() -> acp::AuthMethod {
+pub(crate) fn cached_token_auth_method() -> acp::AuthMethod {
     acp::AuthMethod::Agent(
         acp::AuthMethodAgent::new(
             acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID),
@@ -449,7 +462,7 @@ pub fn cached_token_auth_method() -> acp::AuthMethod {
 pub const GROK_COM_METHOD_ID: &str = "grok.com";
 
 /// xAI OAuth2/OIDC auth. Method id `"grok.com"` kept for ACP wire-compat.
-pub fn grok_com_auth_method(
+pub(crate) fn grok_com_auth_method(
     label: Option<&str>,
     has_auth_provider_command: bool,
 ) -> acp::AuthMethod {
@@ -469,7 +482,7 @@ pub fn grok_com_auth_method(
 }
 
 pub const OIDC_METHOD_ID: &str = "oidc";
-pub fn oidc_auth_method(issuer: &str, label: Option<&str>) -> acp::AuthMethod {
+pub(crate) fn oidc_auth_method(issuer: &str, label: Option<&str>) -> acp::AuthMethod {
     let name = label
         .map(|l| l.to_string())
         .unwrap_or_else(|| format!("Single sign-on ({})", issuer));
@@ -891,6 +904,68 @@ mod tests {
              must lead so the pager requires interactive login",
         );
         assert!(built.default_auth_method_id.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn env_key_probe_unusable_suppresses_advertise_without_byok() {
+        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-dead-key");
+        let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+        let cfg = Config::default();
+        let models = resolve_model_list(&cfg, None);
+        assert!(
+            should_advertise_xai_api_key(false, models.values()),
+            "presence-only helper still sees the env key"
+        );
+        assert!(
+            !should_advertise_xai_api_key_with_env_ok(false, models.values(), false),
+            "probe-unusable env key alone must not advertise"
+        );
+        let built = build_auth_methods(AuthMethodsBuildInputs {
+            has_external_api_key: false,
+            ..default_inputs()
+        });
+        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::GrokCom));
+    }
+
+    #[test]
+    #[serial]
+    fn env_key_probe_ok_still_advertises() {
+        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-live-key");
+        let cfg = Config::default();
+        let models = resolve_model_list(&cfg, None);
+        assert!(should_advertise_xai_api_key_with_env_ok(
+            false,
+            models.values(),
+            true
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn byok_advertises_even_when_env_probe_unusable() {
+        const TEST_ENV_VAR: &str = "TEST_BYOK_PROBE_INDEPENDENT_TOKEN";
+        let _unset = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
+        let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+        let _byok = EnvGuard::set(TEST_ENV_VAR, "enterprise-secret-token");
+
+        let dm = crate::models::default_model();
+        let toml: toml::Value = toml::from_str(&format!(
+            r#"
+            [model."{dm}"]
+            model = "{dm}"
+            base_url = "https://inference.example.com/v1"
+            context_window = 200000
+            env_key = "{TEST_ENV_VAR}"
+            "#,
+        ))
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&toml).expect("config should parse");
+        let models = resolve_model_list(&cfg, None);
+        assert!(
+            should_advertise_xai_api_key_with_env_ok(false, models.values(), false),
+            "BYOK must not depend on the first-party env probe"
+        );
     }
 
     /// Legacy `GROK_CODE_XAI_API_KEY` env var is accepted as a fallback

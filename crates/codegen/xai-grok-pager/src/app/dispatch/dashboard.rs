@@ -18,7 +18,7 @@ use super::task_result::unregister_all_active_sessions;
 use super::turn::dispatch_cancel_turn;
 use super::voice::{merge_prompt_with_voice_interim, voice_stop_on_submit};
 use crate::app::actions::{Action, Effect};
-use crate::app::agent::AgentId;
+use crate::app::agent::{AgentId, DeferredModelSwitch};
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, DashboardReturn, TrustState};
 use agent_client_protocol as acp;
@@ -272,6 +272,12 @@ pub(super) fn dispatch_exit_dashboard(app: &mut AppView) -> Vec<Effect> {
     if let Some(d) = app.dashboard.as_mut() {
         d.restore_peek_viewport(&mut app.agents);
         d.close_popup();
+        // Dashboard state is preserved across reopen; clear a leftover exit
+        // alias so the next Enter does not quit.
+        if crate::slash::commands::exit::is_exit_alias(d.dispatch.text()) {
+            d.dispatch.set_text("");
+            d.error_toast = None;
+        }
     }
     log_dashboard_closed(app);
     let preferred = app
@@ -838,17 +844,14 @@ pub(super) fn dispatch_dashboard_open_location_picker(app: &mut AppView) -> Vec<
     let mut candidates: Vec<LocationCandidate> = Vec::new();
     candidates.push(LocationCandidate {
         label: location_picker_label(&cwd),
-        detail: format!(
-            "{}  (current)",
-            crate::project_picker::sources::display_path(&cwd)
-        ),
+        detail: format!("{}  (current)", crate::recent_dirs::display_path(&cwd)),
         worktree: worktree_label(&cwd),
         path: cwd.clone(),
     });
     for (path, ts) in recent.into_iter().filter(|(p, _)| p != &cwd) {
         let detail = format!(
             "{}  ({})",
-            crate::project_picker::sources::display_path(&path),
+            crate::recent_dirs::display_path(&path),
             crate::views::session_title::format_relative_time(
                 (chrono::Utc::now() - ts).to_std().unwrap_or_default()
             ),
@@ -911,7 +914,7 @@ pub(super) fn dispatch_dashboard_change_location(app: &mut AppView, input: Strin
     );
 
     let changed = app.cwd != path;
-    let display = crate::project_picker::sources::display_path(&path);
+    let display = crate::recent_dirs::display_path(&path);
     app.cwd = path.clone();
     // Keep the git-repo flag in sync with the new cwd (it's otherwise only
     // computed at startup). Worktree dispatch reads it.
@@ -1129,6 +1132,14 @@ pub(super) fn dispatch_dashboard_dispatch(
         return vec![];
     }
     let trimmed = text.trim().to_string();
+    // Match agent-prompt send; do not spawn a session.
+    if crate::slash::commands::exit::is_exit_alias(&trimmed) {
+        if let Some(d) = app.dashboard.as_mut() {
+            d.dispatch.set_text("");
+            d.error_toast = None;
+        }
+        return dispatch(Action::Quit, app);
+    }
     // Reject only an empty / whitespace-only prompt; any non-empty
     // input (even a single character) dispatches a new session. The
     // keyboard path already filters empty input upstream (see
@@ -1222,7 +1233,6 @@ pub(super) fn dispatch_dashboard_dispatch(
         });
     let (prompt_text, mut pasted_images, chip_elements) = prompt_state.into_submission();
     log_dashboard_launched("prompt");
-
     // Pi's headless RPC process is a single-session host. Keep exactly one live
     // local AgentView before issuing `new_session`; completed sessions remain in
     // Pi's persisted catalog and return as dormant roster rows. This prevents an
@@ -1244,11 +1254,8 @@ pub(super) fn dispatch_dashboard_dispatch(
         Vec::new()
     };
 
-    let saved_shown = app.project_picker_shown;
-    app.project_picker_shown = true;
     let (new_id, create_effects) = dispatch_new_session_inner_with_id(app, model_id);
     effects.extend(create_effects);
-    app.project_picker_shown = saved_shown;
     let policy_block = app.yolo_policy_block;
     if let Some(agent) = app.agents.get_mut(&new_id) {
         agent.session.enqueue_prompt(prompt_text);
@@ -1309,8 +1316,9 @@ pub(super) fn dispatch_dashboard_dispatch(
 /// limited than the agent view's:
 ///
 ///   - Builtin commands that return `CommandResult::Action(...)` (e.g.
-///     `/dashboard`, `/exit`, `/theme`, `/settings`, `/help`, `/model`,
-///     `/mcps`, `/plugin`, …) are dispatched identically to the agent path.
+///     `/dashboard`, `/exit`, `/quit`, `/theme`, `/settings`, `/help`,
+///     `/model`, `/mcps`, `/plugin`, …) are dispatched identically to the
+///     agent path (`/exit`/`/quit` quit the CLI; `/home` leaves the dashboard).
 ///   - `CommandResult::Message` / `Error` surface as an `error_toast`
 ///     on the dashboard (no scrollback to push into). `Error` strings
 ///     get the `✗` prefix via `set_error_toast`; `Message` strings are
@@ -1644,7 +1652,12 @@ pub(super) fn apply_pending_dispatch_config(
         // deferred switch when an explicit effort must be pushed. Setting it
         // (or clearing to `None`) also overrides any CLI `-m` default so the
         // dashboard's `/model` choice wins.
-        agent.session.deferred_model_switch = m.effort.map(|e| (m.id.clone(), Some(e)));
+        agent.session.deferred_model_switch = m.effort.map(|e| DeferredModelSwitch {
+            model_id: m.id.clone(),
+            effort: Some(e),
+            // Effort-only push; no display change to roll back.
+            prev_model_id: None,
+        });
     }
     match pending_mode {
         DashboardDispatchMode::Normal => {
@@ -2417,41 +2430,10 @@ pub(super) fn dispatch_dashboard_permission_select(
         return vec![];
     };
 
-    let meta = if let Some(scope) = perm
-        .mcp_scope
-        .as_ref()
-        .filter(|_| option_id.0.as_ref() == "allow-always-mcp")
-    {
-        let selection = match scope.selected {
-            crate::views::permission_view::McpScope::Tool => {
-                xai_grok_workspace::permission::McpScopeSelection::Tool {
-                    tool_name: scope.tool_name.clone(),
-                }
-            }
-            crate::views::permission_view::McpScope::Server => match &scope.server_prefix {
-                Some(prefix) => xai_grok_workspace::permission::McpScopeSelection::Server {
-                    server: prefix.clone(),
-                },
-                None => xai_grok_workspace::permission::McpScopeSelection::Tool {
-                    tool_name: scope.tool_name.clone(),
-                },
-            },
-        };
-        serde_json::to_value(selection)
-            .ok()
-            .and_then(|v| v.as_object().cloned())
-    } else if let Some(ref h) = perm.bash_highlights
-        && perm.bash_selection_count > 0
-    {
-        let parts: Vec<String> = h.highlighted_words[..perm.bash_selection_count].to_vec();
-        serde_json::to_value(xai_grok_workspace::permission::BashCommandSelectedTerms {
-            command_parts: parts,
-        })
-        .ok()
-        .and_then(|v| v.as_object().cloned())
-    } else {
-        None
-    };
+    // Share the main dispatch's meta logic so dashboard peek honors an edited
+    // pattern (and the glob routing) identically instead of dropping it.
+    let edited_pattern = super::permissions::take_edited_pattern(agent, &perm);
+    let meta = super::permissions::build_selection_meta(&perm, &option_id, edited_pattern);
 
     perm.request
         .response_tx

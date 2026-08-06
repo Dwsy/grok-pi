@@ -79,8 +79,9 @@ impl SessionActor {
     }
 
     /// Emit `x.ai/git_head_changed` after an edit/shell command that may have
-    /// moved HEAD (e.g. `git checkout`), so clients update their status bar
-    /// immediately rather than waiting for the debounced fs-watch refresh.
+    /// moved HEAD (e.g. `git checkout`, `git commit`), so clients update their
+    /// status bar and changes panel immediately rather than waiting for the
+    /// debounced fs-watch refresh.
     pub(super) async fn maybe_notify_git_branch(&self) {
         if !self.git_head_enabled {
             return;
@@ -88,15 +89,21 @@ impl SessionActor {
         let cwd = self.tool_context.cwd.as_path();
 
         // `get_worktree_info` doubles as the "in a git repo?" probe (None when not).
-        let (worktree_info, branch) = tokio::join!(
+        let (worktree_info, branch, commit) = tokio::join!(
             xai_grok_workspace::session::git::get_worktree_info(cwd),
             xai_grok_workspace::session::git::get_branch(cwd),
+            xai_grok_workspace::session::git::get_current_commit(cwd),
         );
         let Some((is_worktree, main_repo)) = worktree_info else {
             return;
         };
 
-        let dedup_key = git_head_dedup_key(branch.as_deref(), is_worktree, main_repo.as_deref());
+        let dedup_key = git_head_dedup_key(
+            branch.as_deref(),
+            is_worktree,
+            main_repo.as_deref(),
+            commit.as_deref(),
+        );
         {
             let mut last = self.last_reported_branch.lock();
             if last.as_deref() == Some(&dedup_key) {
@@ -170,7 +177,15 @@ impl SessionActor {
         ));
     }
 
-    pub(super) async fn handle_completion(&self, prompt_id: String, result: PromptTurnResult) {
+    /// Returns whether this handler OWNED the completion (it matched and
+    /// dequeued the front prompt). `false` means a stale completion for a
+    /// turn another path (e.g. Cancel) already finalized — callers must not
+    /// treat it as a turn ending now.
+    pub(super) async fn handle_completion(
+        &self,
+        prompt_id: String,
+        result: PromptTurnResult,
+    ) -> bool {
         let result = result.map(|mut ok| {
             ok.tool_overrides = self.effective_tool_overrides();
             ok
@@ -213,7 +228,7 @@ impl SessionActor {
             .is_some_and(|input| input.prompt_id == prompt_id)
         {
             let Some(input) = state.pending_inputs.pop_front() else {
-                return;
+                return false;
             };
             owned_completion = true;
             let _ = input.respond_to.send(result.clone()).ok();
@@ -308,6 +323,7 @@ impl SessionActor {
             self.emit_turn_completed(prompt_id, &mapped, usage, cancel_trigger)
                 .await;
         }
+        owned_completion
     }
 
     /// Emit the durable, replayable `TurnCompleted` terminal — the single

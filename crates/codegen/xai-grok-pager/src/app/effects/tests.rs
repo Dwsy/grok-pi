@@ -17,6 +17,20 @@ fn format_acp_error_reads_detail_from_wrapped_data() {
     assert_eq!(format_acp_error(&wrapped, false), "model does not support tools");
 }
 #[test]
+fn format_acp_error_formats_http_500_dump() {
+    let err = acp::Error::internal_error()
+        .data(
+            serde_json::json!({
+            "message": "API error (status 500 Internal Server Error): {\"error\":\"upstream exploded\"}",
+            "http_status": 500
+        }),
+        );
+    assert_eq!(
+            format_acp_error(&err, false),
+            "Server error (500) \u{2014} Something went wrong on our side. Wait a minute and send again."
+        );
+}
+#[test]
 fn format_acp_error_rate_limit_surfaces_detail_or_fallback() {
     use xai_grok_shell::sampling::error::{
         FREE_USAGE_USER_MESSAGE, RATE_LIMITED_ERROR_CODE,
@@ -2342,10 +2356,7 @@ fn format_session_info_session_auth_ignores_api_key_env() {
     let info = make_session_info("auto", None, 1000, 10000);
     let text = format_session_info(&info, None, false, false, true);
     assert!(text.contains("Auth method: OAuth"), "{text}");
-    assert!(
-            text.contains("Manage account and credits: https://grok.com/?_s=billing"),
-            "{text}"
-        );
+    assert!(!text.contains("Manage account and credits"), "{text}");
     assert!(!text.contains("Also present: XAI_API_KEY"), "{text}");
     assert!(!text.contains("console.x.ai"), "{text}");
     assert!(!text.contains("grok login"), "{text}");
@@ -2356,10 +2367,7 @@ fn format_session_info_api_key_without_env() {
     let text = format_session_info(&info, None, false, true, false);
     assert!(text.contains("Auth method: API key\n"), "{text}");
     assert!(!text.contains("XAI_API_KEY"), "{text}");
-    assert!(
-            text.contains("Manage account and credits: console.x.ai"),
-            "{text}"
-        );
+    assert!(!text.contains("Manage account and credits"), "{text}");
     assert!(
             text.contains("Run `grok login` to use your SuperGrok subscription instead."),
             "{text}"
@@ -2367,30 +2375,25 @@ fn format_session_info_api_key_without_env() {
     assert!(!text.contains("grok.com"), "{text}");
 }
 #[test]
-fn format_session_info_api_key_auth_notes_console_billing() {
+fn format_session_info_api_key_auth_suggests_grok_login() {
     let info = make_session_info("auto", None, 1000, 10000);
     let text = format_session_info(&info, None, false, true, true);
     assert!(text.contains("Auth method: API key (XAI_API_KEY)"), "{text}");
-    assert!(
-            text.contains("Manage account and credits: console.x.ai"),
-            "{text}"
-        );
+    assert!(!text.contains("Manage account and credits"), "{text}");
     assert!(
             text.contains("Run `grok login` to use your SuperGrok subscription instead."),
             "{text}"
         );
     assert!(!text.contains("Also present: XAI_API_KEY"), "{text}");
+    assert!(!text.contains("console.x.ai"), "{text}");
     assert!(!text.contains("grok.com"), "{text}");
 }
 #[test]
-fn format_session_info_session_only_manage_at_grok_com() {
+fn format_session_info_session_only_shows_oauth() {
     let info = make_session_info("auto", None, 1000, 10000);
     let text = format_session_info(&info, None, false, false, false);
     assert!(text.contains("Auth method: OAuth"), "{text}");
-    assert!(
-            text.contains("Manage account and credits: https://grok.com/?_s=billing"),
-            "{text}"
-        );
+    assert!(!text.contains("Manage account and credits"), "{text}");
     assert!(!text.contains("Also present: XAI_API_KEY"), "{text}");
     assert!(!text.contains("console.x.ai"), "{text}");
     assert!(!text.contains("grok login"), "{text}");
@@ -2401,46 +2404,7 @@ fn format_session_info_shows_conversation_id_when_present() {
     info.data.conversation_id = Some("conv_abc123".into());
     let text = format_session_info(&info, None, false, false, false);
     assert!(text.contains("Conversation ID: conv_abc123"));
-    assert!(text.contains("ID: test-session-id"));
-}
-#[test]
-fn format_session_info_shows_pi_style_counts_tokens_cache_and_cost() {
-    use xai_grok_shell::session::{SessionTokenTotals, SessionUsageStats};
-    let mut info = make_session_info("pi-model", None, 1_200, 128_000);
-    info.session_name = Some("demo".into());
-    info.session_file = Some("/tmp/project/session.jsonl".into());
-    info.session_stats = Some(SessionUsageStats {
-        total_messages: 61,
-        user_messages: 4,
-        assistant_messages: 32,
-        tool_calls: 25,
-        tool_results: 25,
-        tokens: SessionTokenTotals {
-            input: 1_000,
-            output: 300,
-            cache_read: 500,
-            cache_write: 500,
-            total: 2_300,
-        },
-        cost: 0.053,
-    });
-    let text = format_session_info(&info, Some("ignored fallback"), false, false, false);
-    assert!(text.contains("Session Info"), "{text}");
-    assert!(text.contains("Name: demo"), "{text}");
-    assert!(!text.contains("ignored fallback"), "{text}");
-    assert!(text.contains("File: /tmp/project/session.jsonl"), "{text}");
-    assert!(text.contains("ID: test-session-id"), "{text}");
-    assert!(text.contains("Messages\n  Total: 61"), "{text}");
-    assert!(text.contains("User: 4"), "{text}");
-    assert!(text.contains("Assistant: 32"), "{text}");
-    assert!(text.contains("Tools: 25 calls, 25 results"), "{text}");
-    assert!(text.contains("Tokens\n  Input: 2,000"), "{text}");
-    assert!(text.contains("Cached: 500 (25.0%)"), "{text}");
-    assert!(text.contains("Uncached: 1,500 (500 written to cache)"), "{text}");
-    assert!(text.contains("Output: 300"), "{text}");
-    assert!(text.contains("Total: 2,300"), "{text}");
-    assert!(text.contains("Cost\n  Total: $0.053"), "{text}");
-    assert!(text.contains("Context: 1,200 / 128,000 tokens"), "{text}");
+    assert!(text.contains("Session ID: test-session-id"));
 }
 #[test]
 fn format_session_info_shows_resolved_when_enabled_and_different() {
@@ -2592,6 +2556,7 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
         repo_name: "repo-app".to_string(),
         worktree_label: Some("wt".to_string()),
         parent_session_path: None,
+        last_turn_summary: Some("Fixed the parser".to_string()),
         card_detail: None,
     };
     let roster = session_picker_entry_to_roster(&entry);
@@ -2601,6 +2566,10 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
     assert!(roster.is_worktree, "worktree_label present → is_worktree");
     assert_eq!(roster.model_id.as_deref(), Some("grok-4"));
     assert_eq!(roster.activity, RosterActivity::Dormant);
+    assert_eq!(
+            roster.last_turn_summary.as_deref(),
+            Some("Fixed the parser")
+        );
     assert!(!roster.resident);
     assert_eq!(roster.last_change_unix_ms, updated.timestamp_millis());
     assert_eq!(roster.origin.kind, "local");

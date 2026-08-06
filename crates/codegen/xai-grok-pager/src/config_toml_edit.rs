@@ -99,12 +99,12 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "[ui]\ncompact_mode = false\n").unwrap();
 
-        set_hint_at(&path, "project_picker_disabled", true).unwrap();
+        set_hint_at(&path, "memory_modal_fullscreen", true).unwrap();
 
         let doc = read_config_document_for_edit(&path).expect("reparse");
         assert_eq!(
             doc.get("hints")
-                .and_then(|h| h.get("project_picker_disabled"))
+                .and_then(|h| h.get("memory_modal_fullscreen"))
                 .and_then(|v| v.as_bool()),
             Some(true),
         );
@@ -118,7 +118,7 @@ mod tests {
     fn set_hint_at_creates_missing_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nested/config.toml");
-        set_hint_at(&path, "project_picker_disabled", true).unwrap();
+        set_hint_at(&path, "memory_modal_fullscreen", true).unwrap();
         assert!(
             path.exists(),
             "missing file and parent dir should be created"
@@ -131,12 +131,12 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "[ui]\ntheme = \"dark\"\n").unwrap();
 
-        set_hint_at(&path, "project_picker_disabled", true).unwrap();
+        set_hint_at(&path, "memory_modal_fullscreen", true).unwrap();
 
         let doc = read_config_document_for_edit(&path).expect("reparse");
         let disabled = doc
             .get("hints")
-            .and_then(|h| h.get("project_picker_disabled"))
+            .and_then(|h| h.get("memory_modal_fullscreen"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         assert!(disabled, "should read back true after set_hint write");
@@ -150,7 +150,7 @@ mod tests {
         fs::write(&path, bad).unwrap();
 
         // No-op (no write, no clobber) when the existing file cannot be parsed.
-        set_hint_at(&path, "project_picker_disabled", true).unwrap();
+        set_hint_at(&path, "memory_modal_fullscreen", true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), bad);
     }
 

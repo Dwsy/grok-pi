@@ -43,7 +43,7 @@ impl WorkflowRunStatus {
         )
     }
 
-    pub fn is_completion_reportable(self) -> bool {
+    pub(crate) fn is_completion_reportable(self) -> bool {
         self.is_terminal() || self == Self::BudgetLimited
     }
 
@@ -59,7 +59,7 @@ impl WorkflowRunStatus {
         )
     }
 
-    pub fn is_resumable(self) -> bool {
+    pub(crate) fn is_resumable(self) -> bool {
         self.is_paused() || self == Self::Failed
     }
 
@@ -82,7 +82,7 @@ pub struct WorkflowHistoryEntry {
     pub at: String,
 }
 
-pub const WORKFLOW_HISTORY_MAX: usize = 64;
+pub(crate) const WORKFLOW_HISTORY_MAX: usize = 64;
 const WORKFLOW_PAUSE_MESSAGE_MAX_BYTES: usize = 4 * 1024;
 
 fn capped_pause_message(message: impl Into<String>) -> String {
@@ -134,7 +134,7 @@ pub struct WorkflowAgentRow {
     pub duration_ms: u64,
 }
 
-pub const WORKFLOW_AGENT_ROWS_MAX: usize = 256;
+pub(crate) const WORKFLOW_AGENT_ROWS_MAX: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowRunState {
@@ -194,7 +194,7 @@ fn now_rfc3339() -> String {
 }
 
 #[derive(Debug, Default)]
-pub struct WorkflowTracker {
+pub(crate) struct WorkflowTracker {
     runs: Vec<TrackedRun>,
     reported_terminal_run_ids: std::collections::HashSet<String>,
     terminal_at_restore_run_ids: std::collections::HashSet<String>,
@@ -209,7 +209,7 @@ struct TrackedRun {
 }
 
 impl WorkflowTracker {
-    pub fn start_run(
+    pub(crate) fn start_run(
         &mut self,
         run_id: String,
         name: String,
@@ -261,7 +261,7 @@ impl WorkflowTracker {
         state
     }
 
-    pub fn resume_run(
+    pub(crate) fn resume_run(
         &mut self,
         run_id: &str,
         new_agent_budget: Option<u64>,
@@ -300,7 +300,7 @@ impl WorkflowTracker {
         Some(state)
     }
 
-    pub fn set_phase(&mut self, run_id: &str, title: &str) -> Option<WorkflowRunState> {
+    pub(crate) fn set_phase(&mut self, run_id: &str, title: &str) -> Option<WorkflowRunState> {
         let run = self.run_mut(run_id)?;
         if run.state.current_phase.as_deref() != Some(title) {
             run.state.current_phase = Some(title.to_string());
@@ -395,7 +395,7 @@ impl WorkflowTracker {
         Some(run.state.clone())
     }
 
-    pub fn agent_started(&mut self, run_id: &str, mut row: WorkflowAgentRow) -> String {
+    pub(crate) fn agent_started(&mut self, run_id: &str, mut row: WorkflowAgentRow) -> String {
         let Some(run) = self.run_mut(run_id) else {
             return if row.label.is_empty() {
                 "agent".to_string()
@@ -423,7 +423,7 @@ impl WorkflowTracker {
     /// Point a roster row at a fresh child session id. Contract retries
     /// spawn a new child session per attempt; the row must follow so live
     /// progress lookups and transcript clicks resolve to the current child.
-    pub fn rebind_agent_id(&mut self, run_id: &str, agent_id: &str, new_agent_id: &str) {
+    pub(crate) fn rebind_agent_id(&mut self, run_id: &str, agent_id: &str, new_agent_id: &str) {
         let Some(run) = self.run_mut(run_id) else {
             return;
         };
@@ -433,7 +433,7 @@ impl WorkflowTracker {
         }
     }
 
-    pub fn agent_finished(
+    pub(crate) fn agent_finished(
         &mut self,
         run_id: &str,
         agent_id: &str,
@@ -452,13 +452,13 @@ impl WorkflowTracker {
         }
     }
 
-    pub fn log_message(&mut self, run_id: &str, message: &str) -> Option<WorkflowRunState> {
+    pub(crate) fn log_message(&mut self, run_id: &str, message: &str) -> Option<WorkflowRunState> {
         let run = self.run_mut(run_id)?;
         run.state.record_event("log", Some(message.to_string()));
         Some(run.state.clone())
     }
 
-    pub fn pause_user(
+    pub(crate) fn pause_user(
         &mut self,
         run_id: &str,
         message: Option<String>,
@@ -475,7 +475,7 @@ impl WorkflowTracker {
         Some(run.state.clone())
     }
 
-    pub fn interrupt(
+    pub(crate) fn interrupt(
         &mut self,
         run_id: &str,
         message: impl Into<String>,
@@ -491,7 +491,7 @@ impl WorkflowTracker {
         Some(run.state.clone())
     }
 
-    pub fn apply_outcome(
+    pub(crate) fn apply_outcome(
         &mut self,
         run_id: &str,
         outcome: &WorkflowOutcome,
@@ -552,7 +552,7 @@ impl WorkflowTracker {
         Some(run.state.clone())
     }
 
-    pub fn clear_run(&mut self, run_id: &str) -> Option<WorkflowRunState> {
+    pub(crate) fn clear_run(&mut self, run_id: &str) -> Option<WorkflowRunState> {
         let idx = self.runs.iter().position(|r| r.state.run_id == run_id)?;
         let mut removed = self.runs.remove(idx);
         removed.fold_elapsed();
@@ -560,18 +560,18 @@ impl WorkflowTracker {
         Some(removed.state)
     }
 
-    pub fn get(&self, run_id: &str) -> Option<WorkflowRunState> {
+    pub(crate) fn get(&self, run_id: &str) -> Option<WorkflowRunState> {
         self.runs
             .iter()
             .find(|r| r.state.run_id == run_id)
             .map(|r| r.state.clone())
     }
 
-    pub fn list(&self) -> Vec<WorkflowRunState> {
+    pub(crate) fn list(&self) -> Vec<WorkflowRunState> {
         self.runs.iter().map(|r| r.state.clone()).collect()
     }
 
-    pub fn elapsed_ms(&self, run_id: &str) -> u64 {
+    pub(crate) fn elapsed_ms(&self, run_id: &str) -> u64 {
         self.runs
             .iter()
             .find(|r| r.state.run_id == run_id)
@@ -579,7 +579,7 @@ impl WorkflowTracker {
             .unwrap_or(0)
     }
 
-    pub fn from_snapshot(snapshots: Vec<WorkflowRunState>) -> Self {
+    pub(crate) fn from_snapshot(snapshots: Vec<WorkflowRunState>) -> Self {
         let runs = snapshots
             .into_iter()
             .map(|mut state| {
@@ -645,7 +645,7 @@ impl WorkflowTracker {
         })
     }
 
-    pub fn take_unreported_terminal_runs(
+    pub(crate) fn take_unreported_terminal_runs(
         &mut self,
     ) -> (Vec<WorkflowRunState>, Vec<WorkflowRunState>) {
         let mut restored = Vec::new();
@@ -668,11 +668,11 @@ impl WorkflowTracker {
         (restored, fresh)
     }
 
-    pub fn snapshot(&self) -> Vec<WorkflowRunState> {
+    pub(crate) fn snapshot(&self) -> Vec<WorkflowRunState> {
         self.list()
     }
 
-    pub fn take_status_report(&mut self) -> Vec<WorkflowRunState> {
+    pub(crate) fn take_status_report(&mut self) -> Vec<WorkflowRunState> {
         let live: Vec<&TrackedRun> = self
             .runs
             .iter()

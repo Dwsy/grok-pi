@@ -694,13 +694,36 @@ fn skill_activated_name_gated() {
         &events::SkillDispatched {
             skill_name: "internal-deploy-runbook".into(),
             plugin_source: None,
+            trigger: events::SkillTrigger::SlashCommand,
         },
     );
     let events = exported_events(&stream);
     let ev = &events[0];
     assert_eq!(attr(ev, "skill_source").as_deref(), Some("local"));
+    assert_eq!(attr(ev, "trigger").as_deref(), Some("slash_command"));
     assert_eq!(attr(ev, "skill.name"), None);
     assert!(!format!("{events:?}").contains("internal-deploy-runbook"));
+}
+
+#[test]
+fn skill_activated_exports_every_trigger() {
+    for (trigger, label) in [
+        (events::SkillTrigger::SlashCommand, "slash_command"),
+        (events::SkillTrigger::SkillMdRead, "skill_md_read"),
+        (events::SkillTrigger::SkillTool, "skill_tool"),
+    ] {
+        let stream = build(gates_off());
+        emit_event_into(
+            &stream,
+            &events::SkillDispatched {
+                skill_name: "pdf".into(),
+                plugin_source: None,
+                trigger,
+            },
+        );
+        let events = exported_events(&stream);
+        assert_eq!(attr(&events[0], "trigger").as_deref(), Some(label));
+    }
 }
 
 #[test]
@@ -995,6 +1018,40 @@ fn settings_gate_suppresses_until_resolved() {
     assert!(
         super::is_settings_gate_open(),
         "gate must reopen after settings are resolved"
+    );
+}
+
+#[test]
+fn settings_gate_opens_when_the_bounded_window_expires() {
+    let _serial = GATE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    struct RestoreGate(std::time::Duration);
+    impl Drop for RestoreGate {
+        fn drop(&mut self) {
+            super::set_settings_gate_max_wait(self.0);
+            super::mark_external_otel_settings_resolved();
+        }
+    }
+    let _restore = RestoreGate(super::settings_gate_max_wait());
+
+    super::set_settings_gate_max_wait(std::time::Duration::from_secs(600));
+    super::suppress_external_otel_until_settings();
+    assert!(
+        !super::is_settings_gate_open(),
+        "inside the window the gate stays fail-closed"
+    );
+
+    super::set_settings_gate_max_wait(std::time::Duration::ZERO);
+    assert!(
+        super::is_settings_gate_open(),
+        "an expired window must resolve the gate open onto local policy"
+    );
+
+    super::set_settings_gate_max_wait(std::time::Duration::from_secs(600));
+    super::suppress_external_otel_until_settings();
+    assert!(
+        !super::is_settings_gate_open(),
+        "re-closing must restart the window, not stay open"
     );
 }
 

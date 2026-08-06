@@ -29,7 +29,7 @@ impl AgentView {
             && (matches!(key.code, KeyCode::Tab | KeyCode::Char(' '))
                 || (allow_i_alt && matches!(key.code, KeyCode::Char('i'))))
         {
-            if self.question_view.is_some() {
+            if self.parked_card().is_some() {
                 self.set_active_pane(AgentPane::Prompt, false);
                 return InputOutcome::Changed;
             }
@@ -612,7 +612,7 @@ impl AgentView {
         }
         if let Some(ref mut viewer) = self.line_viewer {
             if let Some(area) = viewer.last_popup_area
-                && area.contains((col, row).into())
+                && (area.contains((col, row).into()) || viewer.list_state.scrollbar_hit(col, row))
             {
                 viewer
                     .list_state

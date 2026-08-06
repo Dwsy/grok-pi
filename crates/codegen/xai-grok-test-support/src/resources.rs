@@ -1,14 +1,18 @@
-//! Generic OS resource snapshots for soak tests. No shell types: `rss_bytes`
-//! reads `/proc` (Linux) or shells out to `ps` (macOS); the task/fd counters
-//! are Linux-only and return `None` elsewhere.
+//! OS resource snapshots for soak tests, read through `xai_tty_utils` so the
+//! soaks and production measure the same way.
 
-/// RSS (bytes), live threads, and open fds sampled together. `None` marks a
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+/// RSS in bytes, live threads, and open files, sampled together. `None` marks a
 /// metric the platform can't report.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResourceSnapshot {
     pub rss: Option<usize>,
     pub threads: Option<usize>,
-    pub fds: Option<usize>,
+    pub open_files: Option<usize>,
 }
 
 /// Saturating per-field growth of one [`ResourceSnapshot`] over an earlier
@@ -18,23 +22,26 @@ pub struct ResourceSnapshot {
 pub struct ResourceGrowth {
     pub rss: Option<usize>,
     pub threads: Option<usize>,
-    pub fds: Option<usize>,
+    pub open_files: Option<usize>,
 }
 
 impl ResourceSnapshot {
     pub fn capture() -> Self {
+        let usage = xai_tty_utils::sample_process_resources();
+        let widen = |value: Option<u64>| value.map(|n| n as usize);
         Self {
-            rss: rss_bytes(),
-            threads: thread_count(),
-            fds: fd_count(),
+            rss: widen(usage.rss_bytes),
+            threads: widen(usage.threads),
+            open_files: widen(usage.open_files),
         }
     }
 
-    /// RSS only, skipping the thread and fd probes. For hot sampling loops that
-    /// use just `rss`: on Linux this avoids the per-tick `/proc/self/{task,fd}`
-    /// directory scans. The RSS read itself still shells out to `ps` on macOS.
+    /// RSS only, skipping the thread and descriptor scans. For sampling loops
+    /// that read just `rss`.
     pub fn capture_rss() -> Option<usize> {
-        rss_bytes()
+        xai_tty_utils::sample_process_memory()
+            .rss_bytes
+            .map(|n| n as usize)
     }
 
     /// Growth of `self` (after) over `baseline` (before); see [`ResourceGrowth`].
@@ -45,65 +52,125 @@ impl ResourceSnapshot {
         ResourceGrowth {
             rss: delta(self.rss, baseline.rss),
             threads: delta(self.threads, baseline.threads),
-            fds: delta(self.fds, baseline.fds),
+            open_files: delta(self.open_files, baseline.open_files),
         }
     }
 }
 
-fn rss_bytes() -> Option<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        for line in status.lines() {
-            if let Some(val) = line.strip_prefix("VmRSS:") {
-                let kb: usize = val.trim().trim_end_matches(" kB").trim().parse().ok()?;
-                return Some(kb * 1024);
+const BYTES_PER_MB: u64 = 1024 * 1024;
+const SAMPLE_INTERVAL: Duration = Duration::from_millis(3);
+
+/// RSS baseline plus a background polling thread for one measured section.
+pub struct RssSampler {
+    baseline: Option<usize>,
+    stop: Arc<AtomicBool>,
+    /// `Option` so `finish` can move the handle out despite `Drop`.
+    handle: Option<JoinHandle<usize>>,
+}
+
+/// Stops the polling thread even when a panic skips `finish`.
+impl Drop for RssSampler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl RssSampler {
+    /// Capture the RSS baseline and start a background sampler.
+    pub fn start() -> Self {
+        let baseline = ResourceSnapshot::capture_rss();
+        let stop = Arc::new(AtomicBool::new(false));
+        let sampler_stop = stop.clone();
+        let handle = std::thread::spawn(move || {
+            let mut peak = ResourceSnapshot::capture_rss().unwrap_or(0);
+            while !sampler_stop.load(Ordering::Relaxed) {
+                if let Some(r) = ResourceSnapshot::capture_rss() {
+                    peak = peak.max(r);
+                }
+                std::thread::sleep(SAMPLE_INTERVAL);
             }
+            if let Some(r) = ResourceSnapshot::capture_rss() {
+                peak = peak.max(r);
+            }
+            peak
+        });
+        Self {
+            baseline,
+            stop,
+            handle: Some(handle),
         }
-        None
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command;
-        let output = Command::new("ps")
-            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-            .output()
-            .ok()?;
-        let kb: usize = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .ok()?;
-        Some(kb * 1024)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        None
+    /// Stop sampling and return the measurement. A final synchronous read
+    /// backstops a peak that rose and fell between sampler ticks.
+    pub fn finish(mut self) -> RssMeasurement {
+        let final_rss = ResourceSnapshot::capture_rss().unwrap_or(0);
+        self.stop.store(true, Ordering::Relaxed);
+        let handle = self.handle.take().expect("finish is the only taker");
+        let peak_rss = handle.join().expect("sampler thread").max(final_rss);
+        RssMeasurement {
+            baseline: self.baseline,
+            peak_rss,
+        }
     }
 }
 
-fn thread_count() -> Option<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        Some(std::fs::read_dir("/proc/self/task").ok()?.count())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
+/// Baseline and peak captured by one sampler run, separate from any budget so
+/// one measurement can be judged against several.
+pub struct RssMeasurement {
+    pub baseline: Option<usize>,
+    pub peak_rss: usize,
+}
+
+impl RssMeasurement {
+    pub fn against_budget(self, budget_mb: u64) -> RssOutcome {
+        RssOutcome {
+            baseline: self.baseline,
+            peak_rss: self.peak_rss,
+            budget_mb,
+        }
     }
 }
 
-/// The read's own transient fd closes with the iterator, so before and after
-/// samples stay symmetric.
-fn fd_count() -> Option<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        Some(std::fs::read_dir("/proc/self/fd").ok()?.count())
+/// Peak-RSS growth over a baseline, judged against a budget. Unmeasurable RSS
+/// fails the verdict rather than passing vacuously.
+pub struct RssOutcome {
+    pub baseline: Option<usize>,
+    pub peak_rss: usize,
+    pub budget_mb: u64,
+}
+
+impl RssOutcome {
+    pub fn baseline_bytes(&self) -> usize {
+        self.baseline.unwrap_or(0)
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
+
+    pub fn baseline_mb(&self) -> f64 {
+        self.baseline_bytes() as f64 / BYTES_PER_MB as f64
+    }
+
+    pub fn peak_rss_mb(&self) -> f64 {
+        self.peak_rss as f64 / BYTES_PER_MB as f64
+    }
+
+    pub fn measurable(&self) -> bool {
+        self.baseline.is_some() && self.peak_rss > 0
+    }
+
+    pub fn peak_growth_bytes(&self) -> usize {
+        self.peak_rss.saturating_sub(self.baseline_bytes())
+    }
+
+    pub fn peak_growth_mb(&self) -> f64 {
+        self.peak_growth_bytes() as f64 / BYTES_PER_MB as f64
+    }
+
+    pub fn within_budget(&self) -> bool {
+        (self.peak_growth_bytes() as u64) < self.budget_mb * BYTES_PER_MB
+    }
+
+    pub fn pass(&self) -> bool {
+        self.measurable() && self.within_budget()
     }
 }
 
@@ -112,22 +179,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rss_outcome_fails_over_budget_and_when_unmeasurable() {
+        let mb = BYTES_PER_MB as usize;
+
+        let over = RssOutcome {
+            baseline: Some(mb),
+            peak_rss: mb + 3 * mb,
+            budget_mb: 2,
+        };
+        assert_eq!(over.peak_growth_bytes(), 3 * mb);
+        assert!(!over.pass());
+
+        let unmeasurable = RssOutcome {
+            baseline: None,
+            peak_rss: 0,
+            budget_mb: 1,
+        };
+        assert!(!unmeasurable.pass());
+    }
+
+    #[test]
     fn growth_from_saturates_and_propagates_none() {
         let before = ResourceSnapshot {
             rss: Some(100),
             threads: Some(5),
-            fds: None,
+            open_files: None,
         };
         let after = ResourceSnapshot {
             rss: Some(30),
             threads: Some(9),
-            fds: Some(3),
+            open_files: Some(3),
         };
         let growth = after.growth_from(&before);
         assert_eq!(growth.rss, Some(0), "a shrink saturates to zero");
         assert_eq!(growth.threads, Some(4), "growth is the delta");
         assert_eq!(
-            growth.fds, None,
+            growth.open_files, None,
             "a missing baseline sample propagates None"
         );
     }

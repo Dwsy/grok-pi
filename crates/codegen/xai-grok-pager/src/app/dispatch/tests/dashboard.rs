@@ -872,10 +872,11 @@ fn dashboard_confirm_worktree_applies_pending_model_and_plan() {
     let agent = &app.agents[&wt_id];
     assert_eq!(
         agent.session.deferred_model_switch,
-        Some((
+        Some(crate::app::agent::DeferredModelSwitch {
             model_id,
-            Some(xai_grok_shell::sampling::types::ReasoningEffort::High)
-        )),
+            effort: Some(xai_grok_shell::sampling::types::ReasoningEffort::High),
+            prev_model_id: None,
+        }),
         "effort must be stashed for the shell",
     );
     assert_eq!(
@@ -1016,7 +1017,6 @@ fn dashboard_image_dispatch_cancel_rewind_resends_attachment() {
 fn dashboard_dispatch_send_before_paste_probe_keeps_image() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let mut app = test_app_with_agent();
-    app.project_picker_shown = true;
     open_dashboard(&mut app);
     crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook::with_raster(
         None,
@@ -1112,7 +1112,6 @@ fn dashboard_dispatch_send_before_paste_probe_keeps_image() {
 fn dashboard_second_stash_does_not_overwrite_first() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let mut app = test_app_with_agent();
-    app.project_picker_shown = true;
     open_dashboard(&mut app);
     let row = crate::views::dashboard::DashboardRowId::TopLevel(AgentId(0));
     let fields = crate::views::dashboard::peek::compute_peek_fields(&row, &app.agents)
@@ -1364,6 +1363,7 @@ fn idle_roster_entry(session_id: &str, title: &str) -> crate::app::roster::Roste
         model_id: None,
         yolo: false,
         activity: crate::app::roster::RosterActivity::Dormant,
+        last_turn_summary: None,
         resident: false,
         last_change_unix_ms: 1,
         origin: crate::app::roster::RosterOrigin::default(),
@@ -1770,6 +1770,61 @@ fn dashboard_slash_compact_does_not_spawn() {
         "unexpected toast: {toast}"
     );
 }
+/// Extensions / config-agents modals only mount on an agent view. From the
+/// dashboard they must toast (not silently clear the dispatch input).
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_slash_session_modals_toast_instead_of_noop() {
+    let mut app = three_agent_app();
+    open_dashboard(&mut app);
+    let before = app.agents.len();
+    for name in [
+        "hooks",
+        "plugins",
+        "marketplace",
+        "skills",
+        "mcps",
+        "config-agents",
+        "personas",
+    ] {
+        let command = format!("/{name}");
+        let expected = format!(
+            "{} /{name} only works in a session. Open an agent first.",
+            crate::glyphs::ballot_x()
+        );
+        let effects = dispatch_dashboard_dispatch_slash(&mut app, command);
+        assert!(
+            effects.is_empty(),
+            "/{name}: must not enqueue effects, got {effects:?}"
+        );
+        assert_eq!(app.agents.len(), before, "/{name}: must not add an agent");
+        assert!(
+            matches!(app.active_view, ActiveView::AgentDashboard),
+            "/{name}: must stay on dashboard"
+        );
+        let dashboard = app.dashboard.as_ref().unwrap();
+        assert_eq!(
+            dashboard.dispatch.text(),
+            "",
+            "/{name}: dispatch input must clear"
+        );
+        assert_eq!(
+            dashboard.error_toast.as_deref(),
+            Some(expected.as_str()),
+            "/{name}: unexpected toast"
+        );
+        for agent in app.agents.values() {
+            assert!(
+                agent.extensions_modal.is_none(),
+                "/{name}: extensions modal must stay closed"
+            );
+            assert!(
+                agent.agents_modal.is_none(),
+                "/{name}: agents modal must stay closed"
+            );
+        }
+    }
+}
 /// Shift+Tab (`DashboardCycleMode`) rotates Normal → Plan →
 /// Always-Approve → Normal.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
@@ -2062,10 +2117,11 @@ fn dashboard_dispatch_applies_pending_model_and_plan() {
     let agent = &app.agents[&new_id];
     assert_eq!(
         agent.session.deferred_model_switch,
-        Some((
+        Some(crate::app::agent::DeferredModelSwitch {
             model_id,
-            Some(xai_grok_shell::sampling::types::ReasoningEffort::High)
-        )),
+            effort: Some(xai_grok_shell::sampling::types::ReasoningEffort::High),
+            prev_model_id: None,
+        }),
         "effort must be stashed for the shell"
     );
     assert_eq!(
@@ -2103,10 +2159,11 @@ fn dashboard_new_agent_button_applies_pending_model_and_plan() {
     let agent = &app.agents[&new_id];
     assert_eq!(
         agent.session.deferred_model_switch,
-        Some((
+        Some(crate::app::agent::DeferredModelSwitch {
             model_id,
-            Some(xai_grok_shell::sampling::types::ReasoningEffort::High)
-        )),
+            effort: Some(xai_grok_shell::sampling::types::ReasoningEffort::High),
+            prev_model_id: None,
+        }),
         "effort must be stashed for the shell"
     );
     assert_eq!(
@@ -2557,6 +2614,7 @@ fn dashboard_attach_subagent_switches_to_parent_with_subagent_focused() {
         crate::app::agent_view::BannerSlotParams::none(),
         &crate::app::bundle::BundleState::default(),
         false,
+        false,
         &mut Vec::new(),
         crate::app::agent_view::AppRenderParams::default(),
     );
@@ -2838,6 +2896,65 @@ fn dashboard_select_without_dashboard_is_noop() {
     let effects = dispatch(Action::DashboardSelectNext, &mut app);
     assert!(effects.is_empty());
     assert!(app.dashboard.is_none());
+}
+/// Dashboard state is preserved across reopen; leftover exit-alias text
+/// must be cleared so the next Enter does not quit.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_exit_alias_clears_dispatch_text() {
+    let mut app = test_app_with_agent();
+    mark_agent_nonempty(&mut app, AgentId(0));
+    app.active_view = ActiveView::Agent(AgentId(0));
+    open_dashboard(&mut app);
+    app.dashboard.as_mut().unwrap().dispatch.set_text(":wq");
+    let _ = dispatch_exit_dashboard(&mut app);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().dispatch.text(),
+        "",
+        "exit-alias text must be cleared so reopen Enter does not quit"
+    );
+    let _ = dispatch_open_dashboard(&mut app);
+    assert_eq!(app.dashboard.as_ref().unwrap().dispatch.text(), "");
+}
+/// Bare exit aliases in the dashboard dispatch box quit the CLI (same as
+/// agent-prompt send) and must not spawn a session.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_bare_exit_quits_cli() {
+    let mut app = test_app_with_agent();
+    mark_agent_nonempty(&mut app, AgentId(0));
+    app.active_view = ActiveView::Agent(AgentId(0));
+    open_dashboard(&mut app);
+    let before = app.agents.len();
+    for text in ["exit", "quit", ":q", ":wq", ":wq!"] {
+        app.active_view = ActiveView::AgentDashboard;
+        let effects = dispatch_dashboard_dispatch(&mut app, text.into(), false);
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::Quit)),
+            "{text:?} must quit the CLI, got: {effects:?}"
+        );
+        assert_eq!(app.agents.len(), before, "{text:?} must not spawn");
+    }
+}
+/// `/exit` / `/quit` on the dashboard also quit the CLI (not spawn, not
+/// merely leave the dashboard).
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_slash_exit_quits_cli() {
+    let mut app = test_app_with_agent();
+    mark_agent_nonempty(&mut app, AgentId(0));
+    app.active_view = ActiveView::Agent(AgentId(0));
+    open_dashboard(&mut app);
+    let before = app.agents.len();
+    for cmd in ["/exit", "/quit"] {
+        app.active_view = ActiveView::AgentDashboard;
+        let effects = dispatch_dashboard_dispatch_slash(&mut app, cmd.into());
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::Quit)),
+            "{cmd} must quit the CLI, got: {effects:?}"
+        );
+        assert_eq!(app.agents.len(), before, "{cmd} must not spawn");
+    }
 }
 /// Ctrl+\ from the dashboard exits back to
 /// whichever agent view was active before. Since `/dashboard`

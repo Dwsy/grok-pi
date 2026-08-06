@@ -35,7 +35,7 @@ Each entry records:
 
 ## [a5589e9] — 2026-08-07
 
-> **Status:** Recorded for review; not merged.
+> **Status:** Integrated and verified on isolated branch `sync/upstream-a5589e9`; not delivered to local `main` and not pushed.
 
 - **Sync range:** `a422116..a5589e9` (`a4221165824e5b1f5c4c10b7459f65e78dd6448d` → `a5589e958437d79e13db026eedcb1720bffd4063`)
 - **Upstream commits:** 4 (`Synced from monorepo`)
@@ -161,7 +161,7 @@ This four-commit sync is dominated by Shell and Pager lifecycle, session, queue,
 - ACP session resume/close and restored-child registration must not transfer session ownership away from Pi or make `pi-grok-adapter` stateful; upstream does not touch the fork-only adapter crate.
 - Queue reordering, send-now preservation, and background-parent continuation overlap grok-pi's Pi-owned queue mirror and require focused state-machine validation.
 - Pager `/resume`, dashboard, plan approval, model selection, terminal teardown, copy, and modal changes overlap native external-profile seams and should be reapplied surgically in an isolated worktree.
-- Permission-path normalization, read-only Git auto-approval, sandbox metadata, MCP kill-switch enforcement, and auth changes require focused security/error-path checks; `SOURCE_REV`, `AGENTS.md` base, and verifier baselines remain unchanged until a separately authorized merge is completed and verified.
+- Permission-path normalization, read-only Git auto-approval, sandbox metadata, MCP kill-switch enforcement, and auth changes received focused security/error-path checks. This verified isolated integration updates `SOURCE_REV` and the `AGENTS.md` base without broadening verifier allowlists; delivery to local `main` remains separately authorized.
 
 ## [a422116] — 2026-08-01
 

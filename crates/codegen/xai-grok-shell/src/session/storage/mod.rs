@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Seek};
 use std::path::{Path, PathBuf};
 
 use crate::extensions::notification::SessionNotification;
@@ -490,22 +490,6 @@ impl UpdatesIterator {
         }))
     }
 
-    /// Create a new iterator starting at the given byte offset.
-    /// Returns None if the file doesn't exist.
-    /// Used for delta replay: read only updates appended after a known offset.
-    pub fn open_at(path: &Path, offset: u64) -> io::Result<Option<Self>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let file = std::fs::File::open(path)?;
-        let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::Start(offset))?;
-        Ok(Some(Self {
-            reader,
-            line_buffer: String::new(),
-        }))
-    }
-
     /// Returns the current byte position in the underlying file.
     /// After iterating, this is the offset of the next unread byte (i.e., EOF
     /// if all updates were consumed). Used to record the replay end offset for
@@ -935,28 +919,32 @@ impl UserRunTurnTracker {
     }
 }
 
-/// Calculate how many updates to keep for a given target prompt index (0-based, inclusive).
-///
-/// Progressive: unmarked user runs before the first `_meta.promptIndex` count
-/// as turns; after the first marker only marked runs count (phantoms omit it).
-pub fn updates_truncate_for_prompt(updates: &[SessionUpdate], target_prompt_index: usize) -> usize {
+/// How many items to keep for `target_prompt_index` (0-based, inclusive):
+/// the scan cuts at the opening chunk of the next counted turn. Unmarked
+/// user runs count as turns only before the first `_meta.promptIndex`.
+fn truncate_for_prompt_by<T>(
+    items: &[T],
+    target_prompt_index: usize,
+    classify: impl Fn(&T) -> RewindStep,
+) -> usize {
     let mut user_turn_count = 0;
     let mut tracker = UserRunTurnTracker::new();
 
-    for (i, update) in updates.iter().enumerate() {
-        if is_acp_user_message_chunk(update) && !is_host_turn_update(update) {
-            if tracker.on_user_chunk(acp_user_chunk_prompt_index(update)) {
-                user_turn_count += 1;
-                if user_turn_count > target_prompt_index + 1 {
-                    return i;
+    for (i, item) in items.iter().enumerate() {
+        match classify(item) {
+            RewindStep::UserChunk { prompt_index } => {
+                if tracker.on_user_chunk(prompt_index) {
+                    user_turn_count += 1;
+                    if user_turn_count > target_prompt_index + 1 {
+                        return i;
+                    }
                 }
             }
-        } else {
-            tracker.on_non_user();
+            RewindStep::Rewind { .. } | RewindStep::Other => tracker.on_non_user(),
         }
     }
 
-    updates.len()
+    items.len()
 }
 
 #[derive(Debug)]
@@ -1014,6 +1002,14 @@ pub trait StorageAdapter: Send + Sync {
         info: &Info,
         session_title: String,
     ) -> io::Result<bool>;
+
+    /// Replace or clear (`None`) the per-turn dashboard summary
+    /// (`(text, prompt_id)`) in `summary.json`; last-writer-wins.
+    async fn set_last_turn_summary(
+        &self,
+        info: &Info,
+        summary: Option<(String, String)>,
+    ) -> io::Result<()>;
 
     /// Append a session update (ACP update or xAI extension update) and increment counter
     async fn append_update(&self, info: &Info, update: &SessionUpdate) -> io::Result<()>;
@@ -1310,6 +1306,7 @@ pub(crate) struct RawChunkMetaPeek {
 }
 
 /// Role of one item in the rewind timeline, as seen by [`filter_rewind_by`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RewindStep {
     /// Rewind marker: truncate survivors back to `target`'s prompt boundary.
     Rewind { target: usize },
@@ -2779,6 +2776,48 @@ mod tests {
         )))
     }
 
+    /// The fork copy classifies raw lines while replay parity tests classify
+    /// typed updates; a divergence between the two classifiers would silently
+    /// shift fork truncation boundaries.
+    #[test]
+    fn rewind_step_classifiers_agree_on_serialized_updates() {
+        let rewind = SessionUpdate::Xai(Box::new(
+            crate::extensions::notification::SessionNotification {
+                session_id: acp::SessionId::new("s"),
+                update: crate::extensions::notification::SessionUpdate::RewindMarker {
+                    target_prompt_index: 2,
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                },
+                meta: None,
+            },
+        ));
+        let host_turn_chunk = {
+            let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(
+                "host".to_string(),
+            )))
+            .meta(serde_json::json!({ "hostTurn": true }).as_object().cloned());
+            SessionUpdate::Acp(Box::new(acp::SessionNotification::new(
+                acp::SessionId::new("s"),
+                acp::SessionUpdate::UserMessageChunk(chunk),
+            )))
+        };
+        for update in [
+            user_chunk("plain", None),
+            user_chunk("marked", Some(4)),
+            host_turn_chunk,
+            agent_chunk("agent"),
+            rewind,
+        ] {
+            let envelope = SessionUpdateEnvelope::from_update(&update).unwrap();
+            let line = serde_json::to_string(&envelope).unwrap();
+            assert_eq!(
+                rewind_step_for_line(&line),
+                rewind_step_for_update(&update),
+                "raw and typed classification must agree for {line}"
+            );
+        }
+    }
+
     #[test]
     fn updates_truncate_ignores_unmarked_phantoms_when_markers_present() {
         let updates = vec![
@@ -2792,7 +2831,7 @@ mod tests {
             agent_chunk("A2"),
         ];
         // Keep through P1 (indices 0,1); cut at start of P2 run.
-        let cut = updates_truncate_for_prompt(&updates, 1);
+        let cut = truncate_for_prompt_by(&updates, 1, rewind_step_for_update);
         assert_eq!(cut, 6);
         assert!(matches!(
             &updates[cut],
@@ -2810,9 +2849,18 @@ mod tests {
             .map(|i| user_chunk(&format!("P{i}"), Some(i)))
             .collect();
         // Target 2 keeps turns 0 and 1; cut at P2 (index 2).
-        assert_eq!(updates_truncate_for_prompt(&updates, 1), 2);
-        assert_eq!(updates_truncate_for_prompt(&updates, 2), 3);
-        assert_eq!(updates_truncate_for_prompt(&updates, 5), 6);
+        assert_eq!(
+            truncate_for_prompt_by(&updates, 1, rewind_step_for_update),
+            2
+        );
+        assert_eq!(
+            truncate_for_prompt_by(&updates, 2, rewind_step_for_update),
+            3
+        );
+        assert_eq!(
+            truncate_for_prompt_by(&updates, 5, rewind_step_for_update),
+            6
+        );
     }
 
     /// Mixed stream: unmarked runs before the first promptIndex still count.
@@ -2831,10 +2879,19 @@ mod tests {
             agent_chunk("A3"),
         ];
         // Target 1 keeps old0+old1; cut at new2.
-        assert_eq!(updates_truncate_for_prompt(&updates, 1), 4);
+        assert_eq!(
+            truncate_for_prompt_by(&updates, 1, rewind_step_for_update),
+            4
+        );
         // Target 2 keeps through A2 (and phantom run does not add a turn); cut at new3.
-        assert_eq!(updates_truncate_for_prompt(&updates, 2), 8);
-        assert_eq!(updates_truncate_for_prompt(&updates, 0), 2);
+        assert_eq!(
+            truncate_for_prompt_by(&updates, 2, rewind_step_for_update),
+            8
+        );
+        assert_eq!(
+            truncate_for_prompt_by(&updates, 0, rewind_step_for_update),
+            2
+        );
     }
 
     #[test]

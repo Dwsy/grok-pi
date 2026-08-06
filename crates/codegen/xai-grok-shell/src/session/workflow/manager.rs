@@ -7,9 +7,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use xai_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 
-use super::backend::HostDrainOutcome;
-use super::backend::{GrokSubagentBackend, WorkflowAgentBackend};
-use super::host_service::{TelemetryHook, WorkflowHostParams, spawn_workflow_host_service};
+use super::backend::{HostDrainOutcome, WorkflowAgentBackend};
+use super::host_service::{
+    TelemetryHook, WORKFLOW_MAX_CONCURRENT_AGENTS, WorkflowHostParams, spawn_workflow_host_service,
+};
 use super::notify::WorkflowNotifySender;
 use super::registry::{ResolvedWorkflow, WorkflowSource};
 use super::store::WorkflowRunStore;
@@ -65,6 +66,7 @@ pub(crate) struct WorkflowManager {
     templates: HashMap<String, String>,
     active: HashMap<String, ActiveRun>,
     retiring: Vec<(String, oneshot::Receiver<()>)>,
+    max_concurrent_agents: usize,
 }
 
 impl WorkflowManager {
@@ -94,7 +96,13 @@ impl WorkflowManager {
             templates,
             active: HashMap::new(),
             retiring: Vec::new(),
+            max_concurrent_agents: WORKFLOW_MAX_CONCURRENT_AGENTS,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_max_concurrent_agents(&mut self, n: usize) {
+        self.max_concurrent_agents = n.max(1);
     }
 
     pub(crate) fn tracker(&self) -> Arc<parking_lot::Mutex<WorkflowTracker>> {
@@ -251,6 +259,7 @@ impl WorkflowManager {
                 templates: self.templates.clone(),
                 telemetry: self.telemetry.clone(),
                 cancel: cancel.clone(),
+                concurrency: Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_agents)),
             },
             host_rx,
         );
@@ -408,11 +417,9 @@ impl WorkflowManager {
             tracker.clone(),
             store,
             notify,
-            Arc::new(
-                crate::session::workflow::backend::MockWorkflowAgentBackend {
-                    output: Arc::from("mock"),
-                },
-            ),
+            Arc::new(super::backend::MockWorkflowAgentBackend {
+                output: Arc::from("mock"),
+            }),
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
             std::collections::HashMap::new(),
@@ -708,76 +715,12 @@ mod tests {
             tracker,
             store,
             notify,
-            Arc::new(GrokSubagentBackend {
-                subagent_event_tx: subagent_tx,
-                parent_session_id: "test-session".to_string(),
-            }),
+            subagent_tx,
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
             HashMap::new(),
         );
         (manager, event_rx, cancels)
-    }
-
-    #[tokio::test]
-    async fn mock_backend_runs_agent_call_in_rhai() {
-        let dir = tempfile::tempdir().unwrap();
-        let tracker = Arc::new(parking_lot::Mutex::new(WorkflowTracker::default()));
-        let (persist_tx, mut persist_rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Some(message) = persist_rx.recv().await {
-                if let PersistenceMsg::WorkflowRunStateAndAck { respond_to, .. } = message {
-                    let _ = respond_to.send(Ok(()));
-                }
-            }
-        });
-        let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
-        let store = WorkflowRunStore::new(Some(dir.path().to_path_buf()), persist_tx.clone());
-        let notify = WorkflowNotifySender::new(
-            agent_client_protocol::SessionId::new("test-session"),
-            xai_acp_lib::AcpAgentGatewaySender::new(gateway_tx),
-            persist_tx,
-            store.clone(),
-        );
-        let mut manager = WorkflowManager::new(
-            "test-session".into(),
-            Some(dir.path().to_path_buf()),
-            std::env::temp_dir(),
-            tracker,
-            store,
-            notify,
-            Arc::new(
-                crate::session::workflow::backend::MockWorkflowAgentBackend {
-                    output: Arc::from("from-mock-backend"),
-                },
-            ),
-            Arc::new(|_, _, _| {}),
-            mpsc::unbounded_channel().0,
-            HashMap::new(),
-        );
-        let resolved = resolve_inline(
-            r#"
-let meta = #{ name: "mock-agent-run", description: "d" };
-let r = agent("hello");
-complete(r.output);
-"#
-            .into(),
-        )
-        .unwrap();
-        let (run_id, outcome_rx) = manager.launch(resolved, spec()).unwrap();
-        let outcome = outcome_rx.await.unwrap();
-        match outcome {
-            WorkflowOutcome::Completed { result } => {
-                let text = result.as_str().unwrap_or_default();
-                assert_eq!(text, "from-mock-backend");
-            }
-            other => panic!("expected completed, got {other:?}"),
-        }
-        let state = manager.tracker.lock().get(&run_id).unwrap();
-        assert_eq!(
-            state.status,
-            crate::session::workflow::tracker::WorkflowRunStatus::Complete
-        );
     }
 
     fn spec() -> LaunchSpec {
@@ -787,6 +730,46 @@ complete(r.output);
             agent_budget: None,
             resume_run_id: None,
         }
+    }
+
+    fn parallel_n_script(n: usize) -> String {
+        format!(
+            "let meta = #{{ name: \"t\", description: \"d\" }};\n\
+             let jobs = [];\n\
+             let i = 0;\n\
+             while i < {n} {{\n\
+                 jobs.push(#{{ prompt: \"work \" + i.to_string() }});\n\
+                 i += 1;\n\
+             }}\n\
+             let results = parallel(jobs);\n\
+             complete(results.len());"
+        )
+    }
+
+    async fn recv_spawn(
+        rx: &mut SubagentEventRx,
+    ) -> xai_grok_tools::implementations::grok_build::task::types::SubagentSpawnRequest {
+        use xai_grok_tools::implementations::grok_build::task::types::SubagentEvent;
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(SubagentEvent::Spawn(req))) => req,
+            Ok(Some(_)) => panic!("expected spawn, got a non-spawn event"),
+            Ok(None) => panic!("expected spawn, channel closed"),
+            Err(_) => panic!("expected spawn, timed out"),
+        }
+    }
+
+    fn complete_spawn(
+        req: xai_grok_tools::implementations::grok_build::task::types::SubagentSpawnRequest,
+    ) {
+        use xai_grok_tools::implementations::grok_build::task::types::SubagentResult;
+        let id = req.id.clone();
+        let _ = req.result_tx.send(SubagentResult {
+            success: true,
+            output: std::sync::Arc::from("ok"),
+            subagent_id: id.clone(),
+            child_session_id: id,
+            ..Default::default()
+        });
     }
 
     #[tokio::test]
@@ -1553,5 +1536,67 @@ complete(r.output);
             state.status,
             crate::session::workflow::tracker::WorkflowRunStatus::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn parallel_panel_respects_concurrency_cap() {
+        const CAP: usize = 2;
+        const N: usize = 6;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        manager.test_set_max_concurrent_agents(CAP);
+        let (_run_id, outcome_rx) = manager
+            .launch(resolve_inline(parallel_n_script(N)).unwrap(), spec())
+            .unwrap();
+
+        let mut live = Vec::new();
+        for _ in 0..CAP {
+            live.push(recv_spawn(&mut subagent_rx).await);
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), subagent_rx.recv())
+                .await
+                .is_err(),
+            "more than {CAP} children were live"
+        );
+
+        let mut completed = 0usize;
+        while completed + live.len() < N {
+            complete_spawn(live.remove(0));
+            completed += 1;
+            live.push(recv_spawn(&mut subagent_rx).await);
+        }
+        for req in live {
+            complete_spawn(req);
+        }
+
+        match outcome_rx.await.unwrap() {
+            WorkflowOutcome::Completed { result } => assert_eq!(result, serde_json::json!(N)),
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_drops_queued_spawns_before_coordinator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        manager.test_set_max_concurrent_agents(1);
+        let (run_id, outcome_rx) = manager
+            .launch(resolve_inline(parallel_n_script(4)).unwrap(), spec())
+            .unwrap();
+
+        let first = recv_spawn(&mut subagent_rx).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), subagent_rx.recv())
+                .await
+                .is_err(),
+            "queued agents reached the coordinator before cancel"
+        );
+
+        assert!(manager.cancel(&run_id));
+        let _ = outcome_rx.await;
+        assert!(first.cancel_token.is_cancelled());
+        assert!(subagent_rx.try_recv().is_err());
     }
 }

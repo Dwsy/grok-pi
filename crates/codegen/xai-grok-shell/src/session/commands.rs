@@ -76,7 +76,7 @@ pub struct PromptTurnOk {
 }
 /// Result of a prompt turn, containing the stop reason, accumulated token count,
 /// and an optional turn-end signals snapshot (for trace metadata enrichment).
-pub type PromptTurnResult = Result<PromptTurnOk, acp::Error>;
+pub(crate) type PromptTurnResult = Result<PromptTurnOk, acp::Error>;
 /// Convenience: successful end-of-turn result.
 pub(crate) fn ok_end_turn(tokens: u64, snapshot: Option<TurnDeltaSnapshot>) -> PromptTurnResult {
     Ok(PromptTurnOk {
@@ -135,6 +135,56 @@ pub struct TaskWakeFallback {
 pub struct TaskWakeAdmission {
     pub respond_to: oneshot::Sender<bool>,
     pub fallback: TaskWakeFallback,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownKind {
+    /// Running work survives (idle unload, process quiesce, subagent teardown).
+    Graceful,
+    CancelRunningTurn,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelTrigger {
+    Esc,
+    /// The one trigger with a side effect: suppresses queued task wakes.
+    CtrlC,
+    SendNow,
+    Shutdown,
+    SessionClose,
+    SessionDelete,
+    Client(String),
+}
+impl CancelTrigger {
+    /// Parse a client's `_meta.cancelTrigger`. Internal spellings land in
+    /// [`Self::Client`], so a client-supplied string never maps to an
+    /// internal trigger.
+    pub fn from_client(s: &str) -> Self {
+        match s {
+            "esc" => Self::Esc,
+            "ctrl_c" => Self::CtrlC,
+            other => Self::Client(other.to_string()),
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Esc => "esc",
+            Self::CtrlC => "ctrl_c",
+            Self::SendNow => "send_now",
+            Self::Shutdown => "shutdown",
+            Self::SessionClose => "session_close",
+            Self::SessionDelete => "session_delete",
+            Self::Client(s) => s,
+        }
+    }
+}
+#[derive(Debug, Clone, Default)]
+pub struct CancelOptions {
+    pub cancel_subagents: bool,
+    pub kill_background_tasks: bool,
+    pub rewind_if_no_output: bool,
+    /// Reporting only, aside from the task-wake suppression `CtrlC` opts into.
+    pub trigger: Option<CancelTrigger>,
+    /// Drives the cancel-rate metric.
+    pub user_initiated: bool,
 }
 pub enum SessionCommand {
     Initialize {
@@ -386,7 +436,7 @@ pub enum SessionCommand {
     /// Flush the replay buffer and persistence, then signal completion.
     /// Used during reconnect to ensure all buffered content is persisted before replay.
     FlushComplete {
-        respond_to: oneshot::Sender<()>,
+        respond_to: oneshot::Sender<std::io::Result<()>>,
     },
     /// Update MCP servers for an existing session (used during reconnect or
     /// mid-session via the `x.ai/session/update_mcp_servers` extension method).
@@ -619,24 +669,8 @@ pub enum SessionCommand {
         /// no-ops the whole thing, edited text included).
         new_text: Option<String>,
     },
-    /// Cancel the running turn. `kill_background_tasks` distinguishes a hard
-    /// teardown (subagent shutdown — drains the whole queue) from a normal
-    /// interactive cancel (Ctrl+C — preserves queued user prompts so the next
-    /// one auto-runs). Ctrl+C tears down the running turn and queued terminal
-    /// task-completion wakes; other cancel triggers tear down only the running
-    /// turn. The follow-up `maybe_start_running_task` promotes the next item.
-    Cancel {
-        cancel_subagents: bool,
-        kill_background_tasks: bool,
-        rewind_if_pristine: bool,
-        /// Free-form discriminator for *what* triggered the cancel, taken from
-        /// the `session/cancel` request `_meta.cancelTrigger` (e.g. `"esc"`,
-        /// `"ctrl_c"`). `None` for older clients and programmatic teardowns
-        /// (subagent shutdown). Recorded in the `mid_turn_abort` turn-end's
-        /// `cancellation_context` JSON; the category stays `MidTurnAbort`.
-        trigger: Option<String>,
-    },
-    Shutdown,
+    Cancel(CancelOptions),
+    Shutdown(ShutdownKind),
     /// Force-trigger a feedback request notification for local client testing.
     /// Bypasses all heuristics, sampling, and cooldown checks.
     TriggerTestFeedback {

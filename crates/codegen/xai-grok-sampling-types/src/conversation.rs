@@ -2368,6 +2368,51 @@ mod tests {
     use crate::tool_overrides::*;
     use assert_matches::assert_matches;
 
+    /// Keeps `forwards_prompt_cache_key()` honest against each mapping: a key that never reaches the wire looks like a 0% cache hit, not a bug.
+    #[test]
+    fn prompt_cache_key_reaches_the_wire_only_where_the_backend_claims() {
+        let request = || ConversationRequest {
+            items: vec![ConversationItem::user("hi")],
+            model: Some("test-model".to_string()),
+            prompt_cache_key: Some("cache-key-1".to_string()),
+            ..Default::default()
+        };
+
+        for backend in [
+            crate::ApiBackend::ChatCompletions,
+            crate::ApiBackend::Responses,
+            crate::ApiBackend::Messages,
+        ] {
+            let on_wire = match backend {
+                crate::ApiBackend::Responses => {
+                    rs::CreateResponse::from(&request())
+                        .prompt_cache_key
+                        .as_deref()
+                        == Some("cache-key-1")
+                }
+                crate::ApiBackend::ChatCompletions => {
+                    let mapped = ChatCompletionRequest::from(request());
+                    serde_json::to_value(&mapped)
+                        .expect("chat request serializes")
+                        .get("prompt_cache_key")
+                        .is_some()
+                }
+                crate::ApiBackend::Messages => {
+                    let mapped = super::messages::build_messages_request(&request());
+                    serde_json::to_value(&mapped)
+                        .expect("messages request serializes")
+                        .get("prompt_cache_key")
+                        .is_some()
+                }
+            };
+            assert_eq!(
+                on_wire,
+                backend.forwards_prompt_cache_key(),
+                "{backend:?}: forwards_prompt_cache_key() disagrees with the mapping"
+            );
+        }
+    }
+
     #[test]
     fn prior_turn_interrupt_serde_round_trip_and_unknown_fallback() {
         for (variant, wire) in [

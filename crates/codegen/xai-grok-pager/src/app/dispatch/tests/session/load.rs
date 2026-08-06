@@ -1,66 +1,6 @@
 //! Tests for session loading, restore, pickers, and deep search.
 use super::*;
 use xai_grok_shell::session::unified_list::ListScope;
-#[test]
-fn external_resume_uses_current_tab_then_loads_all_on_refresh() {
-    use crate::views::modal::ActiveModal;
-
-    let mut app = test_app_with_agent();
-    app.external_agent = true;
-    let effects = dispatch(Action::ShowSessionPicker, &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::FetchExternalSessionCatalog { all: false, .. }]
-        ),
-        "external resume must initially request only the current folder, got {effects:?}"
-    );
-    let agent = get_active_agent_mut(&mut app).expect("active agent");
-    let Some(ActiveModal::SessionPicker {
-        source_filter,
-        window,
-        ..
-    }) = agent.active_modal.as_mut()
-    else {
-        panic!("expected external session picker");
-    };
-    assert_eq!(
-        *source_filter,
-        crate::views::session_picker::SourceFilter::External
-    );
-    assert_eq!(window.active_tab, 0);
-    window.active_tab = 1;
-
-    let effects = dispatch(Action::RefreshExternalSessionCatalog, &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::FetchExternalSessionCatalog { all: true, .. }]
-        ),
-        "All tab must request the global catalog, got {effects:?}"
-    );
-}
-
-#[test]
-fn follow_up_chip_bypasses_project_picker() {
-    let mut app = test_app_with_agent();
-    let id = AgentId(0);
-    app.cwd = PathBuf::from("/tmp");
-    app.project_picker_shown = false;
-    assert!(
-        app.needs_project_picker(),
-        "precondition: the picker would fire for a typed prompt here"
-    );
-    let effects = dispatch(Action::SubmitFollowUp("Summarize this".into()), &mut app);
-    assert!(
-        app.agents[&id].question_view.is_none(),
-        "a literal chip must not open the project question"
-    );
-    assert!(
-        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "Summarize this"),
-        "chip text must be sent literally, not swallowed, got {effects:?}"
-    );
-}
 /// Opening the cancel-turn picker while scrollback is focused must
 /// hand keyboard focus to the picker — otherwise up/down keys go
 /// to scrollback and the modal is only navigable via mouse.
@@ -111,7 +51,7 @@ fn session_loaded_with_restore_shows_summary_in_scrollback() {
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, Effect::HydrateSessionTitleFromDisk { .. }))
+            .any(|e| matches!(e, Effect::HydrateSessionMetaFromDisk { .. }))
     );
     assert!(
         effects
@@ -147,9 +87,11 @@ fn session_title_hydration_auto_leaves_display_name_none() {
     );
     let id = AgentId(0);
     dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
+        Action::TaskComplete(TaskResult::SessionMetaFromDisk {
             agent_id: id,
             title: Some(("Auto Title".into(), false)),
+            last_turn_summary: None,
+            last_turn_summary_gen: 0,
         }),
         &mut app,
     );
@@ -172,9 +114,11 @@ fn session_title_hydration_manual_restores_display_name_cold_cache_only() {
     );
     let id = AgentId(0);
     dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
+        Action::TaskComplete(TaskResult::SessionMetaFromDisk {
             agent_id: id,
             title: Some(("Disk Title".into(), true)),
+            last_turn_summary: None,
+            last_turn_summary_gen: 0,
         }),
         &mut app,
     );
@@ -185,9 +129,11 @@ fn session_title_hydration_manual_restores_display_name_cold_cache_only() {
     }
     app.agents.get_mut(&id).unwrap().display_name = Some("Fresh Rename".into());
     dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
+        Action::TaskComplete(TaskResult::SessionMetaFromDisk {
             agent_id: id,
             title: Some(("Stale Disk Title".into(), true)),
+            last_turn_summary: None,
+            last_turn_summary_gen: 0,
         }),
         &mut app,
     );
@@ -207,15 +153,85 @@ fn session_title_hydration_ignores_blank_title() {
     );
     let id = AgentId(0);
     dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
+        Action::TaskComplete(TaskResult::SessionMetaFromDisk {
             agent_id: id,
             title: Some(("   ".into(), true)),
+            last_turn_summary: None,
+            last_turn_summary_gen: 0,
         }),
         &mut app,
     );
     let agent = &app.agents[&id];
     assert!(agent.display_name.is_none());
     assert!(agent.generated_session_title.is_none());
+}
+/// The persisted last-turn summary hydrates cold-cache only: a value already
+/// set by a live `LastTurnSummary` delivery (always newer than any disk read)
+/// must not be overwritten by the slower disk result.
+#[test]
+fn last_turn_summary_hydration_is_cold_cache_only() {
+    let mut app = test_app();
+    dispatch(
+        Action::LoadSession("sess-title".into(), None, false),
+        &mut app,
+    );
+    let id = AgentId(0);
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionMetaFromDisk {
+            agent_id: id,
+            title: None,
+            last_turn_summary: Some("From disk".into()),
+            last_turn_summary_gen: 0,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        app.agents[&id].last_turn_summary.as_deref(),
+        Some("From disk")
+    );
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .set_last_turn_summary(Some("Live delivery".into()));
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionMetaFromDisk {
+            agent_id: id,
+            title: None,
+            last_turn_summary: Some("Stale disk read".into()),
+            last_turn_summary_gen: 0,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        app.agents[&id].last_turn_summary.as_deref(),
+        Some("Live delivery"),
+        "hydration is a cold-cache fallback, never an overwrite"
+    );
+}
+/// A rewind that clears `last_turn_summary` while disk hydration is in flight
+/// must not be undone by the late pre-rewind `summary.json` value.
+#[test]
+fn last_turn_summary_hydration_does_not_restore_after_rewind_clear() {
+    let mut app = test_app();
+    dispatch(
+        Action::LoadSession("sess-title".into(), None, false),
+        &mut app,
+    );
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().set_last_turn_summary(None);
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionMetaFromDisk {
+            agent_id: id,
+            title: None,
+            last_turn_summary: Some("Pre-rewind disk summary".into()),
+            last_turn_summary_gen: 0,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        app.agents[&id].last_turn_summary, None,
+        "stale disk hydrate must not re-apply a summary rewind already cleared"
+    );
 }
 /// A resumed session whose replay left entries marked running (bg tasks,
 /// scheduler runs, tools cut off when the previous process died) must
@@ -499,7 +515,7 @@ fn session_loaded_without_restore_no_summary() {
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, Effect::HydrateSessionTitleFromDisk { .. }))
+            .any(|e| matches!(e, Effect::HydrateSessionMetaFromDisk { .. }))
     );
     assert!(
         effects
@@ -1282,243 +1298,6 @@ fn session_restored_clears_stale_session_id() {
     assert_eq!(
         app.agents[&AgentId(1)].session.session_id,
         Some(acp::SessionId::new("remote-sess"))
-    );
-}
-#[test]
-fn project_picker_skip_falls_back_to_original_cwd() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    let qv = QuestionViewState::new("test".into(), vec![], StashedPrompt::default());
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/projects/a")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, true);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            stashed_prompt,
-            disable_picker,
-        }) => {
-            assert_eq!(path, PathBuf::from("/home/user"));
-            assert_eq!(stashed_prompt, "hello");
-            assert!(!disable_picker);
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn project_picker_freeform_path_used_when_no_option_selected() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use xai_grok_tools::implementations::grok_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![QuestionOption {
-            label: "A".into(),
-            description: String::new(),
-            preview: None,
-            id: None,
-        }],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.per_question_freeform[0] = "~/my-project".into();
-    qv.per_question_freeform_selected[0] = true;
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/fallback")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            let expanded = shellexpand::tilde("~/my-project");
-            assert_eq!(path, PathBuf::from(expanded.as_ref()));
-            assert!(!disable_picker, "freeform selection must not opt out");
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn project_picker_freeform_overrides_dont_ask() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionSelection, QuestionViewState};
-    use xai_grok_tools::implementations::grok_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let opt = |label: &str| QuestionOption {
-        label: label.into(),
-        description: String::new(),
-        preview: None,
-        id: None,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![opt("a (current)"), opt("Don't ask me again")],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.selections[0] = QuestionSelection::Single(Some(1));
-    qv.per_question_freeform[0] = "~/my-project".into();
-    qv.per_question_freeform_selected[0] = true;
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/home/user")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            let expanded = shellexpand::tilde("~/my-project");
-            assert_eq!(path, PathBuf::from(expanded.as_ref()));
-            assert!(
-                !disable_picker,
-                "freeform must take precedence over dont-ask"
-            );
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn needs_project_picker_false_when_disabled() {
-    let mut app = project_picker_app();
-    assert!(
-        app.needs_project_picker(),
-        "baseline: non-project dir, not yet shown"
-    );
-    app.project_picker_disabled = true;
-    assert!(
-        !app.needs_project_picker(),
-        "opt-out must suppress the picker before the cwd check"
-    );
-}
-#[test]
-fn project_picker_dont_ask_again_sets_disable_flag() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionSelection, QuestionViewState};
-    use xai_grok_tools::implementations::grok_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let opt = |label: &str| QuestionOption {
-        label: label.into(),
-        description: String::new(),
-        preview: None,
-        id: None,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![opt("a (current)"), opt("Don't ask me again")],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.selections[0] = QuestionSelection::Single(Some(1));
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/home/user")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            assert_eq!(path, PathBuf::from("/home/user"));
-            assert!(disable_picker, "don't-ask option must set disable_picker");
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn project_picker_recent_project_selection_uses_that_path() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionSelection, QuestionViewState};
-    use xai_grok_tools::implementations::grok_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let opt = |label: &str| QuestionOption {
-        label: label.into(),
-        description: String::new(),
-        preview: None,
-        id: None,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![
-            opt("home (current)"),
-            opt("alpha"),
-            opt("Don't ask me again"),
-        ],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.selections[0] = QuestionSelection::Single(Some(1));
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![
-            PathBuf::from("/home/user"),
-            PathBuf::from("/projects/alpha"),
-        ],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 2,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            assert_eq!(path, PathBuf::from("/projects/alpha"));
-            assert!(
-                !disable_picker,
-                "picking a recent project must not disable the picker"
-            );
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[tokio::test]
-async fn dispatch_project_selected_disable_picker_persists() {
-    let mut app = project_picker_app();
-    dispatch(Action::NewSession, &mut app);
-    let dir = std::env::temp_dir();
-    let selected = dunce::canonicalize(&dir).unwrap_or(dir);
-    let effects = dispatch(
-        Action::ProjectSelected {
-            path: selected,
-            stashed_prompt: "hello".into(),
-            disable_picker: true,
-        },
-        &mut app,
-    );
-    assert!(app.project_picker_disabled, "in-memory flag must be set");
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistProjectPickerDisabled { disabled: true })),
-        "must emit a persist effect for the opt-out",
     );
 }
 #[test]

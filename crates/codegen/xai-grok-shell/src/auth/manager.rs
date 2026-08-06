@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
+use xai_grok_auth::bearer_suffix;
 
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +15,9 @@ use tokio_util::sync::CancellationToken;
 mod enrichment;
 #[path = "manager/lock.rs"]
 pub(super) mod lock;
+#[path = "manager/remedy.rs"]
+mod remedy;
+pub(crate) use remedy::{AuthRemedy, SilentRefresh};
 #[path = "manager/sleep_gate.rs"]
 mod sleep_gate;
 
@@ -31,7 +35,6 @@ use xai_grok_telemetry::events::ManualAuthSurface;
 use super::model::UserInfo;
 use super::model::{
     AuthMode, GrokAuth, early_invalidation, is_expired, is_expired_with_buffer, lookup_auth,
-    token_suffix,
 };
 use super::refresh::{RefreshOutcome, TokenRefresher, resolve_refresh_credential};
 use super::storage::{
@@ -64,8 +67,8 @@ pub(crate) enum RefreshReason {
 pub(crate) const AUTH_LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
 /// Lock timeout for `refresh_chain`, held across the IdP call to prevent
-/// refresh-token reuse. Must exceed the external-auth refresh timeout
-/// (`EXTERNAL_AUTH_REFRESH_TIMEOUT`, 5 s) so followers wait rather than retry.
+/// refresh-token reuse. Must exceed the external-auth refresh budget
+/// (a single 7s run) so followers wait rather than retry.
 const REFRESH_LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(45);
 
 /// Long poll interval used by the proactive refresh task when no
@@ -203,6 +206,9 @@ pub struct AuthManager {
     /// Per-process `manual_auth` KPI debounce, shared by all recoveries on this
     /// manager so repeated 401s on the most-recent dead credential emit once.
     manual_auth: crate::auth::recovery::ManualAuthTracker,
+    /// First-party env key may advertise after initialize probe (default true).
+    /// Lives here (not on `MvpAgent`) so the probe verdict is auth-owned.
+    first_party_env_api_key_ok: std::sync::atomic::AtomicBool,
     /// When the current unbroken run of dark-wake refresh deferrals began, on
     /// two clocks (see [`DualClock`]); `None` outside such a run. Bounds the
     /// deferral to [`sleep_gate::DARK_WAKE_DEFER_MAX`] so a machine stuck
@@ -384,7 +390,7 @@ impl AuthManager {
                     "found": found.is_some(),
                     "auth_mode": found.as_ref().map(|a| format!("{:?}", a.auth_mode)),
                     "is_expired": found.as_ref().map(is_expired),
-                    "key_prefix": found.as_ref().map(|a| token_suffix(&a.key).to_owned()),
+                    "key_prefix": found.as_ref().map(|a| bearer_suffix(&a.key).to_owned()),
                 });
                 let state = if found.is_some() {
                     DiskAuthState::Ok
@@ -469,12 +475,25 @@ impl AuthManager {
             power_listener_started: std::sync::atomic::AtomicBool::new(false),
             power_listener: parking_lot::Mutex::new(None),
             manual_auth: Default::default(),
+            first_party_env_api_key_ok: std::sync::atomic::AtomicBool::new(true),
             dark_wake_defer_since: parking_lot::RwLock::new(None),
             #[cfg(test)]
             dark_wake_override: parking_lot::Mutex::new(None),
             #[cfg(test)]
             devbox_override: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Whether initialize's first-party env-key probe still allows advertising.
+    pub(crate) fn first_party_env_api_key_ok(&self) -> bool {
+        self.first_party_env_api_key_ok
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record initialize probe result for cached-token fallthrough advertise.
+    pub(crate) fn set_first_party_env_api_key_ok(&self, ok: bool) {
+        self.first_party_env_api_key_ok
+            .store(ok, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Clear the disk-loaded token if it violates the team pin (startup only;
@@ -639,7 +658,7 @@ impl AuthManager {
                 None,
                 Some(serde_json::json!({
                     "disk_state": format!("{last_state:?}"),
-                    "retained_key_prefix": token_suffix(&a.key),
+                    "retained_key_prefix": bearer_suffix(&a.key),
                     "was_expired": is_expired(&a),
                 })),
             );
@@ -665,7 +684,7 @@ impl AuthManager {
                 None,
                 Some(serde_json::json!({
                     "reason": reason,
-                    "dropped_key_prefix": token_suffix(&d.key),
+                    "dropped_key_prefix": bearer_suffix(&d.key),
                     "had_refresh_token": d.refresh_token.is_some(),
                     "was_expired": is_expired(&d),
                     "disk_state": (*self.disk_state.read()).map(|s| format!("{s:?}")),
@@ -902,8 +921,8 @@ impl AuthManager {
                 "auth update disk written",
                 None,
                 Some(serde_json::json!({
-                    "rt_prefix": auth.refresh_token.as_deref().map(token_suffix),
-                    "key_prefix": token_suffix(&auth.key),
+                    "rt_prefix": auth.refresh_token.as_deref().map(bearer_suffix),
+                    "key_prefix": bearer_suffix(&auth.key),
                     "elapsed_ms": elapsed_ms,
                 })),
             ),
@@ -963,8 +982,8 @@ impl AuthManager {
                 "auth update disk written (no enrichment)",
                 None,
                 Some(serde_json::json!({
-                    "rt_prefix": auth.refresh_token.as_deref().map(token_suffix),
-                    "key_prefix": token_suffix(&auth.key),
+                    "rt_prefix": auth.refresh_token.as_deref().map(bearer_suffix),
+                    "key_prefix": bearer_suffix(&auth.key),
                     "elapsed_ms": elapsed_ms,
                 })),
             ),
@@ -1010,7 +1029,7 @@ impl AuthManager {
     /// Used by [`ModelsManager`] to trigger model catalog recovery
     /// after sleep/wake, bypassing the FSEvents file watcher which
     /// can silently die on macOS after resume.
-    pub fn refresh_notifier(&self) -> Arc<tokio::sync::Notify> {
+    pub(crate) fn refresh_notifier(&self) -> Arc<tokio::sync::Notify> {
         self.refresh_notify.clone()
     }
 
@@ -1030,7 +1049,7 @@ impl AuthManager {
     /// to the primary refresh path instead of driving their own
     /// `ServerRejected` recovery, avoiding concurrent refresh storms that
     /// amplify 401 bursts at CCP.
-    pub async fn wait_for_token_refresh(&self, timeout: std::time::Duration) -> bool {
+    pub(crate) async fn wait_for_token_refresh(&self, timeout: std::time::Duration) -> bool {
         let pre_key = self.current().map(|a| a.key.clone());
         tokio::select! {
             _ = self.refresh_notify.notified() => {}
@@ -1102,9 +1121,9 @@ impl AuthManager {
         // log exists to capture.
         let prev = self
             .current_or_expired()
-            .map(|a| token_suffix(&a.key).to_owned());
+            .map(|a| bearer_suffix(&a.key).to_owned());
         let refreshed = self.try_use_disk_token(disk_auth.as_ref(), reason)?;
-        let adopted = token_suffix(&refreshed.key);
+        let adopted = bearer_suffix(&refreshed.key);
         xai_grok_telemetry::unified_log::info(
             msg,
             None,
@@ -1281,7 +1300,7 @@ impl AuthManager {
             "path": self.path.display().to_string(),
             "scope": &self.scope,
             "error": err_detail,
-            "key_prefix": auth.map(|a| token_suffix(&a.key).to_owned()),
+            "key_prefix": auth.map(|a| bearer_suffix(&a.key).to_owned()),
             "has_refresh_token": auth.map(|a| a.refresh_token.is_some()),
             "is_expired": auth.map(is_expired),
         });
@@ -1395,6 +1414,9 @@ impl AuthManager {
         // Snapshot inner ONCE for dispatch atomicity (closes a TOCTOU
         // where a concurrent `clear()` raced `token_type()` + `inner.read()`).
         let snapshot: Option<GrokAuth> = self.with_inner_read(|inner| inner.cloned());
+        // Kept alongside `snapshot`, which the grace arm below consumes: the
+        // devbox arms still need to name the credential they gave up on.
+        let snapshot_key: Option<String> = snapshot.as_ref().map(|a| a.key.clone());
         let token_type = TokenType::from_auth(snapshot.as_ref());
         tracing::Span::current().record("token_type", tracing::field::debug(token_type));
 
@@ -1427,7 +1449,7 @@ impl AuthManager {
             // preferred_method=api_key forbids automatic OIDC mint.
             if !self.grok_com_config.blocks_automatic_oidc()
                 && self.is_devbox_environment()
-                && let Ok(auth) = self.try_devbox_recovery().await
+                && let Ok(auth) = self.try_devbox_recovery(snapshot_key.as_deref()).await
             {
                 return Ok(auth);
             }
@@ -1502,7 +1524,7 @@ impl AuthManager {
         if result.is_err()
             && !self.grok_com_config.blocks_automatic_oidc()
             && self.is_devbox_environment()
-            && let Ok(auth) = self.try_devbox_recovery().await
+            && let Ok(auth) = self.try_devbox_recovery(snapshot_key.as_deref()).await
         {
             return Ok(auth);
         }
@@ -1533,7 +1555,15 @@ impl AuthManager {
     ///
     /// Fail-closed under `preferred_method=api_key` (no automatic OIDC mint),
     /// including direct callers such as sampler 401 recovery.
-    pub(crate) async fn try_devbox_recovery(self: &Arc<Self>) -> Result<GrokAuth, AuthError> {
+    ///
+    /// `unusable` is the credential the caller has already established cannot
+    /// work — the bearer the server rejected, or the snapshot that failed to
+    /// refresh. It is what makes the wait-on-the-lock double-check below mean
+    /// "somebody else fixed this" instead of "the dead token is still here".
+    pub(crate) async fn try_devbox_recovery(
+        self: &Arc<Self>,
+        unusable: Option<&str>,
+    ) -> Result<GrokAuth, AuthError> {
         if self.grok_com_config.blocks_automatic_oidc() {
             tracing::debug!(
                 "auth: devbox recovery skipped (preferred_method=api_key blocks automatic OIDC)"
@@ -1548,8 +1578,15 @@ impl AuthManager {
 
         let _guard = self.refresh_lock.lock().await;
 
-        // Double-check: another task may have recovered while we waited.
-        if let Some(auth) = self.current() {
+        // Double-check: another task may have recovered while we waited. Only
+        // a credential that is not the caller's `unusable` one counts. Without
+        // that filter a 401 on a still-locally-valid bearer reports recovery
+        // with the very token the server just rejected, and the caller
+        // resubmits it until its retry budget runs out.
+        if let Some(auth) = self
+            .current()
+            .filter(|auth| unusable != Some(auth.key.as_str()))
+        {
             return Ok(auth);
         }
 
@@ -1900,19 +1937,19 @@ impl AuthManager {
         attempted_key: Option<String>,
         _lock: &AuthFileLock,
     ) -> Result<GrokAuth, AuthError> {
-        let pre_key_prefix = attempted_key.as_deref().map(token_suffix);
+        let pre_key_suffix = attempted_key.as_deref().map(bearer_suffix);
         match outcome {
             RefreshOutcome::Success(new_auth) => match self.update(*new_auth).await {
                 Ok(auth) => {
-                    let new_prefix = token_suffix(&auth.key);
+                    let new_suffix = bearer_suffix(&auth.key);
                     xai_grok_telemetry::unified_log::info(
                         "auth.refresh.success",
                         None,
                         Some(serde_json::json!({
                             "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            "old_key_prefix": pre_key_prefix,
-                            "new_key_prefix": new_prefix,
-                            "key_changed": pre_key_prefix != Some(new_prefix),
+                            "old_key_prefix": pre_key_suffix,
+                            "new_key_prefix": new_suffix,
+                            "key_changed": pre_key_suffix != Some(new_suffix),
                         })),
                     );
                     tracing::info!(expires_at = ?auth.expires_at, "auth.refresh.success");
@@ -1993,8 +2030,8 @@ impl AuthManager {
                                 "reason": format!("{failed_reason:?}"),
                                 "tried_rt_prefix": tried_refresh_token
                                     .as_deref()
-                                    .map(token_suffix),
-                                "disk_rt_prefix": disk_rt.map(token_suffix),
+                                    .map(bearer_suffix),
+                                "disk_rt_prefix": disk_rt.map(bearer_suffix),
                             })),
                         );
                         return Err(AuthError::transient(format!(
@@ -2082,9 +2119,9 @@ impl AuthManager {
                 "auth: pick_up_sibling_token adopted",
                 None,
                 Some(serde_json::json!({
-                    "adopted_key_prefix": token_suffix(&a.key),
+                    "adopted_key_prefix": bearer_suffix(&a.key),
                     "expires_at": a.expires_at.map(|e| e.to_rfc3339()),
-                    "rt_prefix": a.refresh_token.as_deref().map(token_suffix),
+                    "rt_prefix": a.refresh_token.as_deref().map(bearer_suffix),
                 })),
             );
             self.with_inner_write(|inner| *inner = Some(a.clone()));
@@ -2202,10 +2239,8 @@ impl AuthManager {
     /// decision.
     pub(crate) fn requires_manual_reauth(&self) -> bool {
         use crate::auth::error::RefreshTokenError;
-        // Sticky IdP rejection of the credential a refresh would send:
-        // no retry can fix it.
         if let Some(AuthError::Refresh(RefreshTokenError::Permanent(e))) = self.permanent_failure()
-            && e.reason.is_sticky()
+            && e.reason.blocks_unattended_retry()
         {
             return true;
         }
@@ -2221,6 +2256,11 @@ impl AuthManager {
             .read_disk_auth_silent()
             .is_some_and(|a| a.refresh_token.is_some());
         !(mem_refreshable || disk_refreshable)
+    }
+
+    fn is_external_provider_refresh_authority(&self) -> bool {
+        self.grok_com_config.auth_provider_command.is_some()
+            && self.token_type() == TokenType::ExternalBinary
     }
 
     /// `true` iff a [`TokenRefresher`] is wired in. `false` for static-key
@@ -2435,7 +2475,7 @@ impl AuthManager {
                 // refreshes; later processes adopt the result here.
                 let adopted_from_sibling = this.pick_up_sibling_token();
                 if this.current().is_some() {
-                    let adopted = this.current().map(|a| token_suffix(&a.key).to_owned());
+                    let adopted = this.current().map(|a| bearer_suffix(&a.key).to_owned());
                     let expires_at = this
                         .inner
                         .read()
@@ -2477,7 +2517,7 @@ impl AuthManager {
                             None,
                             Some(serde_json::json!({
                                 "result": "success",
-                                "key_prefix": token_suffix(&auth.key),
+                                "key_prefix": bearer_suffix(&auth.key),
                                 "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
                             })),
                         );
@@ -2711,7 +2751,7 @@ impl AuthManager {
     }
 
     /// Set the process model key (empty clears). Not for session tokens.
-    pub fn set_process_static_api_key(&self, key: Option<String>) {
+    pub(crate) fn set_process_static_api_key(&self, key: Option<String>) {
         let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
         *self.process_static_api_key.write() = key;
     }

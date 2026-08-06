@@ -20,7 +20,7 @@ use crate::types::TaskSnapshot;
 use crate::types::output::ToolOutput;
 use crate::types::resources::{SharedResources, State, Terminal};
 use crate::types::tool::{Reminder, ToolKind};
-use crate::util::truncate::{PREVIEW_SIZE, truncate_with_preview};
+use crate::util::truncate::{PREVIEW_SIZE, PartialOutput, truncate_with_preview};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use xai_tool_types::KillTaskOutput;
@@ -151,7 +151,7 @@ pub fn format_bash_completion(
     render_completion_output_delivery(
         &mut msg,
         &task.task_id,
-        &task.output,
+        task.output_view(),
         task_output_name,
         disk_pointer_footer.as_deref(),
     );
@@ -357,7 +357,7 @@ pub(crate) fn task_owned_by_session(task: &TaskSnapshot, my_owner: Option<&str>)
 pub fn render_completion_output_delivery(
     buf: &mut String,
     subagent_id: &str,
-    output: &str,
+    output: PartialOutput<'_>,
     task_output_name: Option<&str>,
     disk_pointer_footer: Option<&str>,
 ) {
@@ -377,7 +377,7 @@ pub fn render_completion_output_delivery(
                 let _ = write!(buf, "response:\n{output}");
             }
             None => {
-                let _ = write!(buf, "response:\n{output}");
+                let _ = write!(buf, "response:\n{}", output.text());
             }
         },
     }
@@ -430,7 +430,13 @@ pub fn format_subagent_completion(
         Some(_) => "\n",
         None => "\n\n",
     });
-    render_completion_output_delivery(&mut out, &c.subagent_id, &c.output, task_output_name, None);
+    render_completion_output_delivery(
+        &mut out,
+        &c.subagent_id,
+        PartialOutput::whole(&c.output),
+        task_output_name,
+        None,
+    );
     out
 }
 /// Format buffered between-turn subagent completions into a system-reminder
@@ -463,7 +469,7 @@ pub fn format_between_turn_completions(
         render_completion_output_delivery(
             &mut buf,
             &c.subagent_id,
-            &c.output,
+            PartialOutput::whole(&c.output),
             task_output_name,
             None,
         );
@@ -808,6 +814,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("abc-123"));
@@ -836,6 +843,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_monitor_completion(&task, Some("get_command_or_subagent_output"));
         assert!(
@@ -870,6 +878,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_monitor_completion(&task, None);
         assert!(
@@ -899,6 +908,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("cargo test"));
@@ -925,6 +935,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("exit code: unknown"));
@@ -954,6 +965,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(
@@ -994,6 +1006,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(
@@ -1033,6 +1046,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("exit code: 0"));
@@ -1195,7 +1209,33 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         }
+    }
+    /// A log that cannot be read produces an empty snapshot with a
+    /// non-zero total. The completion must still say how big the output
+    /// is and where to read it.
+    #[test]
+    fn bash_completion_for_an_unreadable_log_still_points_at_the_file() {
+        let mut task = make_completed("bg-unreadable");
+        task.output = String::new();
+        task.truncated = true;
+        task.output_total_bytes = 123_456;
+        task.output_file = std::path::PathBuf::from("/tmp/bg-unreadable.log");
+        let msg = format_bash_completion(&task, None, Some("read_file"));
+        assert!(msg.contains("123456 bytes total"), "{msg}");
+        assert!(msg.contains("/tmp/bg-unreadable.log"), "{msg}");
+    }
+    /// The snapshot holds part of a large log. The footer the model reads must
+    /// state the task's real size, not the size of the part on hand.
+    #[test]
+    fn bash_completion_footer_states_the_real_log_size() {
+        let mut task = make_completed("bg-large");
+        task.output = "x".repeat(20_000);
+        task.output_total_bytes = 5_000_000;
+        task.output_file = std::path::PathBuf::from("/tmp/bg-large.log");
+        let msg = format_bash_completion(&task, None, Some("read_file"));
+        assert!(msg.contains("5000000 bytes total"), "{msg}");
     }
     fn make_running(id: &str) -> TaskSnapshot {
         TaskSnapshot {
@@ -1217,6 +1257,7 @@ mod tests {
             owner_session_id: None,
             description: None,
             is_backgrounded: false,
+            output_total_bytes: 0,
         }
     }
     fn make_bg_started(id: &str) -> crate::types::output::BackgroundTaskStarted {

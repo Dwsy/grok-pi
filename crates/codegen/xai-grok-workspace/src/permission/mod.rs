@@ -14,11 +14,12 @@ mod state;
 pub mod types;
 
 pub use auto_mode::{
-    AUTO_MODE_CLASSIFIER_SYSTEM_PROMPT, AutoFastPath, CLASSIFIER_TURN_MAX_LEN, ClassifierContext,
-    ClassifierFailure, ClassifierMessage, ClassifierMessageRole, ClassifierOutcome,
-    ClassifierPromptType, ClassifierSource, ClassifierTurn, ClassifierVerdict, ClassifyTextChannel,
-    ClassifyTextFn, FixedClassifier, HeuristicPermissionClassifier, LlmPermissionClassifier,
-    PermissionClassifier, SharedClassifier, access_requires_user_interaction, auto_mode_fast_path,
+    AUTO_MODE_CLASSIFIER_SYSTEM_PROMPT, AutoFastPath, BashSecurityAssessment,
+    CLASSIFIER_TURN_MAX_LEN, ClassifierContext, ClassifierFailure, ClassifierMessage,
+    ClassifierMessageRole, ClassifierOutcome, ClassifierPromptType, ClassifierSecurityFinding,
+    ClassifierSource, ClassifierTurn, ClassifierVerdict, ClassifyTextChannel, ClassifyTextFn,
+    FixedClassifier, HeuristicPermissionClassifier, LlmPermissionClassifier, PermissionClassifier,
+    SharedClassifier, access_requires_user_interaction, auto_mode_fast_path,
     build_classifier_messages, classifier_output_json_schema, default_auto_mode_classifier,
     is_auto_mode_allowlisted_access, is_auto_mode_allowlisted_tool_name,
     parse_classifier_model_output, parse_classifier_model_text, permission_decision_args,
@@ -36,7 +37,7 @@ pub use manager::{
     PermissionHandle, default_always_allow_scope, spawn_permission_manager,
     spawn_permission_manager_with_hub,
 };
-pub use policy::CompiledPolicy;
+pub use policy::{CompiledPolicy, bash_pattern_is_broad, bash_pattern_matches_command};
 pub use prompter::{
     ALLOW_EDITS_SESSION_OPTION_ID, AcpPrompter, BashCommandPermission, BashCommandSelectedTerms,
     ENABLE_ALWAYS_APPROVE_OPTION_ID, MCP_TOOL_NAME_DELIMITER, McpScopeSelection, McpToolPermission,

@@ -94,7 +94,7 @@ pub(crate) fn with_alpha_test_key(
     let _ = url;
     builder
 }
-pub fn is_configured(config: &GrokComConfig) -> bool {
+pub(crate) fn is_configured(config: &GrokComConfig) -> bool {
     config.oidc.is_some()
 }
 /// Peek at the unverified access token JWT to extract the `principal_type`
@@ -547,7 +547,7 @@ async fn refresh_tokens_once(
         tracing::warn!(
             http_status = status,
             oauth2_error = ?error_code,
-            rt_prefix = crate::auth::token_suffix(refresh_token),
+            rt_prefix = xai_grok_auth::bearer_suffix(refresh_token),
             client_id = %client_id,
             principal_type = ?principal_type,
             "OIDC: token refresh HTTP error"

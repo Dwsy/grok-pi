@@ -1,12 +1,11 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "0.2.117"
+version = "0.2.120"
 edition.workspace = true
 
 [features]
 default = []
-unstable = []
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
@@ -240,6 +239,10 @@ required-features = ["test-support"]
 
 [[test]]
 name = "test_session_load_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_fork_copy_memory"
 required-features = ["test-support"]
 
 [[test]]
