@@ -33,6 +33,136 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [a5589e9] — 2026-08-07
+
+> **Status:** Recorded for review; not merged.
+
+- **Sync range:** `a422116..a5589e9` (`a4221165824e5b1f5c4c10b7459f65e78dd6448d` → `a5589e958437d79e13db026eedcb1720bffd4063`)
+- **Upstream commits:** 4 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `4d6d11372ab8f73026a78c45a7b7e7b1310eb39f` (was `8d69c91f02bcacf01e98d5aebbf2f92547c45738`)
+- **Diff size:** 577 files changed, +44078 / −17588
+
+### Summary
+
+This four-commit sync is dominated by Shell and Pager lifecycle, session, queue, dashboard, plan, permission, and terminal behavior. It adds ACP session resume/close operations, bounded-memory session forking, richer queue controls, permission-pattern editing, sandbox metadata, sampling retries, and multiple dashboard/Pager affordances while hardening auth, `/resume`, background-task, tmux, MCP, and teardown paths. The range heavily overlaps grok-pi's Pager/session seams, so integration must remain isolated and preserve Pi as the sole agent, session, and queue owner.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Shell (agent runtime) | 288 | +17581/−11627 | 30/2 | auth flow, session eviction, bounded-memory forks, recap and background-parent continuity |
+| Pager (TUI) | 175 | +16428/−4520 | 15/1 | `/resume`, queue, dashboard, plan approval, modal, copy and terminal behavior |
+| Workspace / Permission | 26 | +4265/−476 | 5/0 | normalized path patterns, read-only Git approval and large-workspace deny globs |
+| Tools | 24 | +1446/−225 | 4/0 | task-log sizing, output truncation and attachment handling |
+| Other crates | 19 | +1134/−92 | 6/0 | shared runtime, test and supporting infrastructure |
+| Models / Sampling | 15 | +932/−172 | 1/0 | retry propagation, 5xx recovery and optimistic model selection |
+| Telemetry / Mixpanel | 11 | +920/−136 | 1/0 | shortcut and model-side skill-read telemetry |
+| Sandbox | 3 | +577/−237 | 0/0 | plan, durable metadata and repository manifest types |
+| Markdown / Mermaid | 3 | +425/−41 | 0/0 | plan preview, ANSI16 palette, wrapped diffs and narrow tables |
+| ACP / Protocol | 4 | +255/−15 | 0/0 | session resume and close operations |
+| Root / meta | 4 | +63/−15 | 0/0 | Rust toolchain, workspace lockfile and upstream revision metadata |
+| Auth / Secrets | 3 | +45/−30 | 1/0 | sign-in, token suffix and first-party API-key probing |
+| Config | 1 | +6/−1 | 0/0 | supporting configuration changes |
+| Update / Version | 1 | +1/−1 | 0/0 | version metadata |
+| **Total** | **577** | **+44078/−17588** | **63/3** | |
+
+### Added
+
+- Pager: make the response ▲ affordance clickable to jump to the top of the response being read.
+- Pager: show Mermaid affordances in plan-mode preview.
+- Permission prompt: add a free-form pattern editor to the "Always allow" command flow.
+- Pager: let Tab walk answers in the `ask_user_question` card.
+- Doctor: report tmux truecolor clamping.
+- Telemetry: record `shortcut_used` for Ctrl+L actions.
+- ACP: add `session/resume` and `session/close` operations.
+- Pager: allow model switching during plan approval.
+- Sandbox: provision plan, durable metadata, and repository-manifest types.
+- Pager: let any queued item move up or down.
+- Pager: toast when a session-only modal is opened from the dashboard.
+- Permission UI: add a full-script permission showcase.
+- Pager: surface disk-full failures during live sessions.
+- Dashboard: show a per-turn summary on agent rows.
+- Pager: detect automatic themes over SSH and tmux.
+- Pager: make text in pinned sticky headers selectable and copyable.
+
+### Changed
+
+- Build: bump the Rust toolchain to 1.93.0.
+- Pager: remove the manage-account link from `/session-info`.
+- Workspace: auto-approve read-only Git queries and defer the write floor to the auto classifier.
+- External-provider auth refresh: use one seven-second attempt instead of three five-second attempts.
+- External-binary auth: treat sign-in as a fresh login rather than a refresh.
+- Telemetry: count model-side skill reads and restore the skill-dispatched trigger.
+- Models: apply pre-session model selection optimistically.
+- Dashboard: clarify the overlay previous/next shortcut hint.
+- Workflow: cap live subagents at 16 per run.
+- Settings: render model names consistently.
+- Session fork: stream the copy so large sessions fork with bounded memory.
+- Input replay: represent file-mention chunks as user attachment links.
+- Pager: show non-200 API errors as clean TUI banners.
+- Shell: refresh leader documentation to match current behavior.
+- Markdown: pin the palette to ANSI16 hues.
+- Permission UI: collapse long Bash permission bodies behind Ctrl+F.
+- Security UI: contextualize Auto-mode findings.
+- MCP: show disabled server stubs only when they can be re-enabled.
+- Dashboard: improve the per-turn summary prompt to emphasize reply substance.
+- Markdown: reflow narrow tables within cells.
+- Pager: standardize one Tab contract across blocking cards.
+- Extensions modal: group entries, sort them A–Z, and make skills collapsible.
+
+### Fixed
+
+- Shell auth: route expired external-provider credentials to sign-in instead of a 401 loop.
+- Shell: prevent large task logs from making completion messages excessively long.
+- Plan viewer: widen the scrollbar grab zone and remove the striped thumb in Terminal.app.
+- Pager: poll the tmux probe teardown grace instead of sleeping through it.
+- Security: enforce the vendor-compat MCP kill switch when it is reported as enabled.
+- Shell: restore session eviction when a leader client disconnects.
+- Workspace security: lexical-normalize permission path patterns before glob matching.
+- Pager: reject invalid Enter input in the `/resume` picker.
+- Shell: correct `/btw` caching.
+- Pager: do not resurrect completed background tasks as Running when completion arrives first.
+- Plan viewer: prevent scrollbar click-drag from being hijacked by the comment gutter.
+- Pager/Shell: stop duplicate Recap after the same final turn.
+- Sampler: preserve `x-should-retry` through stream collection.
+- Pager: clear the plan-mode indicator immediately after plan approval.
+- Pager: avoid making tmux re-read its configuration on reattach.
+- File watching: skip nested checkouts so in-repository worktrees cannot stall startup.
+- Tools: report the real log size when short output is only a partial view.
+- Workspace: emit `git-head-changed` for same-branch commits.
+- Auth: correct authentication-token suffix handling.
+- Runtime: preserve `errno` across signal callbacks.
+- MCP: extract images before output truncation.
+- Sandbox: avoid startup refusal when deny globs traverse a large workspace.
+- Sampling: retry Cloudflare 52x and other 5xx errors.
+- Pager: include sessions in `/resume` search that are loadable through `--resume`.
+- Pager: paint automatic Recap only while the CLI is idle.
+- Terminal teardown: always emit mouse and paste resets.
+- Queue: keep plain queued prompts visible.
+- Mouse copy: preserve wide CJK graphemes at selection boundaries.
+- Diff rendering: retain syntax styles on wrapped lines.
+- Session UI: report the mode the session is actually using.
+- Dashboard: make exit/quit terminate the CLI.
+- Queue: ensure send-now never silently destroys an earlier queued message.
+- Slash UI: execute the highlighted command on Enter.
+- Dashboard: return to the dashboard after `/delete` from an attached session.
+- Auth: probe the first-party API key before skipping login.
+- Background work: continue in-flight parent work after spawning a child task.
+- Session restore: register restored child sessions so `--resume` does not return 404.
+- Dashboard: re-point the attached session after `/new`.
+
+### Removed / Deprecated
+
+- Remove the project-directory picker.
+
+### Merge risk for grok-pi
+
+- Shell and Pager account for 463 of 577 changed files; 99 upstream paths overlap local post-`a422116` work, including 61 Pager/session/model/settings seams.
+- ACP session resume/close and restored-child registration must not transfer session ownership away from Pi or make `pi-grok-adapter` stateful; upstream does not touch the fork-only adapter crate.
+- Queue reordering, send-now preservation, and background-parent continuation overlap grok-pi's Pi-owned queue mirror and require focused state-machine validation.
+- Pager `/resume`, dashboard, plan approval, model selection, terminal teardown, copy, and modal changes overlap native external-profile seams and should be reapplied surgically in an isolated worktree.
+- Permission-path normalization, read-only Git auto-approval, sandbox metadata, MCP kill-switch enforcement, and auth changes require focused security/error-path checks; `SOURCE_REV`, `AGENTS.md` base, and verifier baselines remain unchanged until a separately authorized merge is completed and verified.
+
 ## [a422116] — 2026-08-01
 
 > **Status:** Merged into grok-pi via isolated commit `91394c1`; fast-forwarded to local `main` without pushing.
