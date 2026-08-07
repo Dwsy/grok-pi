@@ -11,9 +11,10 @@ use crate::scrollback::blocks::tool::search::{
     SearchFileMatch, SearchInputMeta, SearchLineMatch, SearchOutputMode, SearchToolCallBlock,
 };
 use crate::scrollback::blocks::tool::{
-    DiscoveredTool, EditToolCallBlock, ExecuteToolCallBlock, IntegrationSearchToolCallBlock,
-    LineRange, MemorySearchToolCallBlock, OtherToolCallBlock, ReadMediaKind, ReadToolCallBlock,
-    ToolCallBlock, UseToolCallBlock, WebFetchToolCallBlock, WebSearchToolCallBlock,
+    DiscoveredTool, EditToolCallBlock, EvalToolCallBlock, ExecuteToolCallBlock,
+    IntegrationSearchToolCallBlock, LineRange, MemorySearchToolCallBlock, OtherToolCallBlock,
+    ReadMediaKind, ReadToolCallBlock, ToolCallBlock, UseToolCallBlock, WebFetchToolCallBlock,
+    WebSearchToolCallBlock,
 };
 use crate::scrollback::entry::EntryId;
 use crate::scrollback::state::ScrollbackState;
@@ -1802,6 +1803,27 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 block = block.with_error("Search failed");
             }
             RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(block))
+        }
+        _ if extract_raw_field(tc, "variant").as_deref() == Some("Eval") => {
+            let language = extract_raw_field(tc, "language").unwrap_or_default();
+            let code = extract_raw_field(tc, "code").unwrap_or_default();
+            let mut block = EvalToolCallBlock::new(language, code);
+            if let Some(title) = extract_raw_field(tc, "title") {
+                block = block.with_title(title);
+            }
+            let text = content_text(tc);
+            if success {
+                if !text.is_empty() {
+                    block = block.with_output(text);
+                }
+            } else {
+                block = block.with_error(if text.is_empty() {
+                    "Eval failed".to_string()
+                } else {
+                    text
+                });
+            }
+            RenderBlock::ToolCall(ToolCallBlock::Eval(block))
         }
         _ if extract_raw_field(tc, "variant").as_deref() == Some("UseTool") => {
             let tool_name = extract_raw_field(tc, "tool_name").unwrap_or_else(|| tc.title.clone());

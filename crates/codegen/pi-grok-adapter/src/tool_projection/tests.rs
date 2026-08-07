@@ -251,6 +251,41 @@ fn pi_builtin_tool_kinds() {
     assert_eq!(tool_kind("grep"), acp::ToolKind::Search);
     assert_eq!(tool_kind("find"), acp::ToolKind::Search);
     assert_eq!(tool_kind("ls"), acp::ToolKind::Other);
+    assert_eq!(tool_kind("eval"), acp::ToolKind::Other);
+}
+
+#[test]
+fn eval_raw_input_marks_dedicated_variant_and_preserves_fields() {
+    let args = normalize_tool_raw_input(
+        "eval",
+        Some(json!({
+            "language": "py",
+            "code": "x = 40\nx + 2",
+            "title": "compute",
+        })),
+    )
+    .unwrap();
+    assert_eq!(args.get("variant").and_then(Value::as_str), Some("Eval"));
+    assert_eq!(args.get("language").and_then(Value::as_str), Some("py"));
+    assert_eq!(
+        args.get("code").and_then(Value::as_str),
+        Some("x = 40\nx + 2")
+    );
+    assert_eq!(args.get("title").and_then(Value::as_str), Some("compute"));
+    assert!(args.get("command").is_none());
+    assert!(args.get("description").is_none());
+}
+
+#[test]
+fn eval_raw_output_stays_native_instead_of_projecting_bash() {
+    let result = json!({"content": [{"type": "text", "text": "42"}]});
+    let raw = normalize_tool_raw_output(
+        "eval",
+        Some(&json!({"language": "py", "code": "x = 40\nx + 2"})),
+        &result,
+        false,
+    );
+    assert_eq!(raw, result);
 }
 
 #[test]
