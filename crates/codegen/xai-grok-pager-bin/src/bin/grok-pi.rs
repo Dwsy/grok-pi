@@ -1268,9 +1268,7 @@ async fn spawn_with_extension_self_heal(
             eprintln!("  Could not isolate a single culprit (possible combination conflict).");
             eprintln!();
             eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching with all extensions disabled.");
-            eprintln!(
-                "  To do this manually:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m"
-            );
+            eprintln!("  To do this manually:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m");
             eprintln!();
 
             prompt_and_maybe_report_ext_crash("combo", "combo");
@@ -1688,8 +1686,8 @@ async fn probe_extensions_ok(
 #[cfg(test)]
 mod env_flag_tests {
     use super::{
-        Args, PI_GROK_NATIVE_COMMANDS, env_flag_default_off, env_flag_default_on,
-        disable_all_extensions, herdr_enabled_from_config, subagents_enabled_from_config,
+        Args, PI_GROK_NATIVE_COMMANDS, disable_all_extensions, env_flag_default_off,
+        env_flag_default_on, herdr_enabled_from_config, subagents_enabled_from_config,
     };
     use clap::Parser;
 
@@ -1803,13 +1801,12 @@ mod env_flag_tests {
 
     #[test]
     fn extension_discovery_and_host_bridges_have_independent_switches() {
-        let discovery =
-            Args::try_parse_from(["grok-pi", "--no-extensions"]).expect("parse args");
+        let discovery = Args::try_parse_from(["grok-pi", "--no-extensions"]).expect("parse args");
         assert!(discovery.no_extensions);
         assert!(!discovery.no_bridge_extensions);
 
-        let bridges = Args::try_parse_from(["grok-pi", "--no-bridge-extensions"])
-            .expect("parse args");
+        let bridges =
+            Args::try_parse_from(["grok-pi", "--no-bridge-extensions"]).expect("parse args");
         assert!(!bridges.no_extensions);
         assert!(bridges.no_bridge_extensions);
     }

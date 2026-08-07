@@ -70,6 +70,25 @@ impl EvalToolCallBlock {
         })
     }
 
+    fn highlighted_code(&self, theme: &Theme) -> Vec<Line<'static>> {
+        let syntect = crate::syntax::get_syntect();
+        let mut highlighter = eval_syntax_token(&self.language)
+            .and_then(|token| syntect.highlight_lines_for_token(token));
+        let fallback = theme.fg(theme.md_code);
+
+        self.code
+            .lines()
+            .map(|line| {
+                Line::from(crate::syntax::highlight_line(
+                    line,
+                    &mut highlighter,
+                    syntect,
+                    fallback,
+                ))
+            })
+            .collect()
+    }
+
     fn header_line(&self, theme: &Theme, muted: bool) -> Line<'static> {
         let style = if muted {
             theme.muted()
@@ -96,12 +115,7 @@ impl EvalToolCallBlock {
 
         if !self.code.is_empty() {
             lines.push(Line::from("").into());
-            let code_lines: Vec<Line<'static>> = self
-                .code
-                .lines()
-                .map(|line| Line::from(Span::styled(line.to_string(), theme.fg(theme.md_code))))
-                .collect();
-            for line in word_wrap_lines(code_lines, width) {
+            for line in word_wrap_lines(self.highlighted_code(&theme), width) {
                 lines.push(BlockLine::styled(line));
             }
         }
@@ -129,6 +143,70 @@ impl EvalToolCallBlock {
         }
 
         BlockOutput { lines }
+    }
+}
+
+fn eval_syntax_token(language: &str) -> Option<&'static str> {
+    let language = language.trim();
+    if language.eq_ignore_ascii_case("py") || language.eq_ignore_ascii_case("python") {
+        return Some("python");
+    }
+    if language.eq_ignore_ascii_case("js")
+        || language.eq_ignore_ascii_case("javascript")
+        || language.eq_ignore_ascii_case("node")
+        || language.eq_ignore_ascii_case("nodejs")
+    {
+        return Some("javascript");
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> BlockContext {
+        BlockContext {
+            width: 80,
+            mode: DisplayMode::Expanded,
+            is_running: false,
+            raw: false,
+            max_lines: None,
+            appearance: Default::default(),
+            is_selected: false,
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn expanded_code_preserves_python_syntax_token_spans() {
+        let block = EvalToolCallBlock::new("py", "def add(x):\n    return x + 1");
+        let output = block.output(&ctx());
+        let code_spans: usize = output.lines[2..4]
+            .iter()
+            .map(|line| line.content.spans.len())
+            .sum();
+        assert!(
+            code_spans > 2,
+            "Python code should contain multiple syntax spans, got {code_spans}"
+        );
+    }
+
+    #[test]
+    fn expanded_code_preserves_javascript_syntax_token_spans() {
+        let block = EvalToolCallBlock::new(
+            "js",
+            "const values = [1, 2, 3];\nvalues.reduce((a, b) => a + b, 0);",
+        );
+        let output = block.output(&ctx());
+        let code_spans: usize = output.lines[2..4]
+            .iter()
+            .map(|line| line.content.spans.len())
+            .sum();
+        assert!(
+            code_spans > 2,
+            "JavaScript code should contain multiple syntax spans, got {code_spans}"
+        );
     }
 }
 

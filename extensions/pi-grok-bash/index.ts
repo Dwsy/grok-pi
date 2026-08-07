@@ -541,12 +541,16 @@ function waitForCompletion(task: BackgroundTask, timeoutMs: number | undefined, 
 function emitCompleted(pi: ExtensionAPI, task: BackgroundTask) {
 	const snapshot = taskSnapshot(task);
 	const failed = !snapshot.explicitly_killed && (snapshot.exit_code !== 0 || Boolean(snapshot.signal));
+	const shouldWake = !snapshot.explicitly_killed;
+	const content = snapshot.explicitly_killed
+		? `Background Bash task cancelled: ${task.command}`
+		: failed
+			? `Background Bash task failed: ${task.command}\n\n${snapshot.output || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}${snapshot.signal ? `; signal: ${snapshot.signal}` : ""}`
+			: `Background Bash task completed: ${task.command}\n\n${snapshot.output || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}`;
 	pi.sendMessage(
 		{
 			customType: BRIDGE_TYPE,
-			content: failed
-				? `Background Bash task failed: ${task.command}\n\n${snapshot.output || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}${snapshot.signal ? `; signal: ${snapshot.signal}` : ""}`
-				: "",
+			content,
 			display: false,
 			details: {
 				version: 1,
@@ -556,7 +560,7 @@ function emitCompleted(pi: ExtensionAPI, task: BackgroundTask) {
 				taskSnapshot: snapshot,
 			},
 		},
-		failed ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
+		shouldWake ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
 	);
 }
 

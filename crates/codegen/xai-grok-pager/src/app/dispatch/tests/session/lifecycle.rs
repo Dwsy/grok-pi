@@ -1,10 +1,72 @@
 //! Tests for session create, exit, trust, startup actions, worktree creation, and cloud lifecycle.
 use super::*;
+use crate::app::dispatch::session::lifecycle::handle_switch_model_complete;
 /// Simulate a release-stamped build so folder-trust is active (a local/dev
 /// build auto-trusts and persists nothing). Mirrors this module's raw env idiom.
 fn simulate_release_build() {
     unsafe { std::env::set_var(xai_grok_version::TEST_VERSION_ENV, "0.0.0-sim") };
 }
+
+#[test]
+fn external_session_created_clears_starting_session_indicator() {
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    let id = AgentId(0);
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.session.session_id = None;
+    agent.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
+        total: 0,
+        connected: 0,
+        started_at: std::time::Instant::now(),
+    });
+
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionCreated {
+            agent_id: id,
+            session_id: "pi-session-ready".into(),
+            models: None,
+            scheduler_background_loops: None,
+        }),
+        &mut app,
+    );
+
+    assert!(
+        app.agents[&id].mcp_init_progress.is_none(),
+        "the external session response must clear the startup indicator"
+    );
+}
+
+#[test]
+fn successful_model_switch_refreshes_context_window() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("test::large-context"));
+    let model = acp::ModelInfo::new(model_id.clone(), "Large Context").meta(
+        serde_json::json!({ "totalContextTokens": 200_000 })
+            .as_object()
+            .cloned(),
+    );
+    {
+        let agent = app.agents.get_mut(&id).expect("test agent");
+        agent
+            .session
+            .models
+            .available
+            .insert(model_id.clone(), model);
+        agent.apply_context_used(12_345, 32_000);
+    }
+
+    handle_switch_model_complete(&mut app, id, model_id, None, Ok(()), None);
+
+    let context = app.agents[&id]
+        .context_state
+        .as_ref()
+        .expect("context state");
+    assert_eq!(context.used, 12_345);
+    assert_eq!(context.total, 200_000);
+}
+
+
 #[test]
 fn voice_on_welcome_creates_session_and_records() {
     if !xai_grok_voice::AUDIO_SUPPORTED {

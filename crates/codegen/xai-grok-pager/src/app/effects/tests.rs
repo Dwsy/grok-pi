@@ -758,6 +758,28 @@ async fn persist_setting_unknown_key_returns_err() {
 }
 /// Type-mismatch returns Err (not panic) for spawned-task safety.
 #[tokio::test]
+async fn persist_setting_type_mismatch_errors_pi_subagents() {
+    use crate::settings::SettingValue;
+    let r = persist_setting("pi_subagents", SettingValue::String("nope".into())).await;
+    let err = r.expect_err("pi_subagents with String payload must return Err");
+    assert!(
+        err.contains("persist_setting(pi_subagents) expected Bool"),
+        "Pi setting must reach its typed persist arm, got: {err}",
+    );
+}
+
+#[tokio::test]
+async fn persist_setting_theme_keeps_pi_string_variant() {
+    use crate::settings::SettingValue;
+    let r = persist_setting("theme", SettingValue::Bool(true)).await;
+    let err = r.expect_err("theme with Bool payload must return Err");
+    assert!(
+        err.contains("persist_setting(theme) expected Enum|String"),
+        "Pi themes require String persistence support, got: {err}",
+    );
+}
+
+#[tokio::test]
 async fn persist_setting_type_mismatch_errors_compact_mode() {
     use crate::settings::SettingValue;
     let r = persist_setting("compact_mode", SettingValue::String("nope".into())).await;

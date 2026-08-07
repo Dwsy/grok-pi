@@ -419,3 +419,80 @@ fn pi_rtk_grep_output_projects_matches_under_file_header() {
         Some(6)
     );
 }
+
+#[test]
+fn search_like_tools_are_not_misclassified_as_grep() {
+    // Extension / MCP / Pi tools whose names merely contain "search" must not
+    // be treated as grep searches, or their results would be run through the
+    // `path:line: content` parser and rendered as a broken Search card.
+    for name in [
+        "web_search",
+        "memory_search",
+        "session_search",
+        "codebase_search",
+        "x_search",
+        "grafana__search",
+        "pi/session/search",
+    ] {
+        assert_eq!(
+            tool_kind(name),
+            acp::ToolKind::Other,
+            "{name} must stay Other, not be classed as Search"
+        );
+    }
+}
+
+#[test]
+fn search_like_tool_output_is_not_grep_parsed() {
+    // A `web_search` result is plain prose, not grep `path:line` matches.
+    let result = json!({
+        "content": [{ "type": "text", "text": "results for query\n- https://example.com" }],
+    });
+    let raw = normalize_tool_raw_output(
+        "web_search",
+        Some(&json!({ "query": "rust" })),
+        &result,
+        false,
+    );
+    assert_eq!(
+        raw,
+        result,
+        "web_search must pass through unchanged, not be rewritten to GrepSearch"
+    );
+    assert_ne!(raw.get("type").and_then(Value::as_str), Some("GrepSearch"));
+}
+
+#[test]
+fn write_like_and_exec_like_tools_stay_other() {
+    // `TodoWrite` must not be treated as an Edit, and `fabric_exec` must not be
+    // treated as a bash Execute — they are distinct extension tools.
+    assert_eq!(tool_kind("TodoWrite"), acp::ToolKind::Other);
+    assert_eq!(tool_kind("fabric_exec"), acp::ToolKind::Other);
+}
+
+#[test]
+fn write_like_tools_do_not_get_write_variant_or_bash_description() {
+    let todo = normalize_tool_raw_input(
+        "TodoWrite",
+        Some(json!({ "todo": "x", "task_name": "label" })),
+    )
+    .unwrap();
+    assert!(
+        todo.get("variant").is_none(),
+        "TodoWrite must not be marked as a Write card"
+    );
+    assert!(
+        todo.get("description").is_none(),
+        "TodoWrite must not be aliased to a bash description"
+    );
+
+    let fabric = normalize_tool_raw_input(
+        "fabric_exec",
+        Some(json!({ "code": "return 1;", "task_name": "scan" })),
+    )
+    .unwrap();
+    assert!(
+        fabric.get("description").is_none(),
+        "fabric_exec must not be aliased to a bash description"
+    );
+}

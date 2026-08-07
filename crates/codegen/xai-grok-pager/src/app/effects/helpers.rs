@@ -1150,10 +1150,15 @@ pub(crate) async fn persist_setting(
                 .map_err(|e| e.to_string())
         }
         "theme" => {
-            let SettingValue::Enum(s) = value else {
-                return Err(kind_mismatch("theme", "Enum", &value));
+            // Built-ins use Enum; Pi themes (`pi:…`) use String.
+            let s = match value {
+                SettingValue::Enum(s) => (*s).to_owned(),
+                SettingValue::String(s) => s,
+                other => {
+                    return Err(kind_mismatch("theme", "Enum|String", &other));
+                }
             };
-            xai_grok_shell::util::config::set_theme(s.to_string())
+            xai_grok_shell::util::config::set_theme(s)
                 .await
                 .map_err(|e| e.to_string())
         }
@@ -1401,6 +1406,251 @@ pub(crate) async fn persist_setting(
                 return Err(kind_mismatch("fork_secondary_model", "String", &value));
             };
             xai_grok_shell::util::config::set_fork_secondary_model(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "thinking_border_colors" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("thinking_border_colors", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_thinking_border_colors(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "ctrl_o_tool_expansion" => {
+            let SettingValue::Enum(value) = value else {
+                return Err(kind_mismatch("ctrl_o_tool_expansion", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_ctrl_o_tool_expansion(value.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_bash_run_display" => {
+            let SettingValue::Enum(value) = value else {
+                return Err(kind_mismatch("pi_bash_run_display", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_pi_bash_run_display(value.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "prompt_cursor" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("prompt_cursor", "String", &value));
+            };
+            tokio::task::spawn_blocking(move || crate::appearance::persist_prompt_cursor(&s))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())
+        }
+        "recap_model" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("recap_model", "String", &value));
+            };
+            xai_grok_shell::util::config::set_recap_model(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "recap_model_2" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("recap_model_2", "String", &value));
+            };
+            xai_grok_shell::util::config::set_recap_model_2(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "recap_model_3" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("recap_model_3", "String", &value));
+            };
+            xai_grok_shell::util::config::set_recap_model_3(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "btw_model" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("btw_model", "String", &value));
+            };
+            xai_grok_shell::util::config::set_btw_model(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "btw_model_2" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("btw_model_2", "String", &value));
+            };
+            xai_grok_shell::util::config::set_btw_model_2(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "btw_model_3" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("btw_model_3", "String", &value));
+            };
+            xai_grok_shell::util::config::set_btw_model_3(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_builtin_tools" => {
+            let SettingValue::PiBuiltinTools(tools) = value else {
+                return Err(kind_mismatch("pi_builtin_tools", "PiBuiltinTools", &value));
+            };
+            xai_grok_shell::util::config::set_pi_builtin_tools(tools)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "psm_resume_index" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("psm_resume_index", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_psm_resume_index(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_tree_file_rollback" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_tree_file_rollback", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_tree_file_rollback(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_herdr" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_herdr", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_herdr(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_subagents" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_subagents", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_subagents(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_workflows" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_workflows", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_workflows(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_goal" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_goal", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_goal(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_loop" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_loop", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_loop(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_ask_user_question" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_ask_user_question", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_ask_user_question(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_ask_user_question_notifications" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch(
+                    "pi_ask_user_question_notifications",
+                    "Bool",
+                    &value,
+                ));
+            };
+            xai_grok_shell::util::config::set_pi_ask_user_question_notifications(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_btw" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_btw", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_btw(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_cache_graph" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_cache_graph", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_cache_graph(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "pi_user_markdown" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_user_markdown", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_user_markdown(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "show_other_tool_args" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("show_other_tool_args", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_show_other_tool_args(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "review_file_tree" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("review_file_tree", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_review_file_tree(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "review_include_reads" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("review_include_reads", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_review_include_reads(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "session_recap" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("session_recap", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_session_recap(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "recap_mermaid" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("recap_mermaid", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_recap_mermaid(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "progress_bar" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("progress_bar", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_progress_bar(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "remote_tui_footer" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("remote_tui_footer", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_remote_tui_footer(b)
                 .await
                 .map_err(|e| e.to_string())
         }
@@ -1821,4 +2071,26 @@ pub(super) fn parse_pi_fork_messages(
             Some(crate::app::actions::PiForkMessage { entry_id, text })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod pi_fork_parse_tests {
+    use super::parse_pi_fork_messages;
+    use serde_json::json;
+
+    #[test]
+    fn parse_pi_fork_messages_reads_entry_id_and_text() {
+        let messages = parse_pi_fork_messages(&json!({
+            "messages": [
+                { "entryId": "e1", "text": "hello" },
+                { "id": "e2", "text": "world" },
+                { "entryId": "  ", "text": "skip" },
+            ]
+        }));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].entry_id, "e1");
+        assert_eq!(messages[0].text, "hello");
+        assert_eq!(messages[1].entry_id, "e2");
+        assert_eq!(messages[1].text, "world");
+    }
 }

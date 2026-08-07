@@ -304,36 +304,29 @@ fn find_hunk_line(hunk: &PatchHunk, needle: &str, new_side: bool) -> Option<(usi
         .map(|(_, index, line_number)| (index, line_number))
 }
 
+/// Classify a Pi tool into the ACP kind the native Pager cards dispatch on.
+///
+/// Pi's built-in tool set is exact (`read`, `bash`, `edit`, `write`, `grep`,
+/// `find`, `ls`), so classification is exact-name — never substring matching.
+/// A substring test like `name.contains("search")` would misclassify
+/// extension/MCP/pi tools such as `web_search`, `memory_search`,
+/// `session_search`, or `x_search` as grep searches and route their results
+/// through `path:line` parsing. Any unrecognised name stays `Other` and
+/// renders as a generic tool card.
 pub(crate) fn tool_kind(name: &str) -> acp::ToolKind {
-    let name = name.to_ascii_lowercase();
-    // Exact Pi builtin names first (avoid substring false-positives).
+    let name = name.trim().to_ascii_lowercase();
     match name.as_str() {
-        "read" => return acp::ToolKind::Read,
-        "bash" => return acp::ToolKind::Execute,
-        "eval" => return acp::ToolKind::Other,
-        "edit" | "write" => return acp::ToolKind::Edit,
-        "grep" | "find" => return acp::ToolKind::Search,
+        // Pi builtin read/bash/edit-family tools plus their common aliases.
+        "read" | "read_file" | "view" => acp::ToolKind::Read,
+        "bash" | "execute" | "run_terminal_command" => acp::ToolKind::Execute,
+        "eval" => acp::ToolKind::Other,
+        "edit" | "write" | "create_file" => acp::ToolKind::Edit,
+        "grep" | "find" | "glob" => acp::ToolKind::Search,
         // ListDir is detected in the pager via `raw_input.target_directory`
         // (there is no ACP ListDir kind). Keep Other so that branch can match.
-        "ls" => return acp::ToolKind::Other,
-        _ => {}
-    }
-    if name.contains("read") {
-        acp::ToolKind::Read
-    } else if name.contains("write") || name.contains("edit") || name.contains("patch") {
-        acp::ToolKind::Edit
-    } else if name.contains("delete") || name.contains("remove") {
-        acp::ToolKind::Delete
-    } else if name.contains("move") || name.contains("rename") {
-        acp::ToolKind::Move
-    } else if name.contains("search") || name.contains("grep") || name.contains("find") {
-        acp::ToolKind::Search
-    } else if name.contains("bash") || name.contains("shell") || name.contains("exec") {
-        acp::ToolKind::Execute
-    } else if name.contains("fetch") || name.contains("web") {
-        acp::ToolKind::Fetch
-    } else {
-        acp::ToolKind::Other
+        "ls" | "list_dir" | "listdir" | "list_directory" => acp::ToolKind::Other,
+        "web_fetch" | "fetch" => acp::ToolKind::Fetch,
+        _ => acp::ToolKind::Other,
     }
 }
 
@@ -394,7 +387,7 @@ pub(crate) fn normalize_tool_raw_input(name: &str, args: Option<Value>) -> Optio
         }
     }
 
-    if lower == "grep" || lower.contains("grep") {
+    if lower == "grep" {
         if let Some(ignore_case) = obj.get("ignoreCase").cloned() {
             obj.entry("-i".to_string()).or_insert(ignore_case);
         }
@@ -402,11 +395,7 @@ pub(crate) fn normalize_tool_raw_input(name: &str, args: Option<Value>) -> Optio
 
     // pi-grok-bash uses `task_name`; stock Grok + Pager Execute cards read
     // `raw_input.description` for the human-readable title (spinner / header).
-    if tool_kind(name) == acp::ToolKind::Execute
-        || lower == "bash"
-        || lower.contains("bash")
-        || lower.contains("shell")
-    {
+    if tool_kind(name) == acp::ToolKind::Execute {
         let missing_or_empty_description = obj
             .get("description")
             .and_then(Value::as_str)
