@@ -310,6 +310,7 @@ pub(crate) fn tool_kind(name: &str) -> acp::ToolKind {
     match name.as_str() {
         "read" => return acp::ToolKind::Read,
         "bash" => return acp::ToolKind::Execute,
+        "eval" => return acp::ToolKind::Other,
         "edit" | "write" => return acp::ToolKind::Edit,
         "grep" | "find" => return acp::ToolKind::Search,
         // ListDir is detected in the pager via `raw_input.target_directory`
@@ -362,6 +363,12 @@ pub(crate) fn normalize_tool_raw_input(name: &str, args: Option<Value>) -> Optio
         return Some(args);
     };
     let lower = name.to_ascii_lowercase();
+
+    if lower == "eval" {
+        obj.entry("variant".to_string())
+            .or_insert_with(|| json!("Eval"));
+        return Some(args);
+    }
 
     if lower == "write" || lower.ends_with("_write") {
         obj.entry("variant".to_string())
@@ -433,6 +440,9 @@ pub(crate) fn normalize_tool_raw_output(
     result: &Value,
     is_error: bool,
 ) -> Value {
+    if name.eq_ignore_ascii_case("eval") {
+        return result.clone();
+    }
     if is_ls_tool(name) {
         return ls_tool_output(args, result, is_error);
     }

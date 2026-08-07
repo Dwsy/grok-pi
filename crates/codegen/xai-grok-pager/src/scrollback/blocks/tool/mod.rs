@@ -1,6 +1,7 @@
 //! Tool call blocks - sum type for different tool types.
 
 mod edit;
+mod eval;
 mod execute;
 pub(crate) mod hook;
 mod lifecycle;
@@ -20,6 +21,7 @@ pub use edit::{
     EditLineStyles, EditToolCallBlock, compute_file_scoped_styles, file_text_within_hl_caps,
     render_diff_hunk_highlighted, render_diff_hunks_highlighted, render_diff_hunks_with_styles,
 };
+pub use eval::EvalToolCallBlock;
 pub use execute::ExecuteToolCallBlock;
 pub use hook::{HookPhase, HookRunEntry, HookRunStatus, ToolCallHookData};
 pub use lifecycle::LifecycleEventBlock;
@@ -160,6 +162,7 @@ impl VerbGroupKind {
 pub enum ToolCallBlock {
     /// Execute a shell command.
     Execute(ExecuteToolCallBlock),
+    Eval(EvalToolCallBlock),
     /// Read a file.
     Read(ReadToolCallBlock),
     /// Edit a file (with diff).
@@ -192,6 +195,7 @@ macro_rules! delegate_tool {
     ($self:expr, $method:ident ( $($arg:expr),* )) => {
         match $self {
             ToolCallBlock::Execute(b) => b.$method($($arg),*),
+            ToolCallBlock::Eval(b) => b.$method($($arg),*),
             ToolCallBlock::Read(b) => b.$method($($arg),*),
             ToolCallBlock::Edit(b) => b.$method($($arg),*),
             ToolCallBlock::ListDir(b) => b.$method($($arg),*),
@@ -313,6 +317,9 @@ impl ToolCallBlock {
             (ToolCallBlock::Execute(new), ToolCallBlock::Execute(old)) => {
                 new.started_at = old.started_at;
             }
+            (ToolCallBlock::Eval(new), ToolCallBlock::Eval(old)) => {
+                new.started_at = old.started_at;
+            }
             (ToolCallBlock::Read(new), ToolCallBlock::Read(old)) => {
                 new.started_at = old.started_at;
             }
@@ -352,6 +359,7 @@ impl ToolCallBlock {
     pub fn is_success(&self) -> bool {
         match self {
             ToolCallBlock::Execute(b) => b.is_success(),
+            ToolCallBlock::Eval(b) => b.is_success(),
             ToolCallBlock::Read(b) => b.is_success(),
             ToolCallBlock::Edit(b) => b.is_success(),
             ToolCallBlock::Search(b) => b.is_success(),
@@ -375,6 +383,7 @@ impl ToolCallBlock {
     pub fn set_started_at(&mut self, instant: std::time::Instant) {
         match self {
             ToolCallBlock::Execute(b) => b.started_at = Some(instant),
+            ToolCallBlock::Eval(b) => b.started_at = Some(instant),
             ToolCallBlock::Read(b) => b.started_at = Some(instant),
             ToolCallBlock::Edit(b) => b.started_at = Some(instant),
             ToolCallBlock::Search(b) => b.started_at = Some(instant),
@@ -399,6 +408,11 @@ impl ToolCallBlock {
     pub fn start_timing(&mut self) {
         match self {
             ToolCallBlock::Execute(b) => {
+                if b.started_at.is_none() {
+                    b.started_at = Some(std::time::Instant::now());
+                }
+            }
+            ToolCallBlock::Eval(b) => {
                 if b.started_at.is_none() {
                     b.started_at = Some(std::time::Instant::now());
                 }
@@ -505,6 +519,13 @@ impl ToolCallBlock {
                 b.output.clone(),
                 b.error.clone(),
             ]),
+            ToolCallBlock::Eval(b) => join_searchable([
+                Some(b.language.clone()),
+                Some(b.code.clone()),
+                b.title.clone(),
+                b.output.clone(),
+                b.error.clone(),
+            ]),
             ToolCallBlock::Read(b) => {
                 join_searchable([Some(b.path.clone()), b.content.clone(), b.error.clone()])
             }
@@ -587,6 +608,7 @@ impl ToolCallBlock {
             ToolCallBlock::MemorySearch(_) => Some(VerbGroupKind::MemorySearch),
             ToolCallBlock::Skill(_) => Some(VerbGroupKind::Skill),
             ToolCallBlock::Execute(_)
+            | ToolCallBlock::Eval(_)
             | ToolCallBlock::Edit(_)
             | ToolCallBlock::UseTool(_)
             | ToolCallBlock::Other(_)
@@ -603,6 +625,7 @@ impl ToolCallBlock {
     pub fn label_kind(&self) -> Option<VerbGroupKind> {
         match self {
             ToolCallBlock::Execute(_) => Some(VerbGroupKind::Command),
+            ToolCallBlock::Eval(_) => Some(VerbGroupKind::OtherTool),
             ToolCallBlock::Edit(_) => Some(VerbGroupKind::EditFile),
             ToolCallBlock::UseTool(_) => Some(VerbGroupKind::McpCall),
             ToolCallBlock::Other(_) => Some(VerbGroupKind::OtherTool),
@@ -676,6 +699,7 @@ mod tests {
     fn every_variant_has_a_group_decision() {
         let blocks = [
             ToolCallBlock::Execute(ExecuteToolCallBlock::new("ls")),
+            ToolCallBlock::Eval(EvalToolCallBlock::new("python", "1 + 1")),
             ToolCallBlock::Read(ReadToolCallBlock::new("src/main.rs")),
             ToolCallBlock::Read(ReadToolCallBlock::new("/x/skills/deploy/SKILL.md")),
             ToolCallBlock::Edit(EditToolCallBlock::new("src/main.rs", Vec::new())),
@@ -704,6 +728,7 @@ mod tests {
                 ToolCallBlock::MemorySearch(_) => Some(VerbGroupKind::MemorySearch),
                 ToolCallBlock::Skill(_) => Some(VerbGroupKind::Skill),
                 ToolCallBlock::Execute(_)
+                | ToolCallBlock::Eval(_)
                 | ToolCallBlock::Edit(_)
                 | ToolCallBlock::UseTool(_)
                 | ToolCallBlock::Other(_)

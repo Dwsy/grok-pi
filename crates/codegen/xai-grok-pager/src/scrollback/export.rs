@@ -88,6 +88,10 @@ fn tool_summary(tc: &ToolCallBlock) -> String {
                 .map_or(String::new(), |d| format!(" ({})", d));
             format!("Execute: {}{}", ex.command, desc)
         }
+        ToolCallBlock::Eval(eval) => {
+            let label = eval.title.as_deref().unwrap_or(eval.language.as_str());
+            format!("Eval: {label}")
+        }
         ToolCallBlock::ListDir(l) => format!("ListDir: {}", l.path),
         ToolCallBlock::Search(s) => format!("Search: {}", s.pattern),
         ToolCallBlock::WebFetch(w) => format!("WebFetch: {}", w.url),
